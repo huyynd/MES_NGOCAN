@@ -66,6 +66,8 @@ PGDATABASE=mes
 PORT=4000
 ```
 
+Khi deploy backend trên Render, file `backend/.env` ở máy local không được tải lên (đã bị `.gitignore` loại trừ). Trong **Render → mes-backend → Environment**, tạo `DATABASE_URL` bằng đúng giá trị `DATABASE_URL` trong `backend/.env` để backend kết nối tới PostgreSQL trên Supabase; không đưa URL này vào Git hoặc chia sẻ công khai vì có chứa thông tin xác thực. Render sẽ tự deploy lại sau khi lưu biến môi trường.
+
 ### 3. Frontend
 ```bash
 # tại thư mục gốc dự án
