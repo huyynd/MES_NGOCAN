@@ -18,6 +18,7 @@ const DEFAULT_ORIGINS = [
   'http://localhost:5173',
   'http://localhost:4173',
   'https://mesngocan-src.vercel.app',
+  'https://mes-ngocan.vercel.app',
 ];
 const CONFIGURED_ORIGINS = (process.env.CORS_ORIGINS || '')
   .split(',').map((origin) => origin.trim()).filter(Boolean);
