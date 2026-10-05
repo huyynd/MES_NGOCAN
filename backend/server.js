@@ -14,7 +14,7 @@ const app = express();
 app.use(helmet());
 
 // ── CORS — chỉ cho phép từ frontend dev (localhost:5173) ──────────────────────
-const ALLOWED_ORIGINS = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://localhost:4173,https://procject-mes.vercel.app')
+const ALLOWED_ORIGINS = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://localhost:4173,https://mesngocan-src.vercel.app')
   .split(',').map((o) => o.trim());
 
 app.use(cors({
