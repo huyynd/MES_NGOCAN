@@ -54,6 +54,8 @@ npm run dev         # chạy API tại http://localhost:4000
 
 Trên Render, đặt **Start Command** là `npm start`. Không cần ghép `npm run migrate && npm start`: migration tự nhận diện schema đã khởi tạo và chỉ chạy phần cập nhật idempotent, không nạp lại bản dump tạo bảng mỗi lần deploy.
 
+Frontend mặc định gọi backend tại `https://mes-ngocan.onrender.com`. Có thể ghi đè URL này bằng biến môi trường `VITE_API_BASE` khi build frontend.
+
 File **`backend/.env`** (không commit lên git):
 ```
 PGHOST=localhost

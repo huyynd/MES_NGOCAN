@@ -51,7 +51,7 @@ const AREAS = ["Xưởng thổi", "Xưởng cắt"];
 
 /* ----------------------------- API client ----------------------------- */
 /* Gọi backend Node/Express thật. Đổi VITE_API_BASE nếu API chạy nơi khác. */
-const API_BASE = import.meta.env?.VITE_API_BASE || "http://localhost:4000";
+const API_BASE = import.meta.env?.VITE_API_BASE || "https://mes-ngocan.onrender.com";
 
 async function http(path, opts) {
   const token = getToken();

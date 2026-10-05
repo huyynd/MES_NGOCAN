@@ -1,5 +1,5 @@
 // src/mesApi.js — client gọi backend cho các phân hệ mở rộng
-const API_BASE = import.meta.env?.VITE_API_BASE || "http://localhost:4000";
+const API_BASE = import.meta.env?.VITE_API_BASE || "https://mes-ngocan.onrender.com";
 
 let authToken = (typeof localStorage !== "undefined" && localStorage.getItem("mes_token")) || "";
 export function setToken(t) {
@@ -178,4 +178,3 @@ export const recycling = {
   receiveRolls: (id, rolls) => http(`/recycling/${id}/receive`, body("PUT", { rolls })),
   complete: (id, data) => http(`/recycling/${id}/complete`, body("PUT", data)),
 };
-
