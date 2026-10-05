@@ -48,9 +48,11 @@ Hệ thống MES (Manufacturing Execution System) cho nhà máy sản xuất bao
 cd backend
 npm install
 # Tạo file .env (xem mẫu bên dưới)
-npm run migrate     # dựng bảng + dữ liệu mẫu từ schema*.sql
+npm run migrate     # khởi tạo schema trên database mới; có thể chạy lại an toàn
 npm run dev         # chạy API tại http://localhost:4000
 ```
+
+Trên Render, đặt **Start Command** là `npm start`. Không cần ghép `npm run migrate && npm start`: migration tự nhận diện schema đã khởi tạo và chỉ chạy phần cập nhật idempotent, không nạp lại bản dump tạo bảng mỗi lần deploy.
 
 File **`backend/.env`** (không commit lên git):
 ```
