@@ -13,9 +13,15 @@ const app = express();
 // ── Bảo mật HTTP Headers ──────────────────────────────────────────────────────
 app.use(helmet());
 
-// ── CORS — chỉ cho phép từ frontend dev (localhost:5173) ──────────────────────
-const ALLOWED_ORIGINS = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://localhost:4173,https://mesngocan-src.vercel.app')
-  .split(',').map((o) => o.trim());
+// ── CORS — chỉ cho phép frontend đã cấu hình ───────────────────────────────────
+const DEFAULT_ORIGINS = [
+  'http://localhost:5173',
+  'http://localhost:4173',
+  'https://mesngocan-src.vercel.app',
+];
+const CONFIGURED_ORIGINS = (process.env.CORS_ORIGINS || '')
+  .split(',').map((origin) => origin.trim()).filter(Boolean);
+const ALLOWED_ORIGINS = [...new Set([...DEFAULT_ORIGINS, ...CONFIGURED_ORIGINS])];
 
 app.use(cors({
   origin: (origin, cb) => {
