@@ -32,6 +32,7 @@ import ProcessModule from "./src/modules/engineering/Process.jsx";
 import OrdersModule from "./src/modules/sales/Orders.jsx";
 import DeliveriesModule from "./src/modules/sales/Deliveries.jsx";
 import ReportsModule from "./src/modules/reports/Reports.jsx";
+import DirectorReport from "./src/modules/reports/DirectorReport.jsx";
 import InventoryReport from "./src/modules/reports/InventoryReport.jsx";
 import EmployeeReport from "./src/modules/reports/EmployeeReport.jsx";
 import OutputReport from "./src/modules/production/OutputReport.jsx";
@@ -185,6 +186,7 @@ function Sidebar({ user, onLogout, collapsed, onToggle, mobileMenuOpen, onCloseM
     {
       key: "grp_rep", label: "Báo cáo", icon: Activity,
       children: [
+        { key: "rep_director", label: "Báo cáo giám đốc", icon: LayoutDashboard, perm: "rep_director", path: "/reports/director" },
         { key: "reports", label: "Báo cáo KPI", icon: Activity, path: "/reports" },
         { key: "rep_inv", label: "Báo cáo kho", icon: Warehouse, path: "/reports/inventory" },
         { key: "rep_employee", label: "Hiệu suất nhân viên", icon: Users, path: "/reports/employees" },
@@ -1338,6 +1340,7 @@ export default function MesApp() {
               <Route path="/qrlabels" element={<QrLabelsModule />} />
               <Route path="/qrscan" element={<QrScanModule />} />
               <Route path="/reports" element={needLookups(ReportsModule)} />
+              <Route path="/reports/director" element={<DirectorReport />} />
               <Route path="/reports/inventory" element={lookups ? <InventoryReport lookups={lookups} /> : loadingEl} />
               <Route path="/reports/employees" element={<EmployeeReport />} />
               <Route path="/permissions" element={<PermissionsModule />} />

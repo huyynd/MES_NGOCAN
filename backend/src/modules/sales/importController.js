@@ -74,11 +74,12 @@ async function findOrCreateCustomer(client, name) {
 
 async function findOrCreateProduct(client, productName) {
   const code = productName === 'Bao Bì' ? 'SP00004' : 'SP00017';
-  const found = await client.query(
-    `SELECT id FROM products WHERE is_deleted = FALSE AND product_code = $1 LIMIT 1`,
-    [code]
-  );
-  if (found.rows.length) return found.rows[0].id;
+  // Tìm theo mã KHÔNG lọc is_deleted — nếu đã xóa mềm thì khôi phục (tránh INSERT trùng mã → crash import)
+  const found = await client.query(`SELECT id, is_deleted FROM products WHERE product_code = $1 LIMIT 1`, [code]);
+  if (found.rows.length) {
+    if (found.rows[0].is_deleted) await client.query(`UPDATE products SET is_deleted = FALSE WHERE id = $1`, [found.rows[0].id]);
+    return found.rows[0].id;
+  }
   const ins = await client.query(
     `INSERT INTO products (product_code, product_name, unit, status, product_type) VALUES ($1, $2, 'KG', 'Hoạt động', 'Thành phẩm') RETURNING id`,
     [code, productName]
@@ -229,20 +230,25 @@ exports.previewOrders = async (req, res) => {
         const custRes = await client.query(`SELECT id FROM customers WHERE LOWER(name) = LOWER($1) AND is_deleted = FALSE LIMIT 1`, [cName]);
         if (custRes.rows.length > 0) {
           const cId = custRes.rows[0].id;
-          // Check if order exists on the same date with the same quantity and dimensions
+          // Check trùng bằng spec_key CHUẨN HOÁ (tránh lệch do "dài x rộng" vs "rộng × dài"),
+          // và so trên sales_order_items (nơi thực sự lưu spec_key) thay vì attr_size của PO.
+          const dupSpecs = {};
+          if (dim.length)    dupSpecs['Chiều dài']   = dim.length;
+          if (dim.width)     dupSpecs['Chiều ngang'] = dim.width;
+          if (dim.thickness) dupSpecs['Độ dày']      = dim.thickness;
+          const dupSpecKey = buildSpecKey(dupSpecs);
           const dupRes = await client.query(`
-            SELECT so.id 
+            SELECT so.id
             FROM sales_orders so
-            JOIN production_orders po ON so.id = po.sales_order_id
-            WHERE so.customer_id = $1 
+            JOIN sales_order_items soi ON soi.sales_order_id = so.id
+            WHERE so.customer_id = $1
               AND so.order_date = $2
               AND so.is_deleted = FALSE
-              AND po.quantity = $3
-              AND COALESCE(po.attr_size, '') = COALESCE($4, '')
-              AND COALESCE(po.attr_thickness, '') = COALESCE($5, '')
+              AND soi.quantity = $3
+              AND soi.spec_key = $4
             LIMIT 1
-          `, [cId, orderDate, qtyPO, dim.length ? (dim.width ? `${dim.length} x ${dim.width}` : dim.length) : null, dim.thickness || null]);
-          
+          `, [cId, orderDate, qtyPO, dupSpecKey]);
+
           if (dupRes.rows.length > 0) {
             item.isValid = false;
             item.errors.push('Đơn hàng có thể đã tồn tại (trùng Khách, Ngày, SL, Kích thước)');
@@ -281,8 +287,10 @@ exports.confirmOrders = async (req, res) => {
 
     for (let i = 0; i < rows.length; i++) {
       const item = rows[i];
+      // SAVEPOINT từng dòng: dòng lỗi chỉ rollback riêng nó, không làm hỏng cả transaction
+      // (trước đây 1 dòng lỗi → transaction abort → COMMIT rỗng = 0 đơn, nhưng vẫn báo "N thành công").
+      await client.query('SAVEPOINT sp_row');
       try {
-        // Reconstruct the original row array format to pass to importRow
         const rowArray = [
           item.dateSerial,
           item.customerName,
@@ -294,13 +302,14 @@ exports.confirmOrders = async (req, res) => {
           item.ghiChu,
           item.dueDate
         ];
-        
         const qtyTui = parseNum(item.kgTui);
         const productId = qtyTui > 0 ? baoBiId : cuonPeId;
         const result = await importRow(client, rowArray, i + 1, productId);
+        await client.query('RELEASE SAVEPOINT sp_row');
         results.push(result);
         if (!result.skipped) successCount++;
       } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT sp_row');
         errorCount++;
         results.push({ error: true, row: i + 1, message: e.message });
       }

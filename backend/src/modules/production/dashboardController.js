@@ -4,13 +4,8 @@ const db = require('../../core/db');
 // công đoạn cuối của 1 lệnh (Cắt nếu có, ngược lại Thổi)
 const FINAL = `(CASE WHEN EXISTS (SELECT 1 FROM production_tasks t2 WHERE t2.production_order_id = po.id AND t2.stage='Cắt') THEN 'Cắt' ELSE 'Thổi' END)`;
 
-// Quyền xem số liệu tiền (doanh thu/công nợ) — dùng quyền deliveries.view_amounts, như Dashboard FE
-function canViewAmounts(req) {
-  if (req.user?.is_admin) return true;
-  const p = req.user?.permissions?.deliveries;
-  const v = p?.view_amounts, f = p?.fields?.amounts;
-  return v === 'ALLOW' || v === true || v?.status === 'ALLOW' || f === 'edit' || f === 'view';
-}
+// Quyền xem số liệu tiền (doanh thu/công nợ) — helper dùng chung
+const { canViewAmounts } = require('../../core/lib/money');
 
 exports.summary = async (req, res) => {
   try {
@@ -66,7 +61,7 @@ exports.summary = async (req, res) => {
                c.name AS customer_name,
                (CURRENT_DATE - d.delivery_date) AS days_overdue
         FROM delivery_notes d LEFT JOIN customers c ON c.id = d.customer_id
-        WHERE d.is_deleted = FALSE
+        WHERE d.is_deleted = FALSE AND d.status NOT IN ('Bản nháp','Đã hủy')
           AND d.status <> 'Đã thanh toán'
           AND d.delivery_date IS NOT NULL
           AND d.delivery_date <= CURRENT_DATE - INTERVAL '30 days'
@@ -80,7 +75,7 @@ exports.summary = async (req, res) => {
           COALESCE(SUM(total_amount - paid_amount),0)::numeric AS debt,
           COUNT(*) FILTER (WHERE total_amount - paid_amount > 0)::int AS unpaid_count,
           COUNT(*)::int AS note_count
-        FROM delivery_notes WHERE is_deleted = FALSE
+        FROM delivery_notes WHERE is_deleted = FALSE AND status NOT IN ('Bản nháp','Đã hủy')
       `),
     ]);
 

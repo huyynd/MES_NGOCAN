@@ -21,7 +21,14 @@ export function SearchSelect({ value, onChange, options = [], placeholder = "-- 
 
   const place = () => {
     const r = triggerRef.current?.getBoundingClientRect();
-    if (r) setPos({ left: r.left, top: r.bottom + 4, width: r.width });
+    if (!r) return;
+    const spaceBelow = window.innerHeight - r.bottom;
+    const spaceAbove = r.top;
+    if (spaceBelow < 250 && spaceAbove > spaceBelow) {
+      setPos({ left: r.left, bottom: window.innerHeight - r.top + 4, width: r.width, maxHeight: Math.min(300, spaceAbove - 16) });
+    } else {
+      setPos({ left: r.left, top: r.bottom + 4, width: r.width, maxHeight: Math.min(300, spaceBelow - 16) });
+    }
   };
   const openMenu = () => { if (disabled) return; place(); setOpen(true); };
 
@@ -50,8 +57,8 @@ export function SearchSelect({ value, onChange, options = [], placeholder = "-- 
         <ChevronDown size={16} className={"shrink-0 " + (disabled && !selected ? "text-transparent" : "text-slate-400")} />
       </button>
       {open && !disabled && pos && createPortal(
-        <div ref={menuRef} style={{ position: "fixed", left: pos.left, top: pos.top, width: pos.width, zIndex: 1000 }}
-          className="bg-white border border-slate-200 rounded-lg shadow-lg max-h-72 overflow-auto">
+        <div ref={menuRef} style={{ position: "fixed", left: pos.left, ...(pos.top ? { top: pos.top } : { bottom: pos.bottom }), width: pos.width, maxHeight: pos.maxHeight || 288, zIndex: 1000 }}
+          className="bg-white border border-slate-200 rounded-lg shadow-lg overflow-auto flex flex-col">
           <div className="p-2 sticky top-0 bg-white border-b border-slate-100">
             <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Gõ để tìm…"
               className="w-full px-2 py-1.5 rounded border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40" />

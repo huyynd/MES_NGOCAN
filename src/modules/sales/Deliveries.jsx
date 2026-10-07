@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { RotateCcw, Plus, Trash2, Pencil, ArrowLeft, Save, Printer, FileText } from "lucide-react";
-import { deliveries as api, resource, deliverableOrders } from "../../mesApi.js";
+import { RotateCcw, Plus, Trash2, Pencil, ArrowLeft, Save, Printer, FileText, Truck } from "lucide-react";
+import { deliveries as api, resource, deliverableOrders, inventory } from "../../mesApi.js";
 
 const ordersApi = resource("sales-orders");
 import { usePerm } from "../../perm.jsx";
@@ -8,7 +8,17 @@ import {  inputCls, fmt, fmtDate, statusClass , toast } from "../../ui.js";
 import { specShort } from "../../specs.js";
 import { PageHeader, Section, ListHeader, DataTable, Logo, UnitSelect, SearchSelect } from "../../components.jsx";
 
-const STATUSES = ["Đã xuất hóa đơn", "Chờ thanh toán", "Đã thanh toán 1 phần", "Đã thanh toán", "Đã hủy"];
+// Bảng chuyển trạng thái (khớp backend). "Giao hàng" chỉ đặt qua nút Giao hàng (trừ tồn).
+// Bản nháp chỉ được Hủy; sau khi đã giao không cho Hủy (chưa có luồng hoàn kho).
+const DN_TRANSITIONS = {
+  "Bản nháp":             ["Đã hủy"],
+  "Giao hàng":            ["Đã xuất hóa đơn", "Chờ thanh toán", "Đã thanh toán 1 phần", "Đã thanh toán"],
+  "Đã xuất hóa đơn":      ["Chờ thanh toán", "Đã thanh toán 1 phần", "Đã thanh toán"],
+  "Chờ thanh toán":       ["Đã xuất hóa đơn", "Đã thanh toán 1 phần", "Đã thanh toán"],
+  "Đã thanh toán 1 phần": ["Chờ thanh toán", "Đã thanh toán"],
+  "Đã thanh toán":        [],
+  "Đã hủy":               [],
+};
 const today = () => new Date().toISOString().slice(0, 10);
 
 // Thông tin đơn vị bán hàng (in trên phiếu xuất kho)
@@ -34,11 +44,33 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
   const showMoney = moneyPerm !== "hidden";
   const moneyEdit = moneyPerm === "edit";
   const [editing, setEditing] = useState(!editId);
-  const [f, setF] = useState({ sales_order_id: "", customer_id: "", delivery_date: today(), status: "Đã xuất hóa đơn", note: "", paid_amount: "" });
+  const [f, setF] = useState({ sales_order_id: "", customer_id: "", delivery_date: today(), status: "Bản nháp", note: "", paid_amount: "" });
   const [items, setItems] = useState([]);
   const [seq, setSeq] = useState(2);
   const [orderList, setOrderList] = useState([]); // đơn GIAO ĐƯỢC của khách đã chọn
+  const [stock, setStock] = useState([]);         // tồn kho để bán lẻ (không theo đơn)
   const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
+
+  const manual = !f.sales_order_id;               // bán hàng tồn kho (không gắn đơn)
+  useEffect(() => { inventory.list().then(setStock).catch(() => {}); }, []);
+  // Gộp tồn theo sản phẩm (cả NVL/BTP/TP, bỏ Phế liệu) cho picker + hiển thị tồn
+  const stockByProduct = React.useMemo(() => {
+    const m = new Map();
+    stock.filter((s) => ["NVL", "BTP", "TP"].includes(s.warehouse_type) && Number(s.quantity) > 0).forEach((s) => {
+      const cur = m.get(s.product_id) || { product_id: s.product_id, product_name: s.product_name, unit: s.unit, qty: 0, wh: new Set() };
+      cur.qty += Number(s.quantity) || 0; cur.wh.add(s.warehouse_type); if (!cur.unit) cur.unit = s.unit;
+      m.set(s.product_id, cur);
+    });
+    return m;
+  }, [stock]);
+  const stockOptions = [...stockByProduct.values()].map((s) => ({ value: s.product_id, label: `${s.product_name} · tồn ${fmt(s.qty)} ${s.unit || ""} (${[...s.wh].join("/")})` }));
+  const addStockRow = (pid) => {
+    if (!pid) return;
+    if (items.some((x) => x.product_id === pid)) { toast.error("Sản phẩm đã có trong phiếu"); return; }
+    const s = stockByProduct.get(pid); if (!s) return;
+    setItems((a) => [...a, { _k: seq, product_id: pid, product_name: s.product_name, unit: s.unit, specs: {}, unit_price: "", quantity: "" }]);
+    setSeq((n) => n + 1);
+  };
 
   const load = useCallback(() => {
     if (!editId) return;
@@ -95,9 +127,11 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
     if (!f.customer_id) return toast.error("Chọn khách hàng");
     const valid = items.filter((it) => (it.product_id || it.product_name) && Number(it.quantity) > 0);
     if (!valid.length) return toast.error("Cần ít nhất 1 dòng có SL giao > 0");
-    // Cảnh báo (không chặn) nếu giao DƯ so với số còn lại
-    const over = valid.filter((it) => Number(it.quantity) > (Number(it.ordered) || 0) - (Number(it.delivered) || 0) + 1e-6);
-    if (over.length && !confirm(`Có ${over.length} dòng giao DƯ so với số còn lại của đơn (${over.map((x) => `${x.product_name}: giao ${fmt(Number(x.quantity))} / còn ${fmt((Number(x.ordered) || 0) - (Number(x.delivered) || 0))}`).join("; ")}).\nSản xuất dư là bình thường — vẫn cho giao. Tiếp tục lưu?`)) return;
+    // Cảnh báo (không chặn) nếu giao DƯ so với số còn lại — chỉ khi gắn đơn hàng
+    if (f.sales_order_id) {
+      const over = valid.filter((it) => Number(it.quantity) > (Number(it.ordered) || 0) - (Number(it.delivered) || 0) + 1e-6);
+      if (over.length && !confirm(`Có ${over.length} dòng giao DƯ so với số còn lại của đơn (${over.map((x) => `${x.product_name}: giao ${fmt(Number(x.quantity))} / còn ${fmt((Number(x.ordered) || 0) - (Number(x.delivered) || 0))}`).join("; ")}).\nSản xuất dư là bình thường — vẫn cho giao. Tiếp tục lưu?`)) return;
+    }
     try {
       if (editId) {
         await api.update(editId, { ...f, items: valid });
@@ -110,11 +144,18 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
     } catch (e) { toast.error("Lỗi lưu phiếu: " + e.message); }
   };
   const del = async () => { if (!confirm("Xóa phiếu này?")) return; try { await api.remove(editId); toast.success("Đã xóa thành công"); onSaved(); } catch (e) { toast.error("Lỗi xóa: " + e.message); } };
+  const ship = async () => {
+    if (!confirm("Xác nhận GIAO HÀNG cho khách?\nHệ thống sẽ tạo phiếu xuất kho (Giao hàng cho khách) và TRỪ TỒN Kho Thành phẩm theo số lượng giao.")) return;
+    try { const r = await api.ship(editId); toast.success(r?.message || "Đã giao hàng"); load(); }
+    catch (e) { toast.error("Không giao được: " + e.message); }
+  };
 
   return (
     <div className="space-y-5">
       <PageHeader title={!editId ? "Tạo phiếu giao hàng" : editing ? "Sửa phiếu giao hàng" : "Chi tiết phiếu giao hàng"} onBack={onBack}
         actions={editId && !editing ? (<>
+          {f.status === "Bản nháp" && can("deliveries", "approve") &&
+            <button onClick={ship} className="btn-primary"><Truck size={16} /> Giao hàng</button>}
           <button onClick={() => onPrint?.(editId)} className="btn-ghost"><Printer size={16} /> In phiếu</button>
           {can("deliveries", "edit") && <button onClick={() => setEditing(true)} className="btn-ghost"><Pencil size={16} /> Sửa</button>}
           {can("deliveries", "delete") && <button onClick={del} className="btn-ghost" style={{ color: "#e11d48" }}><Trash2 size={16} /> Xóa</button>}
@@ -134,17 +175,20 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
                 placeholder="-- Chọn khách hàng --"
               />
             </Field>
-            <Field label="Đơn hàng cần giao" required>
+            <Field label="Đơn hàng (tùy chọn)">
               <SearchSelect
                 value={f.sales_order_id}
                 onChange={onPickOrder}
                 disabled={!f.customer_id}
-                options={orderList.map((o) => ({ value: o.id, label: `${o.order_code} · ${o.status} · còn ${fmt(o.remaining_total)}` }))}
-                placeholder={!f.customer_id ? "Chọn khách hàng trước" : (orderList.length ? "-- Chọn đơn hàng --" : "Khách này không có đơn cần giao")}
+                options={[{ value: "", label: "— Không theo đơn (bán hàng tồn kho) —" }, ...orderList.map((o) => ({ value: o.id, label: `${o.order_code} · ${o.status} · còn ${fmt(o.remaining_total)}` }))]}
+                placeholder={!f.customer_id ? "Chọn khách hàng trước" : (orderList.length ? "-- Chọn đơn hàng --" : "Không theo đơn — chọn hàng trong kho bên dưới")}
               />
             </Field>
             <Field label="Trạng thái">
-              <select className={inputCls} value={f.status} onChange={(e) => set("status", e.target.value)}>{STATUSES.map((s) => <option key={s}>{s}</option>)}</select>
+              <select className={inputCls} value={f.status} onChange={(e) => set("status", e.target.value)}>
+                <option value={f.status}>{f.status}{["Bản nháp", "Giao hàng"].includes(f.status) ? " (hệ thống)" : ""}</option>
+                {(DN_TRANSITIONS[f.status] || []).map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
             </Field>
             <Field label="Ngày giao"><input type="date" className={inputCls} value={f.delivery_date} onChange={(e) => set("delivery_date", e.target.value)} /></Field>
             <Field label="Ghi chú"><input className={inputCls} value={f.note} onChange={(e) => set("note", e.target.value)} /></Field>
@@ -160,7 +204,65 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
           </div>
         </Section>
 
-        <Section title="Dòng hàng (theo đơn)" bodyClass="p-0">
+        <Section title={manual ? "Dòng hàng (bán tồn kho — không theo đơn)" : "Dòng hàng (theo đơn)"} bodyClass="p-0">
+         {manual ? (
+          <>
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-slate-500 text-xs uppercase">
+              <tr>
+                <th className="text-left px-4 py-2.5">Sản phẩm</th>
+                <th className="text-left px-3 py-2.5 w-28" title="Kho đang có tồn">Kho</th>
+                <th className="text-right px-3 py-2.5 w-28" title="Tồn kho hiện có">Tồn kho</th>
+                <th className="text-right px-3 py-2.5 w-28 bg-blue-50/60 text-blue-700" title="SL giao ở phiếu này">SL giao</th>
+                <th className="text-left px-3 py-2.5 w-16">ĐVT</th>
+                {showMoney && <th className="text-right px-4 py-2.5 w-28">Đơn giá</th>}
+                {showMoney && <th className="text-right px-4 py-2.5 w-32">Thành tiền</th>}
+                <th className="w-10" />
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {items.map((it) => {
+                const s = stockByProduct.get(it.product_id);
+                const onHand = s ? s.qty : 0, giao = Number(it.quantity) || 0;
+                const over = giao > onHand + 1e-6;
+                const amount = giao * (Number(it.unit_price) || 0);
+                return (
+                  <tr key={it._k}>
+                    <td className="px-4 py-1.5 font-medium text-slate-800">{it.product_name || "—"}</td>
+                    <td className="px-3 py-1.5 text-slate-500">{s ? [...s.wh].join("/") : "—"}</td>
+                    <td className="px-3 py-1.5 text-right text-slate-600">{fmt(onHand)}</td>
+                    <td className="px-3 py-1.5 bg-blue-50/40">
+                      <input type="number" min="0" className={inputCls + " text-right font-semibold text-blue-700" + (over ? " !border-amber-400 !ring-2 !ring-amber-200" : "")}
+                        value={it.quantity ?? ""} onChange={(e) => upItem(it._k, "quantity", e.target.value)}
+                        title={over ? `Giao ${fmt(giao)} vượt tồn ${fmt(onHand)} — không đủ tồn sẽ không giao được` : undefined} />
+                    </td>
+                    <td className="px-3 py-1.5 text-slate-500">{it.unit || "—"}</td>
+                    {showMoney && <td className="px-4 py-1.5"><input type="number" min="0" className={inputCls + " text-right"} disabled={!moneyEdit} value={it.unit_price} onChange={(e) => upItem(it._k, "unit_price", e.target.value)} /></td>}
+                    {showMoney && <td className="px-4 py-1.5 text-right font-semibold text-slate-800">{fmt(amount)}</td>}
+                    <td className="px-2 py-1.5 text-center">{editing && <button type="button" onClick={() => rmItem(it._k)} className="text-slate-400 hover:text-rose-600"><Trash2 size={15} /></button>}</td>
+                  </tr>
+                );
+              })}
+              {!items.length && <tr><td colSpan={showMoney ? 8 : 6} className="px-4 py-8 text-center text-slate-400">Chọn sản phẩm trong kho bên dưới để thêm dòng giao.</td></tr>}
+            </tbody>
+            {showMoney && !!items.length && (
+              <tfoot>
+                <tr className="border-t-2 border-slate-200 bg-slate-50/60 font-bold text-slate-800">
+                  <td colSpan={6} className="px-4 py-3 text-right">TỔNG TIỀN</td>
+                  <td className="px-4 py-3 text-right text-blue-700 text-base">{fmt(total)} đ</td>
+                  <td />
+                </tr>
+              </tfoot>
+            )}
+          </table>
+          {editing && (
+            <div className="p-3 border-t border-slate-100 bg-slate-50/40 flex items-center gap-2">
+              <span className="text-sm text-slate-500 shrink-0">Thêm sản phẩm từ kho:</span>
+              <div className="w-96 max-w-full"><SearchSelect value="" onChange={addStockRow} options={stockOptions} placeholder="-- Chọn sản phẩm trong kho (NVL/BTP/TP) --" /></div>
+            </div>
+          )}
+          </>
+         ) : (
           <table className="w-full text-sm">
             <thead className="bg-slate-50 text-slate-500 text-xs uppercase">
               <tr>
@@ -214,6 +316,7 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
               </tfoot>
             )}
           </table>
+         )}
         </Section>
       </fieldset>
     </div>

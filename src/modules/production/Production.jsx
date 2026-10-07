@@ -162,7 +162,12 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
 
   const [editing, setEditing] = useState(!editId); // tạo mới = sửa ngay; mở sẵn = xem
   const [meta, setMeta] = useState(null); // dữ liệu lệnh đã nạp (mã lệnh, SP, đơn...) cho tem QR
-  const locked = ['Hoàn thành', 'Đã hủy'].includes(meta?.status); // LSX đã chốt → không cho sửa
+  // Lệnh Hoàn thành nhưng có công đoạn chưa gán máy/ca/đội/công nhân/thực tế → vẫn cho sửa để bổ sung
+  const tasksIncomplete = (ts) => ts.some(
+    (t) => !t.machine_id || !t.shift || !t.assigned_team || !t.assigned_worker_id || (t.actual_qty === '' || t.actual_qty == null)
+  );
+  const locked = meta?.status === 'Đã hủy' ||
+    (meta?.status === 'Hoàn thành' && !tasksIncomplete(tasks));
 
   // Nạp dữ liệu khi sửa
   const loadData = useCallback(() => {
@@ -283,6 +288,27 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
     if (over.length) {
       return toast.error(`Số lượng thực tế cộng dồn của công đoạn ${over.map(([stg, s]) => `${stg} (${fmt(s)})`).join(", ")} vượt quá 150% Số lượng cần sản xuất (${fmt(f.quantity)} → tối đa ${fmt(capQty)}). Vui lòng xem xét lại số lượng thực tế.`);
     }
+    // Ràng buộc 3: khi CHỦ ĐỘNG chọn "Hoàn thành" → tất cả công đoạn phải có đủ máy, ca, đội, công nhân, SL thực tế
+    // Không áp khi đang lưu bổ sung thông tin vào lệnh đã ở trạng thái Hoàn thành (để không chặn việc điền thiếu)
+    const isSettingCompletion = f.status === 'Hoàn thành' && f.status !== meta?.status;
+    if (isSettingCompletion && tasks.length > 0) {
+      const missing = tasks.filter((t) => t.stage && (
+        !t.machine_id || !t.shift || !t.assigned_team || !t.assigned_worker_id ||
+        (t.actual_qty === '' || t.actual_qty == null || Number(t.actual_qty) <= 0)
+      ));
+      if (missing.length > 0) {
+        const details = missing.map((t) => {
+          const lacks = [];
+          if (!t.machine_id) lacks.push('máy');
+          if (!t.shift) lacks.push('ca');
+          if (!t.assigned_team) lacks.push('đội');
+          if (!t.assigned_worker_id) lacks.push('công nhân');
+          if (!t.actual_qty || Number(t.actual_qty) <= 0) lacks.push('SL thực tế');
+          return `${t.stage} (thiếu: ${lacks.join(', ')})`;
+        }).join('; ');
+        return toast.error(`Không thể xác nhận Hoàn thành — các công đoạn sau chưa đủ thông tin: ${details}. Vui lòng gán đủ máy, ca, đội, công nhân và nhập sản lượng thực tế.`);
+      }
+    }
     // Tỷ lệ (%) ở bảng NVL gộp → đồng bộ về mix_ratio (cấp lệnh); Số KG lưu riêng ở savePlannedMaterials.
     const mixRatio = plannedMats.filter((m) => m.material_id).map((m) => ({ material_id: m.material_id, ratio: m.ratio === '' || m.ratio == null ? null : Number(m.ratio) }));
     const matLines = plannedMats.filter((m) => m.material_id);
@@ -322,6 +348,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
         </span>} onBack={onBack}
         actions={editId && !editing ? (<>
           {locked && <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-500 border border-slate-200">🔒 Đã {meta?.status} · không thể sửa</span>}
+          {meta?.status === 'Hoàn thành' && !locked && <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200">⚠ Hoàn thành · cần bổ sung phân công</span>}
           {can("production", "edit") && !matsIssued && !locked && <button onClick={requestMats} disabled={pmBusy} className="btn-ghost text-amber-700 border-amber-300 hover:bg-amber-50"><PackageCheck size={16} /> Yêu cầu NVL</button>}
           {can("production", "edit") && !locked && <button onClick={() => setEditing(true)} className="btn-ghost"><Pencil size={16} /> Sửa</button>}
           {can("production", "delete") && <button onClick={del} className="btn-ghost" style={{ color: "#e11d48" }}><Trash2 size={16} /> Xóa</button>}

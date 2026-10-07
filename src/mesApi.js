@@ -67,6 +67,7 @@ export const roles = {
 export const deliveries = {
   ...resource("deliveries"),
   fromOrder: (orderId) => http(`/deliveries/from-order/${orderId}`),
+  ship: (id) => http(`/deliveries/${id}/ship`, body("POST", {})),
 };
 
 export const processes = resource("processes");
@@ -153,6 +154,7 @@ export const reports = {
     const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== '' && v != null));
     return http(`/reports/employees/${encodeURIComponent(worker)}/tasks?${q.toString()}`);
   },
+  director: (period = 'month') => http(`/reports/director?period=${period}`),
 };
 
 export const salesOrders = {

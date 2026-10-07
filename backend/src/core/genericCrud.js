@@ -133,6 +133,7 @@ function makeCrud(cfg) {
 
   // Nhập hàng loạt (import Excel) — CHẶN TRÙNG MÃ, bỏ qua dòng lỗi, trả thống kê
   const bulkCreate = async (req, res) => {
+    const client = await db.pool.connect();
     try {
       const rows = Array.isArray(req.body.rows) ? req.body.rows : [];
       if (!rows.length) return res.status(400).json({ message: 'Không có dòng nào để nhập' });
@@ -141,11 +142,14 @@ function makeCrud(cfg) {
       let existing = new Set();
       if (codeCol) {
         const sd = softDelete ? 'WHERE is_deleted = FALSE' : '';
-        const er = await db.query(`SELECT ${codeCol} AS c FROM ${table} ${sd}`);
+        const er = await client.query(`SELECT ${codeCol} AS c FROM ${table} ${sd}`);
         existing = new Set(er.rows.map((r) => String(r.c).trim().toUpperCase()).filter(Boolean));
       }
       const seen = new Set(); // mã đã gặp trong chính file này
 
+      // 1 transaction + SAVEPOINT cho TỪNG dòng: dòng lỗi chỉ rollback riêng nó,
+      // các dòng hợp lệ commit chung ở cuối (không để lỗi 1 dòng làm dở dang/kẹt kết nối).
+      await client.query('BEGIN');
       let inserted = 0; const errors = [];
       for (let idx = 0; idx < rows.length; idx++) {
         const row = rows[idx] || {};
@@ -158,15 +162,22 @@ function makeCrud(cfg) {
         }
         const { cols, vals } = pickImport(row);
         if (!cols.length) { errors.push({ row: idx + 2, message: 'Dòng trống / thiếu dữ liệu' }); continue; }
+        await client.query('SAVEPOINT sp_row');
         try {
           const ph = cols.map((_, k) => `$${k + 1}`).join(',');
-          await db.query(`INSERT INTO ${table} (${cols.join(',')}) VALUES (${ph})`, vals);
+          await client.query(`INSERT INTO ${table} (${cols.join(',')}) VALUES (${ph})`, vals);
+          await client.query('RELEASE SAVEPOINT sp_row');
           inserted++;
           if (rawCode) { seen.add(codeKey); existing.add(codeKey); }
-        } catch (e) { errors.push({ row: idx + 2, message: e.detail || e.message }); }
+        } catch (e) {
+          await client.query('ROLLBACK TO SAVEPOINT sp_row');
+          errors.push({ row: idx + 2, message: e.detail || e.message });
+        }
       }
+      await client.query('COMMIT');
       res.json({ inserted, failed: errors.length, errors: errors.slice(0, 50) });
-    } catch (err) { console.error(err); res.status(500).json({ message: `Lỗi khi nhập ${table}` }); }
+    } catch (err) { await client.query('ROLLBACK').catch(() => {}); console.error(err); res.status(500).json({ message: `Lỗi khi nhập ${table}` }); }
+    finally { client.release(); }
   };
 
   return { list, getById, create, update, remove, bulkCreate };

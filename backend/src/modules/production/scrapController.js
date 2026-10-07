@@ -1,4 +1,5 @@
 const db = require('../../core/db');
+const { applyStock } = require('../../core/lib/stock');
 
 // GET /api/scrap/workers — lấy toàn bộ nhân viên đang hoạt động
 exports.getWorkers = async (req, res) => {
@@ -139,17 +140,13 @@ exports.saveRecords = async (req, res) => {
     `, [recordId, pId, 0, newQty]);
 
     if (diff !== 0 && scrapLocationId) {
-      await client.query(`
-        INSERT INTO inventory_stock (product_id, location_id, quantity, unit, lot_code, spec_key, specs, attr_size, attr_thickness, attr_color)
-        VALUES ($1, $2, $3, $4, '', '||||', '{}'::jsonb, '', '', '')
-        ON CONFLICT (product_id, location_id, spec_key, lot_code)
-        DO UPDATE SET quantity = GREATEST(0, inventory_stock.quantity + EXCLUDED.quantity), updated_at = now()
-      `, [pId, scrapLocationId, diff, unit]);
-
-      await client.query(`
-        INSERT INTO inventory_transactions (product_id, location_id, trx_type, quantity, ref_code, note, specs, spec_key, lot_code, attr_size, attr_thickness, attr_color)
-        VALUES ($1, $2, $3, $4, $5, $6, '{}'::jsonb, '||||', '', '', '', '')
-      `, [pId, scrapLocationId, diff > 0 ? 'Nhập' : 'Xuất', Math.abs(diff), 'Ghi phế ' + record_date, 'Ghi nhận phế từ CN: ' + worker_name]);
+      // Qua applyStock (sổ cái khớp tồn, không đi vòng qua inventory_stock)
+      await applyStock(client, {
+        product_id: pId, location_id: scrapLocationId, delta: diff, unit,
+        specs: {}, lot_code: '', clampZero: false,
+        trx_type: diff > 0 ? 'Nhập' : 'Xuất',
+        ref_code: 'Ghi phế ' + record_date, note: 'Ghi nhận phế từ CN: ' + worker_name,
+      });
     }
 
     await client.query('COMMIT');

@@ -103,7 +103,7 @@ export const PERM_TREE = [
     category: "Phế phẩm & Tái chế",
     icon: Recycle,
     modules: [
-      { key: "scrap",       label: "Ghi nhận phế phẩm",    actions: ["view","create"] },
+      { key: "scrap",       label: "Ghi nhận phế phẩm",    actions: ["view","create","edit","delete"] },
       { key: "recycling",   label: "Quản lý tái chế",      actions: ["view","create","edit","approve"] },
     ]
   },
@@ -130,6 +130,7 @@ export const PERM_TREE = [
     category: "Báo cáo",
     icon: BarChart2,
     modules: [
+      { key: "rep_director",  label: "Báo cáo giám đốc",     actions: ["view","export"] },
       { key: "reports",       label: "Báo cáo KPI",          actions: ["view","export"] },
       { key: "rep_inv",       label: "Báo cáo kho",          actions: ["view","export"] },
       { key: "rep_employee",  label: "Hiệu suất nhân viên",  actions: ["view","export"] },

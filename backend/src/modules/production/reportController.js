@@ -493,3 +493,208 @@ exports.employeeTasks = async (req, res) => {
   } catch (err) { console.error(err); res.status(500).json({ message: 'L\u1ed7i khi l\u1ea5y chi ti\u1ebft nh\u00e2n vi\u00ean' }); }
 };
 
+// Quy\u1ec1n xem ti\u1ec1n (doanh thu/c\u00f4ng n\u1ee3) \u2014 helper d\u00f9ng chung
+const { canViewAmounts } = require('../../core/lib/money');
+
+// GET /reports/director?period=week|month \u2014 B\u00e1o c\u00e1o t\u1ed5ng h\u1ee3p cho gi\u00e1m \u0111\u1ed1c (3 kh\u1ed1i)
+exports.director = async (req, res) => {
+  try {
+    const period = req.query.period === 'week' ? 'week' : 'month';
+    const now = new Date();
+    let from;
+    if (period === 'week') { const d = new Date(now); const dow = (d.getDay() + 6) % 7; d.setDate(d.getDate() - dow); from = d; }
+    else { from = new Date(now.getFullYear(), now.getMonth(), 1); }
+    const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const f = ymd(from), t = ymd(now);
+    const showAmt = canViewAmounts(req);
+
+    const [salesQ, moneyQ, poCountQ, nvlQ, lowQ, workerCntQ, perfQ, agQ, custQ, billQ] = await Promise.all([
+      // Kh\u1ed1i 1: \u0111\u01a1n h\u00e0ng trong k\u1ef3 + gi\u00e1 tr\u1ecb + \u0111\u00e3 giao / ch\u01b0a giao (theo \u0111\u01a1n)
+      db.query(`
+        WITH ord AS (
+          SELECT so.id,
+            COALESCE((SELECT SUM(it.quantity*COALESCE(it.unit_price,0)) FROM sales_order_items it WHERE it.sales_order_id=so.id),0) AS val,
+            COALESCE((SELECT SUM(di.quantity*COALESCE(soi.unit_price,0))
+                      FROM delivery_note_items di
+                      JOIN delivery_notes dn ON dn.id=di.delivery_note_id
+                      LEFT JOIN sales_order_items soi ON soi.id=di.sales_order_item_id
+                      WHERE soi.sales_order_id=so.id AND dn.is_deleted=FALSE AND dn.status NOT IN ('B\u1ea3n nh\u00e1p','\u0110\u00e3 h\u1ee7y')),0) AS delivered_val
+          FROM sales_orders so
+          WHERE so.is_deleted=FALSE AND so.status<>'\u0110\u00e3 h\u1ee7y' AND so.order_date BETWEEN $1 AND $2
+        )
+        SELECT COUNT(*)::int AS order_count,
+               COALESCE(SUM(val),0)::numeric AS total_value,
+               COALESCE(SUM(delivered_val),0)::numeric AS delivered_value,
+               GREATEST(0, COALESCE(SUM(val),0)-COALESCE(SUM(delivered_val),0))::numeric AS undelivered_value,
+               COUNT(*) FILTER (WHERE delivered_val > 0)::int AS shipped_count,
+               COUNT(*) FILTER (WHERE val > 0 AND delivered_val >= val - 1e-6)::int AS fully_count
+        FROM ord`, [f, t]),
+      // Kh\u1ed1i 1: \u0111\u00e3 thu / c\u00f4ng n\u1ee3 (theo phi\u1ebfu giao trong k\u1ef3)
+      db.query(`
+        SELECT COALESCE(SUM(paid_amount),0)::numeric AS collected,
+               COALESCE(SUM(total_amount-paid_amount),0)::numeric AS debt,
+               COALESCE(SUM(total_amount),0)::numeric AS invoiced
+        FROM delivery_notes
+        WHERE is_deleted=FALSE AND status<>'\u0110\u00e3 h\u1ee7y' AND delivery_date BETWEEN $1 AND $2`, [f, t]),
+      // Kh\u1ed1i 2: s\u1ed1 y\u00eau c\u1ea7u s\u1ea3n xu\u1ea5t (LSX t\u1ea1o trong k\u1ef3)
+      db.query(`SELECT COUNT(*)::int AS n FROM production_orders WHERE is_deleted=FALSE AND created_at::date BETWEEN $1 AND $2`, [f, t]),
+      // Kh\u1ed1i 2: \u0111\u1ee7 / thi\u1ebfu NVL tr\u00ean c\u00e1c LSX c\u00f2n c\u1ea7n NVL (ch\u01b0a ho\u00e0n th\u00e0nh/h\u1ee7y)
+      db.query(`
+        WITH nvl AS (
+          SELECT s.product_id, SUM(s.quantity) AS oh
+          FROM inventory_stock s JOIN locations l ON l.id=s.location_id JOIN warehouses w ON w.id=l.warehouse_id
+          WHERE w.warehouse_type='NVL' GROUP BY s.product_id
+        ),
+        po_period AS (
+          SELECT id FROM production_orders
+          WHERE is_deleted=FALSE AND status NOT IN ('Ho\u00e0n th\u00e0nh','\u0110\u00e3 h\u1ee7y') AND created_at::date BETWEEN $1 AND $2
+        ),
+        short AS (
+          SELECT DISTINCT pom.production_order_id
+          FROM production_order_materials pom
+          JOIN po_period pp ON pp.id=pom.production_order_id
+          LEFT JOIN nvl ON nvl.product_id=pom.material_id
+          WHERE COALESCE(pom.qty,0) > COALESCE(nvl.oh,0)
+        )
+        SELECT (SELECT COUNT(*)::int FROM po_period) AS active_po,
+               (SELECT COUNT(*)::int FROM short) AS short_po`, [f, t]),
+      // Kh\u1ed1i 2: NVL (kg) t\u1ed3n d\u01b0\u1edbi 1 t\u1ea5n
+      db.query(`
+        SELECT p.product_name AS name, SUM(s.quantity)::numeric AS on_hand, MAX(s.unit) AS unit
+        FROM inventory_stock s
+        JOIN products p ON p.id=s.product_id
+        JOIN locations l ON l.id=s.location_id JOIN warehouses w ON w.id=l.warehouse_id
+        WHERE w.warehouse_type='NVL' AND upper(COALESCE(s.unit,''))='KG'
+        GROUP BY p.id, p.product_name
+        HAVING SUM(s.quantity) < 1000
+        ORDER BY SUM(s.quantity) ASC`),
+      // Kh\u1ed1i 3: s\u1ed1 c\u00f4ng nh\u00e2n
+      db.query(`SELECT COUNT(*)::int AS n FROM employees WHERE is_deleted=FALSE`),
+      // Kh\u1ed1i 3: s\u1ea3n l\u01b0\u1ee3ng & gi\u1edd c\u00f4ng theo nh\u00e2n vi\u00ean (trong k\u1ef3)
+      db.query(`
+        WITH raw_tasks AS (
+          SELECT po.id AS production_order_id,
+            CASE
+              WHEN po.status IN ('Ch\u1edd duy\u1ec7t','\u0110\u00e3 l\u00ean k\u1ebf ho\u1ea1ch','\u0110\u00e3 h\u1ee7y') THEN 0
+              WHEN t.status='\u0110\u00e3 h\u1ee7y' THEN 0
+              WHEN COALESCE(t.status,po.status)='Ho\u00e0n th\u00e0nh' THEN COALESCE(t.actual_qty,po.posted_qty,po.quantity)
+              ELSE COALESCE(t.actual_qty,po.posted_qty,0)
+            END AS actual_qty,
+            COALESCE(t.updated_at,po.updated_at) AS updated_at,
+            COALESCE(t.planned_date,po.planned_date) AS planned_date,
+            COALESCE(t.assigned_worker,po.assigned_worker) AS final_worker,
+            t.assigned_worker_id AS final_worker_id
+          FROM production_orders po
+          LEFT JOIN production_tasks t ON t.production_order_id=po.id
+          WHERE po.is_deleted=FALSE
+            AND COALESCE(t.assigned_worker,po.assigned_worker) IS NOT NULL
+            AND COALESCE(t.assigned_worker,po.assigned_worker)<>''
+            AND COALESCE(t.updated_at::date,t.planned_date,po.planned_date,po.created_at::date) BETWEEN $1 AND $2
+        ),
+        emp AS (SELECT id,name FROM employees WHERE is_deleted=FALSE)
+        SELECT e.name AS worker,
+               COALESCE(SUM(t.actual_qty),0)::numeric AS actual_qty,
+               (COUNT(DISTINCT COALESCE(t.updated_at::date,t.planned_date))*8)::int AS work_hours
+        FROM emp e
+        LEFT JOIN raw_tasks t ON (t.final_worker_id=e.id OR (t.final_worker_id IS NULL AND t.final_worker=e.name))
+        GROUP BY e.id, e.name`, [f, t]),
+      // Công nợ phải thu (as-of-now, loại Bản nháp/Đã hủy) — tổng + quá hạn + tuổi nợ
+      db.query(`
+        WITH openn AS (
+          SELECT dn.customer_id, (dn.total_amount - dn.paid_amount) AS due, (CURRENT_DATE - dn.delivery_date) AS age
+          FROM delivery_notes dn
+          WHERE dn.is_deleted=FALSE AND dn.status NOT IN ('Bản nháp','Đã hủy')
+            AND (dn.total_amount - dn.paid_amount) > 0 AND dn.delivery_date IS NOT NULL
+        )
+        SELECT COALESCE(SUM(due),0)::numeric AS total_debt,
+               COUNT(DISTINCT customer_id)::int AS customer_count,
+               COALESCE(SUM(due) FILTER (WHERE age>30),0)::numeric AS overdue_amount,
+               COALESCE(SUM(due) FILTER (WHERE age<=30),0)::numeric AS intime_amount,
+               COUNT(*) FILTER (WHERE age>30)::int AS overdue_count,
+               COALESCE(SUM(due) FILTER (WHERE age<180),0)::numeric AS b_lt6m,
+               COALESCE(SUM(due) FILTER (WHERE age>=180 AND age<365),0)::numeric AS b_6_12,
+               COALESCE(SUM(due) FILTER (WHERE age>=365 AND age<730),0)::numeric AS b_1_2,
+               COALESCE(SUM(due) FILTER (WHERE age>=730),0)::numeric AS b_gt2
+        FROM openn`),
+      // Công nợ theo khách hàng (tuổi nợ) — top 8
+      db.query(`
+        WITH openn AS (
+          SELECT c.name AS customer_name, (dn.total_amount - dn.paid_amount) AS due, (CURRENT_DATE - dn.delivery_date) AS age
+          FROM delivery_notes dn LEFT JOIN customers c ON c.id=dn.customer_id
+          WHERE dn.is_deleted=FALSE AND dn.status NOT IN ('Bản nháp','Đã hủy')
+            AND (dn.total_amount - dn.paid_amount) > 0 AND dn.delivery_date IS NOT NULL
+        )
+        SELECT COALESCE(customer_name,'(không rõ)') AS name,
+               COALESCE(SUM(due),0)::numeric AS debt,
+               COALESCE(SUM(due) FILTER (WHERE age<180),0)::numeric AS b_lt6m,
+               COALESCE(SUM(due) FILTER (WHERE age>=180 AND age<365),0)::numeric AS b_6_12,
+               COALESCE(SUM(due) FILTER (WHERE age>=365 AND age<730),0)::numeric AS b_1_2,
+               COALESCE(SUM(due) FILTER (WHERE age>=730),0)::numeric AS b_gt2
+        FROM openn GROUP BY customer_name ORDER BY debt DESC LIMIT 8`),
+      // Tổng đã xuất hóa đơn & đã thu (as-of-now, loại Bản nháp/Đã hủy)
+      db.query(`
+        SELECT COALESCE(SUM(total_amount),0)::numeric AS billed, COALESCE(SUM(paid_amount),0)::numeric AS paid
+        FROM delivery_notes WHERE is_deleted=FALSE AND status NOT IN ('Bản nháp','Đã hủy')`),
+    ]);
+
+    const s = salesQ.rows[0], m = moneyQ.rows[0], nv = nvlQ.rows[0];
+    const num = (x) => Math.round(Number(x) || 0);
+
+    // Hi\u1ec7u su\u1ea5t: n\u0103ng su\u1ea5t/gi\u1edd = s\u1ea3n l\u01b0\u1ee3ng / gi\u1edd c\u00f4ng (gi\u1edd c\u00f4ng = s\u1ed1 ng\u00e0y l\u00e0m \u00d7 8)
+    const perf = perfQ.rows
+      .map((r) => ({ worker: r.worker, actual: Number(r.actual_qty) || 0, hours: Number(r.work_hours) || 0 }))
+      .filter((r) => r.actual > 0);
+    const totActual = perf.reduce((a, r) => a + r.actual, 0);
+    const totHours = perf.reduce((a, r) => a + r.hours, 0);
+    const top = perf
+      .map((r) => ({ worker: r.worker, per_hour: r.hours > 0 ? Math.round(r.actual / r.hours) : 0, output: Math.round(r.actual) }))
+      .sort((a, b) => b.per_hour - a.per_hour || b.output - a.output)
+      .slice(0, 5);
+
+    res.json({
+      period, from: f, to: t, can_view_amounts: showAmt,
+      sales: {
+        order_count: s.order_count,
+        shipped_count: s.shipped_count,
+        fully_count: s.fully_count,
+        total_value: showAmt ? num(s.total_value) : null,
+        collected: showAmt ? num(m.collected) : null,
+        debt: showAmt ? num(m.debt) : null,
+        delivered_value: showAmt ? num(s.delivered_value) : null,
+        undelivered_value: showAmt ? num(s.undelivered_value) : null,
+      },
+      production: {
+        request_count: poCountQ.rows[0].n,
+        active_count: nv.active_po,
+        short_count: nv.short_po,
+        enough_count: Math.max(0, nv.active_po - nv.short_po),
+        low_materials: lowQ.rows.map((r) => ({ name: r.name, on_hand: Math.round(Number(r.on_hand) || 0), unit: r.unit || 'KG' })),
+      },
+      workforce: {
+        worker_count: workerCntQ.rows[0].n,
+        avg_per_hour: totHours > 0 ? Math.round(totActual / totHours) : 0,
+        top,
+      },
+      // Công nợ phải thu (as-of-now) — cho tab Kinh doanh; chỉ trả khi có quyền xem tiền
+      receivables: showAmt ? (() => {
+        const a = agQ.rows[0];
+        return {
+          overdue_days: 30,
+          total_debt: num(a.total_debt),
+          billed_total: num(billQ.rows[0].billed),
+          collected_total: num(billQ.rows[0].paid),
+          customer_count: a.customer_count,
+          overdue_amount: num(a.overdue_amount),
+          intime_amount: num(a.intime_amount),
+          overdue_count: a.overdue_count,
+          buckets: { lt6m: num(a.b_lt6m), m6_12: num(a.b_6_12), y1_2: num(a.b_1_2), gt2: num(a.b_gt2) },
+          by_customer: custQ.rows.map((r) => ({
+            name: r.name, debt: num(r.debt),
+            lt6m: num(r.b_lt6m), m6_12: num(r.b_6_12), y1_2: num(r.b_1_2), gt2: num(r.b_gt2),
+          })),
+        };
+      })() : null,
+    });
+  } catch (err) { console.error(err); res.status(500).json({ message: 'L\u1ed7i khi l\u1ea5y b\u00e1o c\u00e1o gi\u00e1m \u0111\u1ed1c' }); }
+};
+

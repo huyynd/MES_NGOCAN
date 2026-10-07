@@ -22,7 +22,7 @@ async function main() {
   try {
     console.log(`📦 Đang nạp schema từ: ${schemaFile}`);
     const sql = fs.readFileSync(schemaFile, 'utf8');
-    const postMigrationMarker = '-- POST-MIGRATION (idempotent)';
+    const postMigrationMarker = '-- POST-MIGRATION';
     const postMigrationIndex = sql.indexOf(postMigrationMarker);
 
     if (postMigrationIndex === -1) {

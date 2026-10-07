@@ -12,7 +12,7 @@ SET idle_in_transaction_session_timeout = 0;
 SET transaction_timeout = 0;
 SET client_encoding = 'UTF8';
 SET standard_conforming_strings = on;
-SELECT pg_catalog.set_config('search_path', '', false);
+SELECT pg_catalog.set_config('search_path', 'public', false);
 SET check_function_bodies = false;
 SET xmloption = content;
 SET client_min_messages = warning;
@@ -196,7 +196,7 @@ CREATE TABLE public.delivery_notes (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     paid_amount numeric(16,2) DEFAULT 0 NOT NULL,
-    CONSTRAINT delivery_notes_status_check CHECK (((status)::text = ANY ((ARRAY['Đã xuất hóa đơn'::character varying, 'Chờ thanh toán'::character varying, 'Đã thanh toán 1 phần'::character varying, 'Đã thanh toán'::character varying, 'Đã hủy'::character varying])::text[])))
+    CONSTRAINT delivery_notes_status_check CHECK (((status)::text = ANY ((ARRAY['Bản nháp'::character varying, 'Giao hàng'::character varying, 'Đã xuất hóa đơn'::character varying, 'Chờ thanh toán'::character varying, 'Đã thanh toán 1 phần'::character varying, 'Đã thanh toán'::character varying, 'Đã hủy'::character varying])::text[])))
 );
 
 
@@ -2215,3 +2215,72 @@ ALTER TABLE public.sales_order_items ADD COLUMN IF NOT EXISTS unit_price numeric
 ALTER TABLE public.delivery_note_items ADD COLUMN IF NOT EXISTS actual_quantity numeric;
 ALTER TABLE public.delivery_note_items ADD COLUMN IF NOT EXISTS sales_order_item_id uuid REFERENCES public.sales_order_items(id);
 
+-- 6) Phiếu giao hàng: thêm trạng thái "Bản nháp" (mặc định khi tạo) + "Giao hàng"
+--    (nút Giao hàng tạo phiếu xuất kho "Giao hàng cho khách" + trừ tồn Kho Thành phẩm)
+ALTER TABLE public.delivery_notes DROP CONSTRAINT IF EXISTS delivery_notes_status_check;
+ALTER TABLE public.delivery_notes ADD CONSTRAINT delivery_notes_status_check
+  CHECK ((status)::text = ANY (ARRAY['Bản nháp','Giao hàng','Đã xuất hóa đơn','Chờ thanh toán','Đã thanh toán 1 phần','Đã thanh toán','Đã hủy']::text[]));
+
+-- 7) Module Tái chế (phế phẩm → cuộn PE): phiếu tái chế + các cuộn PE thu về.
+--    Trước đây 2 bảng này tạo tay ngoài schema → DB dựng mới bị thiếu, module lỗi ngay.
+CREATE TABLE IF NOT EXISTS public.recycling_tickets (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  ticket_code varchar(100) NOT NULL UNIQUE,
+  status varchar(50) DEFAULT 'Chờ cân',
+  export_date date,
+  scrap_warehouse_id uuid,
+  expected_qty numeric(15,3) DEFAULT 0,
+  third_party_name varchar(255),
+  internal_scrap_qty numeric(15,3) DEFAULT 0,
+  mixed_scrap_qty numeric(15,3) DEFAULT 0,
+  weighing_person varchar(100),
+  weighing_time timestamp,
+  total_received_qty numeric(15,3) DEFAULT 0,
+  loss_qty numeric(15,3) DEFAULT 0,
+  import_warehouse_id uuid,
+  product_id uuid,
+  note text,
+  created_by varchar(100),
+  created_at timestamp DEFAULT now(),
+  updated_at timestamp DEFAULT now(),
+  completed_at timestamp
+);
+CREATE TABLE IF NOT EXISTS public.recycling_rolls (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  ticket_id uuid REFERENCES public.recycling_tickets(id) ON DELETE CASCADE,
+  roll_code varchar(100) NOT NULL,
+  pe_type varchar(100),
+  weight numeric(15,3) DEFAULT 0,
+  unit varchar(20) DEFAULT 'kg',
+  note text,
+  created_at timestamp DEFAULT now()
+);
+
+
+-- 8) Hiệu năng & toàn vẹn: index cho các cột FK hay join/lọc (giảm seq-scan trong
+--    các subquery theo dòng), + cột ad-hoc của module Ghi phế (trước đây ALTER lúc chạy).
+ALTER TABLE public.daily_scrap_records ADD COLUMN IF NOT EXISTS employee_id uuid REFERENCES public.employees(id);
+ALTER TABLE public.daily_scrap_records ADD COLUMN IF NOT EXISTS recorder_name character varying;
+
+CREATE INDEX IF NOT EXISTS idx_dni_delivery_note        ON public.delivery_note_items (delivery_note_id);
+CREATE INDEX IF NOT EXISTS idx_dni_sales_order_item     ON public.delivery_note_items (sales_order_item_id);
+CREATE INDEX IF NOT EXISTS idx_dn_customer              ON public.delivery_notes (customer_id);
+CREATE INDEX IF NOT EXISTS idx_dn_sales_order           ON public.delivery_notes (sales_order_id);
+CREATE INDEX IF NOT EXISTS idx_soi_sales_order          ON public.sales_order_items (sales_order_id);
+CREATE INDEX IF NOT EXISTS idx_soi_product              ON public.sales_order_items (product_id);
+CREATE INDEX IF NOT EXISTS idx_po_sales_order           ON public.production_orders (sales_order_id);
+CREATE INDEX IF NOT EXISTS idx_po_sales_order_item      ON public.production_orders (sales_order_item_id);
+CREATE INDEX IF NOT EXISTS idx_po_product               ON public.production_orders (product_id);
+CREATE INDEX IF NOT EXISTS idx_pt_production_order      ON public.production_tasks (production_order_id);
+CREATE INDEX IF NOT EXISTS idx_pt_assigned_worker_id    ON public.production_tasks (assigned_worker_id);
+CREATE INDEX IF NOT EXISTS idx_pom_production_order     ON public.production_order_materials (production_order_id);
+CREATE INDEX IF NOT EXISTS idx_pom_material             ON public.production_order_materials (material_id);
+CREATE INDEX IF NOT EXISTS idx_stock_product            ON public.inventory_stock (product_id);
+CREATE INDEX IF NOT EXISTS idx_stock_location           ON public.inventory_stock (location_id);
+CREATE INDEX IF NOT EXISTS idx_trx_product              ON public.inventory_transactions (product_id);
+CREATE INDEX IF NOT EXISTS idx_trx_ref_code             ON public.inventory_transactions (ref_code);
+CREATE INDEX IF NOT EXISTS idx_osl_slip                 ON public.outbound_slip_lines (slip_id);
+CREATE INDEX IF NOT EXISTS idx_os_prod_order            ON public.outbound_slips (prod_order_id);
+CREATE INDEX IF NOT EXISTS idx_recroll_ticket           ON public.recycling_rolls (ticket_id);
+CREATE INDEX IF NOT EXISTS idx_dsi_record               ON public.daily_scrap_items (record_id);
+CREATE INDEX IF NOT EXISTS idx_locations_warehouse      ON public.locations (warehouse_id);

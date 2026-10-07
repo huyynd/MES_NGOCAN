@@ -56,6 +56,8 @@ const STATUS_COLORS = {
   "Đã vận chuyển, chưa thanh toán": "bg-orange-50 text-orange-700",
   "Đã thanh toán": "bg-cyan-50 text-cyan-700",
   // Phiếu giao hàng & thanh toán
+  "Bản nháp": "bg-slate-100 text-slate-600",
+  "Giao hàng": "bg-emerald-50 text-emerald-700",
   "Đã xuất hóa đơn": "bg-blue-50 text-blue-700",
   "Chờ thanh toán": "bg-amber-50 text-amber-700",
   "Đã thanh toán 1 phần": "bg-orange-50 text-orange-700",
