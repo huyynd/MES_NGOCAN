@@ -76,6 +76,7 @@ function AdjustModal({ lookups, onClose, onSaved }) {
   const save = async () => {
     if (!f.product_id) return toast.error("Chọn sản phẩm");
     if (!f.quantity || Number(f.quantity) <= 0) return toast.error("Nhập số lượng hợp lệ");
+    if (!f.location_id) return toast.error("Chọn kho / vị trí");
     try { await inventory.adjust({ ...f, specs }); toast.success("Đã ghi nhận giao dịch thành công"); onSaved(); }
     catch (e) { toast.error("Lỗi: " + e.message); }
   };

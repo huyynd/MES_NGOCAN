@@ -29,3 +29,17 @@ pgadmin-servers.json
 
 # Claude Code local settings (per-máy, có thể chứa secrets) — không commit
 .claude/settings.local.json
+
+# Mobile app (repo riêng: xone184/MES_Mobile)
+/mobile/
+
+# File test & tài liệu rà soát/test — TUYỆT ĐỐI KHÔNG đẩy lên, chỉ giữ local
+docs/ai/
+backend/test_ecc.js
+test_*.js
+_test*.js
+backend/test_*.js
+backend/_test*.js
+*.test.js
+test-*.js
+backend/test-*.js

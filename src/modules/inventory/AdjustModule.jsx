@@ -48,6 +48,7 @@ function AdjustForm({ lookups, onSaved }) {
 
   const save = async () => {
     if (!form.product_id) return toast.error("Chọn sản phẩm cần điều chỉnh");
+    if (!form.location_id) return toast.error("Chọn kho / vị trí cần điều chỉnh");
     if (form.actual_qty === "" || Number(form.actual_qty) < 0) return toast.error("Nhập số lượng thực tế (≥ 0)");
     if (delta === 0) return toast.error("Số lượng thực tế bằng hệ thống, không cần điều chỉnh");
 

@@ -1,6 +1,22 @@
 const db = require('../../core/db');
 const { applyStock } = require('../../core/lib/stock');
 
+// L63: SL PE nhận về được vượt SL phế đã cân tối đa 10% (sai số cân 2 đầu / độ ẩm).
+// Vượt quá → gần như chắc nhập nhầm số, chặn để không thổi phồng tồn PE và báo cáo hao hụt.
+const RECEIVE_TOLERANCE = 0.10;
+// L35: Cuộn PE tái chế được nhập vào kho Bán thành phẩm hoặc kho NVL (dùng lại làm hạt).
+const PE_IMPORT_WAREHOUSE_TYPES = ['BTP', 'NVL'];
+
+// Trả thông báo lỗi nếu SL nhận vượt dung sai so với SL cân, ngược lại null.
+function receivedOverTolerance(expectedQty, receivedQty) {
+  const expected = Number(expectedQty) || 0;
+  const max = expected * (1 + RECEIVE_TOLERANCE);
+  if (receivedQty > max + 1e-6) {
+    return `SL PE nhận (${receivedQty} kg) vượt quá SL phế đã cân (${expected} kg) + ${RECEIVE_TOLERANCE * 100}% (tối đa ${Math.round(max * 1000) / 1000} kg) — kiểm tra lại số cân.`;
+  }
+  return null;
+}
+
 exports.list = async (req, res) => {
   try {
     const { rows } = await db.query(`
@@ -145,6 +161,23 @@ exports.receiveRolls = async (req, res) => {
 
     await client.query('BEGIN');
 
+    // L44: chỉ ghi nhận cuộn khi phiếu "Đang tái chế" — sau Hoàn thành, kho PE đã nhập theo tổng nhận cũ,
+    // sửa cuộn lúc đó làm phiếu / kho / hao hụt lệch nhau. FOR UPDATE: không chạy song song với "Hoàn thành".
+    const t = (await client.query(
+      `SELECT status, expected_qty FROM recycling_tickets WHERE id = $1 FOR UPDATE`, [ticketId])).rows[0];
+    if (!t) { await client.query('ROLLBACK'); return res.status(404).json({ message: 'Không tìm thấy phiếu' }); }
+    if (t.status !== 'Đang tái chế') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: `Phiếu đang "${t.status}" — chỉ ghi nhận cuộn PE khi phiếu "Đang tái chế".` });
+    }
+    if (!Array.isArray(rolls) || !rolls.length || rolls.some((r) => !r || !Number.isFinite(Number(r.weight)) || Number(r.weight) < 0)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: 'Danh sách cuộn trống hoặc có cuộn khối lượng không hợp lệ (phải là số ≥ 0).' });
+    }
+    // L63: kiểm dung sai ngay khi ghi nhận (báo sai sớm), chặn lại lần nữa ở bước Hoàn thành
+    const overMsg = receivedOverTolerance(t.expected_qty, rolls.reduce((s, r) => s + Number(r.weight), 0));
+    if (overMsg) { await client.query('ROLLBACK'); return res.status(400).json({ message: overMsg }); }
+
     // Xóa cuộn cũ nếu có (để update)
     await client.query(`DELETE FROM recycling_rolls WHERE ticket_id = $1`, [ticketId]);
 
@@ -189,12 +222,32 @@ exports.complete = async (req, res) => {
     await client.query('BEGIN');
 
     // Lấy thông tin phiếu
-    const tQuery = await client.query(`SELECT * FROM recycling_tickets WHERE id = $1 AND status = 'Đang tái chế'`, [ticketId]);
+    const tQuery = await client.query(`SELECT * FROM recycling_tickets WHERE id = $1 AND status = 'Đang tái chế' FOR UPDATE`, [ticketId]);
     if (tQuery.rows.length === 0) {
       await client.query('ROLLBACK');
       return res.status(400).json({ message: 'Phiếu không ở trạng thái có thể hoàn thành' });
     }
     const ticket = tQuery.rows[0];
+
+    // L63: chặn cuối — SL nhận đã lưu không được vượt SL cân quá dung sai
+    const overMsg = receivedOverTolerance(ticket.expected_qty, Number(ticket.total_received_qty) || 0);
+    if (overMsg) { await client.query('ROLLBACK'); return res.status(400).json({ message: overMsg }); }
+
+    // L35: bắt buộc kho nhập hợp lệ (đúng loại, có vị trí). Trước đây thiếu kho → tồn PE ghi location NULL:
+    // không hiện ở cây kho, không xuất/giao được.
+    if (!import_warehouse_id) { await client.query('ROLLBACK'); return res.status(400).json({ message: 'Vui lòng chọn kho nhập Cuộn PE.' }); }
+    const wh = (await client.query(
+      `SELECT w.warehouse_type, l.id AS location_id
+       FROM warehouses w
+       LEFT JOIN locations l ON l.warehouse_id = w.id AND l.is_deleted = FALSE
+       WHERE w.id = $1 AND w.is_deleted = FALSE
+       ORDER BY l.created_at LIMIT 1`, [import_warehouse_id])).rows[0];
+    if (!wh) { await client.query('ROLLBACK'); return res.status(400).json({ message: 'Kho nhập không tồn tại.' }); }
+    if (!PE_IMPORT_WAREHOUSE_TYPES.includes(wh.warehouse_type)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: `Cuộn PE chỉ nhập vào kho ${PE_IMPORT_WAREHOUSE_TYPES.join(' hoặc ')} (kho đã chọn: ${wh.warehouse_type}).` });
+    }
+    if (!wh.location_id) { await client.query('ROLLBACK'); return res.status(400).json({ message: 'Kho nhập chưa có vị trí — hãy tạo vị trí kho trước.' }); }
 
     // Tính hao hụt
     const loss_qty = Number(ticket.expected_qty) - Number(ticket.total_received_qty);
@@ -215,9 +268,8 @@ exports.complete = async (req, res) => {
       WHERE id = $3
     `, [import_warehouse_id, loss_qty, ticketId]);
 
-    // Tìm location mặc định của kho nhập PE
-    const locRes = await client.query(`SELECT id FROM locations WHERE warehouse_id = $1 LIMIT 1`, [import_warehouse_id]);
-    const locationId = locRes.rows[0]?.id || null;
+    // Vị trí mặc định của kho nhập PE (đã kiểm ở trên: luôn có)
+    const locationId = wh.location_id;
 
     // Nhập kho PE QUA applyStock (sổ cái khớp tồn, không đi vòng qua inventory_stock)
     if (Number(ticket.total_received_qty) > 0) {

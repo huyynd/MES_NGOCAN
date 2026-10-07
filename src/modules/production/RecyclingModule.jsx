@@ -352,10 +352,12 @@ function TicketModal({ ticket, initialStep, warehouses, onClose, onSuccess }) {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1">Kho nhập (Kho BTP)</label>
+                <label className="block text-sm font-medium text-slate-600 mb-1">Kho nhập (Kho BTP / NVL)</label>
                 <select className={inputCls} value={s4.import_warehouse_id} onChange={e => setS4({...s4, import_warehouse_id: e.target.value})} disabled={isCompleted || ticket.status !== 'Đang tái chế'}>
                   <option value="">-- Chọn kho nhập --</option>
-                  {warehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+                  {/* Cuộn PE chỉ nhập kho BTP hoặc NVL (backend cũng chặn); phiếu cũ đã chọn kho khác vẫn hiển thị */}
+                  {warehouses.filter(w => ['BTP', 'NVL'].includes(w.warehouse_type) || w.id === s4.import_warehouse_id)
+                    .map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
                 </select>
               </div>
             </div>

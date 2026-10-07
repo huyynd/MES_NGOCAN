@@ -208,6 +208,12 @@ exports.adjust = async (req, res) => {
       return res.status(400).json({ message: 'Số lượng phải là một số khác 0.' });
     if ((b.trx_type === 'Nhập' || b.trx_type === 'Xuất') && _qn <= 0)
       return res.status(400).json({ message: 'Số lượng Nhập/Xuất phải lớn hơn 0.' });
+    // M14: bắt buộc vị trí kho hợp lệ — tồn không có vị trí (location_id NULL) không hiện ở cây kho,
+    // không chuyển/xuất/giao được (mọi luồng đó JOIN qua locations).
+    if (!b.location_id) return res.status(400).json({ message: 'Vui lòng chọn kho / vị trí.' });
+    const locOk = (await client.query(
+      `SELECT 1 FROM locations WHERE id = $1 AND is_deleted = FALSE`, [b.location_id])).rowCount;
+    if (!locOk) return res.status(400).json({ message: 'Vị trí kho không tồn tại hoặc đã bị xoá.' });
 
     if (!req.user.is_admin) {
       let reqApp = 'inventory';
@@ -461,36 +467,34 @@ exports.transfer = async (req, res) => {
     const lot = b.lot_code || '';
     const unit = upUnit(b.unit);
 
-    // Chặn cứng: kiểm tra tồn kho tại kho nguồn trước khi bắt đầu transaction
-    const onHandRow = await db.query(
-      `SELECT COALESCE(SUM(quantity), 0)::numeric AS q
-       FROM inventory_stock
-       WHERE product_id = $1 AND location_id = $2`,
-      [b.product_id, b.from_location_id]
-    );
-    const onHand = Number(onHandRow.rows[0].q);
-    if (qty > onHand) {
-      const prod = (await db.query(`SELECT product_code, product_name FROM products WHERE id = $1`, [b.product_id])).rows[0] || {};
-      return res.status(400).json({
-        message: `Không đủ tồn kho tại kho nguồn — ${prod.product_code} ${prod.product_name}: tồn ${onHand}, cần chuyển ${qty}`,
-      });
-    }
-
-    const fromLoc = (await db.query(`SELECT l.name, w.name AS wname FROM locations l LEFT JOIN warehouses w ON w.id = l.warehouse_id WHERE l.id = $1`, [b.from_location_id])).rows[0];
-    const toLoc   = (await db.query(`SELECT l.name, w.name AS wname FROM locations l LEFT JOIN warehouses w ON w.id = l.warehouse_id WHERE l.id = $1`, [b.to_location_id])).rows[0];
+    // M01: mọi truy vấn đi qua `client` đang giữ — không xin thêm kết nối từ pool (db.query),
+    // tránh 10 request cùng giữ 10 kết nối rồi chờ nhau mãi (treo toàn bộ API).
+    const fromLoc = (await client.query(`SELECT l.name, w.name AS wname FROM locations l LEFT JOIN warehouses w ON w.id = l.warehouse_id WHERE l.id = $1`, [b.from_location_id])).rows[0];
+    const toLoc   = (await client.query(`SELECT l.name, w.name AS wname FROM locations l LEFT JOIN warehouses w ON w.id = l.warehouse_id WHERE l.id = $1`, [b.to_location_id])).rows[0];
     const fromLabel = fromLoc ? `${fromLoc.wname || ''} · ${fromLoc.name}` : b.from_location_id;
     const toLabel   = toLoc   ? `${toLoc.wname   || ''} · ${toLoc.name}`   : b.to_location_id;
 
     await client.query('BEGIN');
 
-    // Chuyển theo FIFO các lô nguồn thật (giữ nguyên spec_key + lô để không tạo dòng '' ảo)
+    // M13: đọc tồn nguồn TRONG transaction, khoá dòng (FOR UPDATE) → kiểm đủ và trừ trên cùng số liệu.
+    // Có chọn lô → chỉ lấy đúng lô đó (trước đây bỏ qua lô, lấy FIFO lô khác).
+    // Giữ nguyên spec_key + lô khi chuyển để không tạo dòng '' ảo.
     const { rows: srcRows } = await client.query(
       `SELECT spec_key, specs, lot_code, quantity, unit FROM inventory_stock
-       WHERE product_id = $1 AND location_id = $2 AND quantity > 0 ORDER BY id ASC`,
-      [b.product_id, b.from_location_id]);
+       WHERE product_id = $1 AND location_id = $2 AND quantity > 0 AND ($3 = '' OR lot_code = $3)
+       ORDER BY id ASC FOR UPDATE`,
+      [b.product_id, b.from_location_id, lot]);
+    const onHand = srcRows.reduce((s, r) => s + Number(r.quantity), 0);
+    if (qty > onHand + 1e-9) {
+      await client.query('ROLLBACK');
+      const prod = (await client.query(`SELECT product_code, product_name FROM products WHERE id = $1`, [b.product_id])).rows[0] || {};
+      return res.status(400).json({
+        message: `Không đủ tồn kho tại kho nguồn${lot ? ` (lô ${lot})` : ''} — ${prod.product_code || ''} ${prod.product_name || ''}: tồn ${onHand}, cần chuyển ${qty}`,
+      });
+    }
     let remain = qty;
     for (const sr of srcRows) {
-      if (remain <= 0) break;
+      if (remain <= 1e-9) break;
       const take = Math.min(remain, Number(sr.quantity));
       const common = { product_id: b.product_id, unit: sr.unit || unit, specs: sr.specs || {}, spec_key: sr.spec_key, lot_code: sr.lot_code || '', clampZero: false };
       // 1. Xuất khỏi kho nguồn

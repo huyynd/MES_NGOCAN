@@ -18,6 +18,10 @@ const poolConfig = process.env.DATABASE_URL
 const pool = new Pool({
   ...poolConfig,
   max: 10,
+  // M01: không chờ kết nối vô hạn — pool cạn thì request lỗi sau 10s thay vì treo cả hệ thống.
+  connectionTimeoutMillis: 10000,
+  // Phiên bỏ dở giữa transaction (lỗi code / client mất kết nối) tự huỷ sau 30s, trả kết nối về pool.
+  idle_in_transaction_session_timeout: 30000,
 });
 
 module.exports = { query: (text, params) => pool.query(text, params), pool };

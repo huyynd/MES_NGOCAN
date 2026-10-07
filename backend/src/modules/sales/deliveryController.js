@@ -232,27 +232,41 @@ exports.ship = async (req, res) => {
     const lines = [...byKey.values()];
     if (!lines.length) return res.status(400).json({ message: 'Phiếu chưa có dòng hàng có số lượng giao > 0.' });
 
-    // Phân bổ FIFO + kiểm tra đủ tồn trước khi trừ.
-    // Ưu tiên ĐÚNG thông số (spec_key khớp) trước, rồi kho Thành phẩm, rồi FIFO; chỉ lấy ở NVL/BTP/TP.
+    // Phân bổ FIFO + kiểm tra đủ tồn trước khi trừ (chỉ lấy ở NVL/BTP/TP, ưu tiên kho Thành phẩm).
+    // M10: dòng CÓ thông số (giao theo đơn) → chỉ lấy đúng spec_key, thiếu thì báo thiếu
+    //      (trước đây chỉ ưu tiên rồi lấy bù biến thể khác → giao nhầm màu/kích thước).
+    //      Dòng KHÔNG thông số (bán hàng tồn kho không theo đơn) → lấy mọi biến thể như cũ.
+    // M11: theo dõi lượng còn lại của từng dòng tồn (`left`) để các dòng phiếu không dùng trùng
+    //      một dòng tồn; xử lý dòng có thông số trước để dòng "bất kỳ" không lấy mất hàng của chúng.
+    const EMPTY_SPEC = buildSpecKey({});
+    lines.sort((a, b) => Number(a.spec_key === EMPTY_SPEC) - Number(b.spec_key === EMPTY_SPEC));
+    const left = new Map(); // `${location_id}|${lot_code}|${spec_key}` → lượng còn lại sau các dòng trước
+    const rowKey = (r) => `${r.location_id}|${r.lot_code || ''}|${r.spec_key}`;
     const shortages = [], allocations = [];
     for (const l of lines) {
       const need = Number(l.qty);
+      const strict = l.spec_key !== EMPTY_SPEC;
       const { rows: stockRows } = await client.query(
         `SELECT s.location_id, s.lot_code, s.quantity, s.unit, s.spec_key, s.specs
          FROM inventory_stock s
          JOIN locations lo ON lo.id = s.location_id
          JOIN warehouses w ON w.id = lo.warehouse_id
          WHERE s.product_id = $1 AND s.quantity > 0 AND w.warehouse_type IN ('NVL','BTP','TP')
+           AND (NOT $3::boolean OR s.spec_key = $2)
          ORDER BY (s.spec_key = $2) DESC, (w.warehouse_type = 'TP') DESC, s.id ASC`,
-        [l.product_id, l.spec_key]);
-      const onHand = stockRows.reduce((s, r) => s + Number(r.quantity), 0);
+        [l.product_id, l.spec_key, strict]);
+      const avail = (r) => (left.has(rowKey(r)) ? left.get(rowKey(r)) : Number(r.quantity));
+      const onHand = stockRows.reduce((s, r) => s + avail(r), 0);
       if (need > onHand + 1e-6) {
-        shortages.push({ name: l.product_name, unit: l.unit || '', on_hand: onHand, need, lack: need - onHand });
+        shortages.push({ name: l.product_name + (strict ? ` (đúng thông số ${l.spec_key.split('|').filter(Boolean).join(', ')})` : ''), unit: l.unit || '', on_hand: onHand, need, lack: need - onHand });
       } else {
         let remain = need;
         for (const sr of stockRows) {
           if (remain <= 1e-9) break;
-          const take = Math.min(remain, Number(sr.quantity));
+          const a = avail(sr);
+          if (a <= 1e-9) continue;
+          const take = Math.min(remain, a);
+          left.set(rowKey(sr), a - take);
           allocations.push({ product_id: l.product_id, location_id: sr.location_id, lot_code: sr.lot_code || '', spec_key: sr.spec_key, specs: sr.specs || {}, quantity: take, unit: l.unit || sr.unit });
           remain -= take;
         }

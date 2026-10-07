@@ -1,5 +1,17 @@
 const db = require('../../core/db');
 
+// L67: "Đã sản xuất" của một lệnh = Σ lần HOÀN THÀNH ở CÔNG ĐOẠN CUỐI (có Cắt → Cắt, không → Thổi).
+// Cùng định nghĩa với recomputeOrder / produced_qty ở productionController. Trước đây cộng mọi
+// công đoạn, mọi trạng thái → lệnh Thổi 1000 + Cắt 1000 báo "đã SX 2000" (200%), lại cộng kg với cái.
+const DONE_BY_ORDER = `
+        SELECT t.production_order_id, SUM(COALESCE(t.actual_qty, t.quantity)) AS done_qty
+        FROM production_tasks t
+        WHERE t.status = 'Hoàn thành'
+          AND t.stage = (CASE WHEN EXISTS (SELECT 1 FROM production_tasks tf
+                                           WHERE tf.production_order_id = t.production_order_id AND tf.stage = 'Cắt')
+                              THEN 'Cắt' ELSE 'Thổi' END)
+        GROUP BY t.production_order_id`;
+
 exports.kpi = async (req, res) => {
   try {
     const kpi = await db.query(`
@@ -102,8 +114,7 @@ exports.detailed = async (req, res) => {
         COUNT(*) FILTER (WHERE po.due_date < CURRENT_DATE AND po.status NOT IN ('Hoàn thành', 'Đã hủy'))::int AS overdue
       FROM production_orders po
       LEFT JOIN (
-        SELECT production_order_id, SUM(actual_qty) AS done_qty
-        FROM production_tasks GROUP BY production_order_id
+        ${DONE_BY_ORDER}
       ) pt ON pt.production_order_id = po.id
       WHERE ${whereClause}
     `, params);
@@ -115,8 +126,7 @@ exports.detailed = async (req, res) => {
              COUNT(*)::int AS cnt
       FROM production_orders po
       LEFT JOIN (
-        SELECT production_order_id, SUM(actual_qty) AS done_qty
-        FROM production_tasks GROUP BY production_order_id
+        ${DONE_BY_ORDER}
       ) pt ON pt.production_order_id = po.id
       WHERE ${whereClause}
       GROUP BY po.status
@@ -129,8 +139,7 @@ exports.detailed = async (req, res) => {
              COALESCE(SUM(COALESCE(pt.done_qty, 0)), 0) AS done_qty
       FROM production_orders po
       LEFT JOIN (
-        SELECT production_order_id, SUM(actual_qty) AS done_qty
-        FROM production_tasks GROUP BY production_order_id
+        ${DONE_BY_ORDER}
       ) pt ON pt.production_order_id = po.id
       WHERE ${whereClause}
       GROUP BY po.planned_date
@@ -155,8 +164,7 @@ exports.detailed = async (req, res) => {
       JOIN products p ON p.id = po.product_id
       LEFT JOIN customers c ON c.id = po.customer_id
       LEFT JOIN (
-        SELECT production_order_id, SUM(actual_qty) AS done_qty
-        FROM production_tasks GROUP BY production_order_id
+        ${DONE_BY_ORDER}
       ) pt ON pt.production_order_id = po.id
       WHERE ${whereClause}
       ORDER BY po.created_at DESC
