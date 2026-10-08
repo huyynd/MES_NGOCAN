@@ -29,10 +29,17 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
   const [taskSeq, setTaskSeq] = useState(1);
   const [collapsed, setCollapsed] = useState({}); // { [stage]: true } = đang thu gọn
   const toggleStage = (s) => setCollapsed((c) => ({ ...c, [s]: !c[s] }));
+  // Sản phẩm đầu ra mặc định theo công đoạn: Cắt → SP của lệnh (bao bì);
+  // Thổi → SP của lệnh nếu lệnh là bán thành phẩm (bán cuộn), ngược lại = cuộn cấu hình.
+  const outputDefault = (stage) => {
+    if (stage === 'Cắt') return f.product_id || "";
+    if (meta?.product_type === 'Bán thành phẩm') return f.product_id || "";
+    return meta?.default_roll_product_id || "";
+  };
   // Thêm 1 "lần làm" (task con) cho một công đoạn (cha)
   const addTaskFor = (stage) => {
     setCollapsed((c) => ({ ...c, [stage]: false })); // mở nhóm khi thêm lần mới
-    setTasks((a) => [...a, { _k: taskSeq, stage, quantity: "", actual_qty: "", scrap_qty: "", machine_id: "", shift: "", planned_date: "", planned_end_date: "", assigned_team: "", assigned_worker: "", assigned_worker_id: "", status: "Chờ" }]);
+    setTasks((a) => [...a, { _k: taskSeq, stage, quantity: "", actual_qty: "", scrap_qty: "", machine_id: "", shift: "", planned_date: "", planned_end_date: "", assigned_team: "", assigned_worker: "", assigned_worker_id: "", status: "Chờ", output_product_id: outputDefault(stage) }]);
     setTaskSeq((s) => s + 1);
   };
   const addTask = () => addTaskFor("Thổi");
@@ -105,7 +112,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
             planned_date: defaults.planned_date || "", planned_end_date: "",
             assigned_team: teamMatch ? defaults.assigned_team : "", assigned_worker: teamMatch ? defaults.assigned_worker : "",
             assigned_worker_id: teamMatch ? (defaults.assigned_worker_id || "") : "",
-            status: "Chờ", note: s.name || ""
+            status: "Chờ", note: s.name || "", output_product_id: outputDefault(stage)
           });
           seq++;
         });
@@ -196,6 +203,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
             machine_id: t.machine_id || "", shift: t.shift || "",
             planned_date: t.planned_date?.slice(0, 10) || "", planned_end_date: t.planned_end_date?.slice(0, 10) || "",
             assigned_team: t.assigned_team || "", assigned_worker: t.assigned_worker || "", assigned_worker_id: t.assigned_worker_id || "", status: t.status,
+            output_product_id: t.output_product_id || "",
           })));
           setTaskSeq(rows.length + 1);
         } else {
@@ -693,6 +701,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
                 <tr>
                   <th className="text-left py-2 font-medium min-w-[110px]">Công đoạn</th>
                   <th className="text-left py-2 font-medium min-w-[110px]">Sản lượng</th>
+                  <th className="text-left py-2 font-medium min-w-[200px]">Sản phẩm đầu ra</th>
                   <th className="text-left py-2 font-medium min-w-[180px]">Máy</th>
                   <th className="text-left py-2 font-medium min-w-[100px]">Ca</th>
                   <th className="text-left py-2 font-medium min-w-[140px]">Từ ngày</th>
@@ -734,7 +743,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
                           </td>
                           {/* SẢN LƯỢNG (kế hoạch): tổng cho phép các lần — trung tính, không ràng buộc */}
                           <td className="py-2 pr-2 font-medium text-slate-500 cursor-pointer" onClick={() => toggleStage(stg)} title="Tổng sản lượng cho phép của các lần (kế hoạch)">Σ KH {fmt(sumQty)}</td>
-                          <td colSpan={6} className="cursor-pointer py-2 pr-2" onClick={() => toggleStage(stg)}>
+                          <td colSpan={7} className="cursor-pointer py-2 pr-2" onClick={() => toggleStage(stg)}>
                             {stg === "Cắt" && rollAvail && (
                               <span className="inline-flex items-center gap-1.5 text-xs font-medium text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-full px-2.5 py-0.5">
                                 🧵 Tồn cuộn khả dụng: {fmt(rollAvail.total_kg)} kg ({rollAvail.spec_label})
@@ -756,6 +765,15 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
                           <tr key={t._k} className={`border-b border-slate-100${rowLocked ? " bg-emerald-50/40" : ""}`}>
                             <td className="py-1.5 pr-2 pl-8">{rowLocked && <Lock size={13} className="text-emerald-600 inline" />}</td>
                             <td className="py-1.5 pr-2"><input disabled={dis} type="number" min="0" className={`${inputCls}${qtyOver ? " !border-rose-400 !ring-2 !ring-rose-200" : ""}`} value={t.quantity} onChange={(e) => upTask(t._k, "quantity", e.target.value)} title={qtyOver ? `Sản lượng 1 lần vượt 150% SL cần SX (tối đa ${fmt(capStage)})` : undefined} /></td>
+                            <td className="py-1.5 pr-2">
+                              <select disabled={dis} className={inputCls} value={t.output_product_id || ""} onChange={(e) => upTask(t._k, "output_product_id", e.target.value)}
+                                title={stg === "Thổi" ? "Cuộn tạo ra (nhập kho BTP)" : "Bao bì thành phẩm (nhập kho TP)"}>
+                                <option value="">{stg === "Thổi" ? "-- Cuộn mặc định --" : "-- Bao bì (SP lệnh) --"}</option>
+                                {(lookups.products || []).filter((p) => p.product_type !== "Nguyên vật liệu").map((p) => (
+                                  <option key={p.id} value={p.id}>{p.product_code} · {p.product_name}</option>
+                                ))}
+                              </select>
+                            </td>
                             <td className="py-1.5 pr-2"><select disabled={dis} className={inputCls} value={t.machine_id} onChange={(e) => upTask(t._k, "machine_id", e.target.value)}><option value="">-- Chọn máy --</option>{machinesForStage.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</select></td>
                             <td className="py-1.5 pr-2"><select disabled={dis} className={inputCls} value={t.shift} onChange={(e) => upTask(t._k, "shift", e.target.value)}><option value="">--</option>{(lookups.shifts || []).map((c) => <option key={c}>{c}</option>)}</select></td>
                             <td className="py-1.5 pr-2"><input disabled={dis} type="date" className={inputCls} value={t.planned_date} onChange={(e) => upTask(t._k, "planned_date", e.target.value)} /></td>
@@ -800,7 +818,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
                     );
                   });
                 })()}
-                {!tasks.length && <tr><td colSpan={12} className="py-4 text-center text-slate-400 text-sm">Chưa có phân công. Bấm "＋ Thổi" hoặc "＋ Cắt" để thêm lần làm.</td></tr>}
+                {!tasks.length && <tr><td colSpan={13} className="py-4 text-center text-slate-400 text-sm">Chưa có phân công. Bấm "＋ Thổi" hoặc "＋ Cắt" để thêm lần làm.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -1024,15 +1042,15 @@ export default function ProductionModule({ lookups, focusId, onFocusConsumed, on
       onSaved={() => { setView("list"); setEditId(null); setCopyId(null); load(); }} />;
 
   const columns = [
-    { key: "order_code", label: "Mã lệnh", filter: "text", render: (r) => <button onClick={() => openForm({ edit: r.id })} className="font-medium text-blue-600 hover:underline">{r.order_code}</button> },
-    { key: "product_name", label: "Sản phẩm", filter: "select", tdClass: "text-slate-800" },
-    { key: "customer_name", label: "Khách hàng", filter: "select", tdClass: "text-slate-600", render: (r) => r.customer_name || "—" },
-    { key: "quantity", label: "SL", align: "right", render: (r) => `${fmt(r.quantity)} ${r.unit || ""}` },
-    { key: "status", label: "Trạng thái", filter: "select", options: STATUSES, render: (r) => <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${statusClass(r.status)}`}>{r.status}</span> },
-    { key: "attr_color", label: "Màu", filter: "select", render: (r) => r.attr_color || "—" },
-    { key: "attr_size", label: "Kích thước", filter: "select", render: (r) => r.attr_size || "—" },
-    { key: "machine_name", label: "Máy", filter: "select", render: (r) => r.machine_name_display || r.machine_name || <span className="text-slate-400">Chưa xếp</span> },
-    { key: "planned_date", label: "Ngày SX", filter: "date", render: (r) => {
+    { key: "order_code", label: "Mã lệnh", filter: "text", minWidth: "120px", render: (r) => <button onClick={() => openForm({ edit: r.id })} className="font-medium text-blue-600 hover:underline">{r.order_code}</button> },
+    { key: "product_name", label: "Sản phẩm", filter: "select", minWidth: "200px", tdClass: "text-slate-800" },
+    { key: "customer_name", label: "Khách hàng", filter: "select", minWidth: "200px", tdClass: "text-slate-600", render: (r) => r.customer_name || "—" },
+    { key: "quantity", label: "SL", align: "right", minWidth: "100px", render: (r) => `${fmt(r.quantity)} ${r.unit || ""}` },
+    { key: "status", label: "Trạng thái", filter: "select", minWidth: "160px", options: STATUSES, render: (r) => <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${statusClass(r.status)}`}>{r.status}</span> },
+    { key: "attr_color", label: "Màu", filter: "select", minWidth: "100px", render: (r) => r.attr_color || "—" },
+    { key: "attr_size", label: "Kích thước", filter: "select", minWidth: "120px", render: (r) => r.attr_size || "—" },
+    { key: "machine_name", label: "Máy", filter: "select", minWidth: "120px", render: (r) => r.machine_name_display || r.machine_name || <span className="text-slate-400">Chưa xếp</span> },
+    { key: "planned_date", label: "Ngày SX", filter: "date", minWidth: "130px", render: (r) => {
         const d = r.planned_date_display || r.planned_date;
         const s = r.shift_display || r.shift;
         if (!d && !s) return "—";

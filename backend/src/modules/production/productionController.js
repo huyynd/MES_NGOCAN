@@ -39,7 +39,7 @@ exports.byMachine = async (req, res) => {
 
 const SELECT_JOIN = `
   SELECT po.*,
-         p.product_name, p.product_code,
+         p.product_name, p.product_code, p.product_type,
          c.name AS customer_name, c.phone AS customer_phone, c.address AS customer_address,
          m.name AS machine_name, m.factory AS machine_factory,
          so.order_code AS sales_order_code,
@@ -124,6 +124,29 @@ async function getRollProductId(client) {
   return v == null ? null : String(v);
 }
 
+// Sản phẩm cuộn mà một dòng Thổi sẽ nhập ra (ô "Sản phẩm đầu ra"):
+//  - task.output_product_id nếu có; ngược lại mặc định: SP của lệnh nếu lệnh là BTP, không thì mã cuộn cấu hình.
+async function resolveBlowOutput(client, po, task) {
+  if (task.output_product_id) return task.output_product_id;
+  if (po.product_type === 'Bán thành phẩm') return po.product_id;
+  const roll = await getRollProductId(client);
+  if (!roll) throw new Error('Chưa cấu hình sản phẩm cuộn mặc định (app_settings.roll_product_id) và dòng Thổi chưa chọn Sản phẩm đầu ra.');
+  return roll;
+}
+
+// Sản phẩm cuộn mà lệnh này CẮT (trừ ở BTP) = sản phẩm đầu ra của các dòng Thổi trong lệnh (distinct).
+// Lệnh chỉ-Cắt (không có Thổi) → dùng mã cuộn cấu hình mặc định.
+async function resolveCutRollProduct(client, po) {
+  const r = await client.query(
+    `SELECT DISTINCT output_product_id FROM production_tasks
+     WHERE production_order_id = $1 AND stage = 'Thổi' AND output_product_id IS NOT NULL`, [po.id]);
+  if (r.rows.length === 1) return r.rows[0].output_product_id;
+  if (r.rows.length > 1) throw new Error('Các dòng Thổi có "Sản phẩm đầu ra" khác nhau — không xác định được cuộn để cắt. Hãy để các dòng Thổi cùng một sản phẩm.');
+  const roll = await getRollProductId(client);
+  if (!roll) throw new Error('Lệnh không có dòng Thổi và chưa cấu hình sản phẩm cuộn mặc định (app_settings.roll_product_id).');
+  return roll;
+}
+
 // Location đầu tiên của một loại kho
 async function locOf(client, whType) {
   return (await client.query(
@@ -152,12 +175,8 @@ async function postTaskStock(client, po, task, finishLots = []) {
 
   if (task.stage === 'Thổi') {
     if (!btpLoc) throw new Error('Chưa có kho Bán thành phẩm (BTP) để nhập cuộn — vui lòng tạo kho trước.');
-    // SP của lệnh là BTP (gồm SP-PE-TC và mã BTP cũ) → nhập chính SP; ngược lại → nhập mã cuộn chung
-    let outProduct = po.product_id;
-    if (po.product_type !== 'Bán thành phẩm') {
-      outProduct = await getRollProductId(client);
-      if (!outProduct) throw new Error('Chưa cấu hình mã cuộn chung (SP-PE-TC) trong app_settings.roll_product_id.');
-    }
+    // Sản phẩm đầu ra của dòng Thổi (ô chọn trên màn phân công; mặc định = cuộn cấu hình / SP lệnh nếu lệnh là BTP).
+    const outProduct = await resolveBlowOutput(client, po, task);
     await applyStock(client, {
       product_id: outProduct, location_id: btpLoc, delta: q, unit: 'kg',
       specs, lot_code: po.order_code, prod_order_id: po.id, clampZero: false,
@@ -170,8 +189,8 @@ async function postTaskStock(client, po, task, finishLots = []) {
     const tpLoc = await locOf(client, 'TP');
     if (!tpLoc) throw new Error('Chưa có kho Thành phẩm (TP) để nhập bao bì — vui lòng tạo kho trước.');
     if (!btpLoc) throw new Error('Chưa có kho Bán thành phẩm (BTP) để trừ cuộn — vui lòng tạo kho trước.');
-    const rollId = await getRollProductId(client);
-    if (!rollId) throw new Error('Chưa cấu hình mã cuộn chung (SP-PE-TC) trong app_settings.roll_product_id.');
+    const rollId = await resolveCutRollProduct(client, po); // cuộn cần trừ = SP đầu ra của dòng Thổi trong lệnh
+    const cutOutput = task.output_product_id || po.product_id; // bao bì đầu ra (ô chọn; mặc định = SP lệnh)
     if (upUnit(po.unit) !== 'Kg') throw new Error(`Đơn vị sản phẩm "${po.product_code}" là "${po.unit}" — công đoạn Cắt chỉ hỗ trợ đơn vị kg.`);
 
     const specKey = buildSpecKey(specs);
@@ -222,9 +241,9 @@ async function postTaskStock(client, po, task, finishLots = []) {
       need -= take;
     }
 
-    // Nhập bao bì (SP của lệnh) vào TP
+    // Nhập bao bì (sản phẩm đầu ra của dòng Cắt; mặc định = SP của lệnh) vào TP
     await applyStock(client, {
-      product_id: po.product_id, location_id: tpLoc, delta: q, unit: 'kg',
+      product_id: cutOutput, location_id: tpLoc, delta: q, unit: 'kg',
       specs, lot_code: po.order_code, prod_order_id: po.id, clampZero: false,
       trx_type: 'Nhập', ref_code: po.order_code, note: `Nhập bao bì — Cắt (LSX ${po.order_code})`,
     });
@@ -349,7 +368,9 @@ exports.getById = async (req, res) => {
   try {
     const { rows } = await db.query(`${SELECT_JOIN} WHERE po.id = $1 AND po.is_deleted = FALSE`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ message: 'Không tìm thấy lệnh sản xuất' });
-    res.json(rows[0]);
+    // Sản phẩm cuộn mặc định (điền sẵn ô "Sản phẩm đầu ra" dòng Thổi trên frontend)
+    const drp = await getRollProductId(db);
+    res.json({ ...rows[0], default_roll_product_id: drp });
   } catch (err) { console.error(err); res.status(500).json({ message: 'Lỗi khi lấy chi tiết' }); }
 };
 
@@ -915,7 +936,7 @@ exports.saveTasks = async (req, res) => {
     // Kiểm tra BẤT BIẾN trước ràng buộc cấu trúc/150% để thông báo đúng việc "không xóa dòng đã hoàn thành".
     const prevRows = (await client.query(
       `SELECT task_code, stage, quantity, actual_qty, scrap_qty, machine_id, shift, planned_date,
-              planned_end_date, assigned_team, assigned_worker, status, seq, note, assigned_worker_id, posted_qty
+              planned_end_date, assigned_team, assigned_worker, status, seq, note, assigned_worker_id, posted_qty, output_product_id
        FROM production_tasks WHERE production_order_id = $1`, [poId])).rows;
     const doneByCode = new Map(prevRows.filter(r => r.status === 'Hoàn thành').map(r => [r.task_code, r]));
     let maxSuffix = 0;
@@ -954,11 +975,11 @@ exports.saveTasks = async (req, res) => {
         // Giữ NGUYÊN bản ghi cũ của dòng đã hoàn thành (bỏ qua mọi sửa đổi từ payload).
         await client.query(`
           INSERT INTO production_tasks
-            (production_order_id, task_code, stage, quantity, actual_qty, scrap_qty, machine_id, shift, planned_date, planned_end_date, assigned_team, assigned_worker, status, seq, note, assigned_worker_id, posted_qty)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+            (production_order_id, task_code, stage, quantity, actual_qty, scrap_qty, machine_id, shift, planned_date, planned_end_date, assigned_team, assigned_worker, status, seq, note, assigned_worker_id, posted_qty, output_product_id)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
           [poId, done.task_code, done.stage, done.quantity, done.actual_qty, done.scrap_qty,
            done.machine_id, done.shift, done.planned_date, done.planned_end_date,
-           done.assigned_team, done.assigned_worker, 'Hoàn thành', n, done.note, done.assigned_worker_id, done.posted_qty]);
+           done.assigned_team, done.assigned_worker, 'Hoàn thành', n, done.note, done.assigned_worker_id, done.posted_qty, done.output_product_id]);
         n++;
         continue;
       }
@@ -971,13 +992,14 @@ exports.saveTasks = async (req, res) => {
       const code = prev ? prev.task_code : `${po.order_code}-${++maxSuffix}`;
       await client.query(`
         INSERT INTO production_tasks
-          (production_order_id, task_code, stage, quantity, actual_qty, scrap_qty, machine_id, shift, planned_date, planned_end_date, assigned_team, assigned_worker, status, seq, note, assigned_worker_id, posted_qty)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,0)`,
+          (production_order_id, task_code, stage, quantity, actual_qty, scrap_qty, machine_id, shift, planned_date, planned_end_date, assigned_team, assigned_worker, status, seq, note, assigned_worker_id, posted_qty, output_product_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,0,$17)`,
         [poId, code, t.stage, plan,
          act, t.scrap_qty || 0,
          t.machine_id || null, t.shift || null,
          t.planned_date || null, t.planned_end_date || t.planned_date || null,
-         t.assigned_team || null, t.assigned_worker || null, st, n, t.note || null, t.assigned_worker_id || null]);
+         t.assigned_team || null, t.assigned_worker || null, st, n, t.note || null, t.assigned_worker_id || null,
+         t.output_product_id || null]);
       n++;
     }
     await recomputeOrder(client, poId);
@@ -994,10 +1016,11 @@ exports.saveTasks = async (req, res) => {
 exports.rollAvailability = async (req, res) => {
   try {
     const po = (await db.query(
-      `SELECT po.id, po.order_code, po.specs, p.product_type FROM production_orders po
+      `SELECT po.id, po.order_code, po.product_id, po.specs, p.product_type FROM production_orders po
        JOIN products p ON p.id = po.product_id WHERE po.id = $1 AND po.is_deleted = FALSE`, [req.params.id])).rows[0];
     if (!po) return res.status(404).json({ message: 'Không tìm thấy lệnh sản xuất' });
-    const rollId = await getRollProductId(db);
+    // Cuộn khả dụng = sản phẩm đầu ra của dòng Thổi trong lệnh (mặc định cấu hình nếu chưa có Thổi)
+    let rollId; try { rollId = await resolveCutRollProduct(db, po); } catch { rollId = null; }
     if (!rollId) return res.json({ data: { spec_label: specLabel(po.specs), total_kg: 0, lots: [] } });
     const specKey = buildSpecKey(po.specs || {});
     const { rows } = await db.query(`
@@ -1094,7 +1117,7 @@ exports.reopenTask = async (req, res) => {
     const rollId = await getRollProductId(client);
 
     if (row.stage === 'Thổi') {
-      const outProduct = row.product_type === 'Bán thành phẩm' ? row.product_id : rollId;
+      const outProduct = row.output_product_id || (row.product_type === 'Bán thành phẩm' ? row.product_id : rollId);
       const cur = (await client.query(
         `SELECT COALESCE(quantity,0) AS q FROM inventory_stock
          WHERE product_id = $1 AND location_id = $2 AND spec_key = $3 AND lot_code = $4`,
@@ -1108,16 +1131,17 @@ exports.reopenTask = async (req, res) => {
         trx_type: 'Điều chỉnh', ref_code: row.order_code, note: `Hủy hoàn thành Thổi — ${row.task_code}`,
       });
     } else if (row.stage === 'Cắt') {
+      const cutOutput = row.output_product_id || row.product_id; // bao bì đầu ra đã nhập TP
       const cur = (await client.query(
         `SELECT COALESCE(quantity,0) AS q FROM inventory_stock
          WHERE product_id = $1 AND location_id = $2 AND spec_key = $3 AND lot_code = $4`,
-        [row.product_id, tpLoc, specKey, row.order_code])).rows[0];
+        [cutOutput, tpLoc, specKey, row.order_code])).rows[0];
       if (!cur || Number(cur.q) < q - 1e-6) {
         return bail(400, 'Bao bì của lần cắt này đã được giao / dùng tiếp — không hủy hoàn thành được.');
       }
       // Trừ lại bao bì ở TP
       await applyStock(client, {
-        product_id: row.product_id, location_id: tpLoc, delta: -q, unit: 'kg', specs, spec_key: specKey,
+        product_id: cutOutput, location_id: tpLoc, delta: -q, unit: 'kg', specs, spec_key: specKey,
         lot_code: row.order_code, prod_order_id: row.production_order_id, clampZero: true,
         trx_type: 'Điều chỉnh', ref_code: row.order_code, note: `Hủy hoàn thành Cắt — ${row.task_code}` });
       // Hoàn lại cuộn vào đúng lô đã trừ (gồm cả phần hao hụt)

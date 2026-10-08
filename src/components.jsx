@@ -57,17 +57,18 @@ export function SearchSelect({ value, onChange, options = [], placeholder = "-- 
         <ChevronDown size={16} className={"shrink-0 " + (disabled && !selected ? "text-transparent" : "text-slate-400")} />
       </button>
       {open && !disabled && pos && createPortal(
-        <div ref={menuRef} style={{ position: "fixed", left: pos.left, ...(pos.top ? { top: pos.top } : { bottom: pos.bottom }), width: pos.width, maxHeight: pos.maxHeight || 288, zIndex: 1000 }}
+        <div ref={menuRef} style={{ position: "fixed", left: pos.left, ...(pos.top ? { top: pos.top } : { bottom: pos.bottom }), width: "max-content", minWidth: pos.width, maxWidth: 350, maxHeight: pos.maxHeight || 288, zIndex: 1000 }}
           className="bg-white border border-slate-200 rounded-lg shadow-lg overflow-auto flex flex-col">
           <div className="p-2 sticky top-0 bg-white border-b border-slate-100">
-            <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Gõ để tìm…"
-              className="w-full px-2 py-1.5 rounded border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40" />
+            <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Gõ để tìm…" size={1}
+              className="w-full min-w-[50px] px-2 py-1.5 rounded border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40" />
           </div>
           <div className="py-1">
             {!filtered.length && <div className="px-3 py-2 text-sm text-slate-400">Không tìm thấy</div>}
             {filtered.map((o) => (
               <button type="button" key={o.value} onClick={() => pick(o.value)}
-                className={"w-full text-left px-3 py-1.5 text-sm hover:bg-blue-50 " + (o.value === value ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-700")}>
+                className={"w-full text-left truncate px-3 py-1.5 text-xs hover:bg-blue-50 " + (o.value === value ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-700")}
+                title={o.label}>
                 {o.label}
               </button>
             ))}
@@ -306,7 +307,7 @@ export function DataTable({ columns, rows, rowKey, pageSize = 10, emptyText = "K
           <thead>
             <tr className="bg-slate-50/70 border-b border-slate-100">
               {columns.map((c) => (
-                <th key={c.key} className={`${pad} align-top font-normal`}>
+                <th key={c.key} className={`${pad} align-top font-normal`} style={c.minWidth ? { minWidth: c.minWidth } : {}}>
                   {c.filter === "select" ? (
                     <SearchSelect
                       value={filters[c.key] || ""}

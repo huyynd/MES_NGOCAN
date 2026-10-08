@@ -2306,11 +2306,24 @@ CREATE TABLE IF NOT EXISTS public.app_settings (
   value jsonb NOT NULL,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
---     b) Mã cuộn chung = SP-PE-TC "Cuộn PE" (chỉ seed nếu chưa có)
+--     b) Sản phẩm cuộn MẶC ĐỊNH (điền sẵn ô "Sản phẩm đầu ra" dòng Thổi).
+--        Ưu tiên SP00017 (cuộn bao bì ở PRD), fallback SP-PE-TC. Chỉ seed nếu chưa có.
 INSERT INTO public.app_settings (key, value)
 SELECT 'roll_product_id', to_jsonb(id::text) FROM public.products
-WHERE product_code = 'SP-PE-TC' AND is_deleted = FALSE
+WHERE product_code IN ('SP00017', 'SP-PE-TC') AND is_deleted = FALSE
+ORDER BY (product_code = 'SP00017') DESC
+LIMIT 1
 ON CONFLICT (key) DO NOTHING;
+--        Sửa giá trị cũ (đã lỡ set = SP-PE-TC) sang SP00017 nếu có — KHÔNG đụng nếu người dùng đã chọn mã khác.
+UPDATE public.app_settings a
+SET value = to_jsonb(p.id::text), updated_at = now()
+FROM public.products p
+WHERE a.key = 'roll_product_id' AND p.product_code = 'SP00017' AND p.is_deleted = FALSE
+  AND a.value = (SELECT to_jsonb(id::text) FROM public.products WHERE product_code = 'SP-PE-TC' AND is_deleted = FALSE LIMIT 1);
+
+--     b2) Sản phẩm đầu ra của từng dòng phân công (Thổi→cuộn vào BTP, Cắt→bao bì vào TP).
+--         NULL = dùng mặc định (Thổi: roll_product_id; Cắt: sản phẩm của lệnh).
+ALTER TABLE public.production_tasks ADD COLUMN IF NOT EXISTS output_product_id uuid REFERENCES public.products(id);
 
 --     c) Ghi lại công đoạn Cắt đã trừ những lô cuộn nào (truy xuất + hoàn kho khi Admin hủy hoàn thành)
 CREATE TABLE IF NOT EXISTS public.production_roll_usage (

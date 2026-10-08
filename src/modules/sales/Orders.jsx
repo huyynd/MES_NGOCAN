@@ -515,16 +515,23 @@ function OrderForm({ lookups, editId, copyId, onBack, onSaved, onPrint, onCreate
               {showMoney && (
               <div className="pl-8">
                 <div className="text-xs font-semibold text-slate-400 uppercase mb-1.5">Giá</div>
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                   <label>
                     <span className="block text-xs font-medium text-slate-500 mb-1">Đơn giá</span>
-                    <input type="number" min="0" className={inputCls} disabled={fdis("items") || moneyPerm !== "edit"} value={it.unit_price ?? ""}
-                      placeholder="0" onChange={(e) => upItem(it._k, "unit_price", e.target.value)} />
+                    <input type="text" className={inputCls} disabled={fdis("items") || moneyPerm !== "edit"} 
+                      value={it.unit_price ? Number(it.unit_price).toLocaleString("vi-VN") : ""}
+                      placeholder="0" onChange={(e) => upItem(it._k, "unit_price", e.target.value.replace(/\D/g, ""))} />
                   </label>
                   <label>
-                    <span className="block text-xs font-medium text-slate-500 mb-1">Thành tiền = đơn giá × SL</span>
+                    <span className="block text-xs font-medium text-slate-500 mb-1">Thành tiền (trước VAT)</span>
                     <div className="px-3 py-2 rounded-lg bg-white border border-slate-200 text-slate-700 font-semibold">
                       {fmt((Number(it.unit_price) || 0) * (Number(it.quantity) || 0))} đ
+                    </div>
+                  </label>
+                  <label>
+                    <span className="block text-xs font-medium text-slate-500 mb-1">Thành tiền (sau VAT 8%)</span>
+                    <div className="px-3 py-2 rounded-lg bg-white border border-slate-200 text-blue-700 font-semibold">
+                      {fmt(((Number(it.unit_price) || 0) * (Number(it.quantity) || 0)) * 1.08)} đ
                     </div>
                   </label>
                 </div>
@@ -695,11 +702,19 @@ function OrderForm({ lookups, editId, copyId, onBack, onSaved, onPrint, onCreate
             </div>
           ))}
           {showMoney && (
-            <div className="flex justify-end items-baseline gap-3 pt-3 border-t border-slate-200">
-              <span className="text-sm text-slate-500">Tổng giá trị đơn hàng:</span>
-              <span className="text-lg font-bold text-blue-700">
-                {fmt(items.reduce((s, it) => s + (Number(it.unit_price) || 0) * (Number(it.quantity) || 0), 0))} đ
-              </span>
+            <div className="flex justify-end items-baseline gap-6 pt-3 border-t border-slate-200">
+              <div className="flex items-baseline gap-2">
+                <span className="text-sm text-slate-500">Tổng trước VAT:</span>
+                <span className="text-base font-semibold text-slate-700">
+                  {fmt(items.reduce((s, it) => s + (Number(it.unit_price) || 0) * (Number(it.quantity) || 0), 0))} đ
+                </span>
+              </div>
+              <div className="flex items-baseline gap-2">
+                <span className="text-sm text-slate-500">Tổng sau VAT (8%):</span>
+                <span className="text-lg font-bold text-blue-700">
+                  {fmt(items.reduce((s, it) => s + (Number(it.unit_price) || 0) * (Number(it.quantity) || 0) * 1.08, 0))} đ
+                </span>
+              </div>
             </div>
           )}
         </div>
@@ -1081,24 +1096,24 @@ export default function OrdersModule({ lookups, focusId, onFocusConsumed, onCrea
   const del = async (id) => { if (!confirm("Xóa đơn hàng này?")) return; try { await ordersApi.remove(id); toast.success("Đã xóa thành công"); load(); } catch (e) { toast.error("Lỗi xóa: " + e.message); } };
 
   const columns = [
-    { key: "order_code", label: "Mã đơn", filter: "text", render: (r) => <button onClick={() => openForm({ edit: r.id })} className="font-medium text-blue-600 hover:underline">{r.order_code}</button> },
-    { key: "customer_name", label: "Khách hàng", filter: "select", tdClass: "text-slate-800" },
-    { key: "order_date", label: "Ngày đặt", filter: "date", render: (r) => fmtDate(r.order_date) },
-    { key: "due_date", label: "Ngày giao", filter: "date", render: (r) => {
+    { key: "order_code", label: "Mã đơn", filter: "text", minWidth: "130px", render: (r) => <button onClick={() => openForm({ edit: r.id })} className="font-medium text-blue-600 hover:underline">{r.order_code}</button> },
+    { key: "customer_name", label: "Khách hàng", filter: "select", minWidth: "200px", tdClass: "text-slate-800" },
+    { key: "order_date", label: "Ngày đặt", filter: "date", minWidth: "130px", render: (r) => fmtDate(r.order_date) },
+    { key: "due_date", label: "Ngày giao", filter: "date", minWidth: "130px", render: (r) => {
         const done = ["Hoàn thành", "Đã hủy"].includes(r.status);
         const tone = dueTone(r.due_date);
         return <span className={`inline-flex items-center gap-1.5 ${done ? "text-slate-500" : tone.text}`}>
           {!done && r.due_date && <span className={`w-2 h-2 rounded-full ${tone.dot}`} title={tone.label} />}{fmtDate(r.due_date)}</span>;
       } },
-    { key: "item_count", label: "Số dòng", align: "center" },
-    { key: "total_qty", label: "Tổng SL", align: "right", render: (r) => fmt(r.total_qty) },
-    ...(showMoney ? [{ key: "total_amount", label: "Giá trị đơn", align: "right", render: (r) => <span className="font-medium text-slate-700">{fmt(r.total_amount || 0)} đ</span> }] : []),
-    { key: "priority", label: "Ưu tiên", filter: "select", options: ["Cao", "Trung bình", "Thấp"], render: (r) => {
+    { key: "item_count", label: "Số dòng", align: "center", minWidth: "80px" },
+    { key: "total_qty", label: "Tổng SL", align: "right", minWidth: "100px", render: (r) => fmt(r.total_qty) },
+    ...(showMoney ? [{ key: "total_amount", label: "Giá trị đơn", align: "right", minWidth: "120px", render: (r) => <span className="font-medium text-slate-700">{fmt(r.total_amount || 0)} đ</span> }] : []),
+    { key: "priority", label: "Ưu tiên", filter: "select", minWidth: "120px", options: ["Cao", "Trung bình", "Thấp"], render: (r) => {
         if (r.priority === 'Cao') return <span className="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-rose-100 text-rose-700 whitespace-nowrap">Cao</span>;
         if (r.priority === 'Thấp') return <span className="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-500 whitespace-nowrap">Thấp</span>;
         return <span className="text-slate-500 text-sm whitespace-nowrap">Trung bình</span>;
       } },
-    { key: "status", label: "Trạng thái", filter: "select", render: (r) => <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${statusClass(r.status)}`}>{r.status}</span> },
+    { key: "status", label: "Trạng thái", filter: "select", minWidth: "160px", render: (r) => <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${statusClass(r.status)}`}>{r.status}</span> },
     { key: "_act", label: "", align: "right", render: (r) => (<>
         <button onClick={() => { setVoucherId(r.id); setView("voucher"); }} title="Xem phiếu" className="text-slate-400 hover:text-emerald-600 p-1"><FileText size={15} /></button>
         {can("orders", "create") && <button onClick={() => openForm({ copy: r.id })} title="Sao chép thành đơn mới" className="text-slate-400 hover:text-blue-600 p-1"><Copy size={15} /></button>}

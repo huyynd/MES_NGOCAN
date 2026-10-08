@@ -476,16 +476,16 @@ export default function DeliveriesModule({ lookups, focusOrderId, onFocusConsume
   if (view === "voucher") return <DeliveryVoucher id={voucherId} onBack={() => setView("list")} />;
 
   const columns = [
-    { key: "note_code", label: "Số phiếu", filter: "text", render: (r) => <button onClick={() => { setEditId(r.id); setView("form"); }} className="font-medium text-blue-600 hover:underline">{r.note_code}</button> },
-    { key: "customer_name", label: "Khách hàng", filter: "select", tdClass: "text-slate-800" },
-    { key: "sales_order_code", label: "Đơn hàng", filter: "text", render: (r) => r.sales_order_code || "—" },
-    { key: "delivery_date", label: "Ngày giao", filter: "date", render: (r) => fmtDate(r.delivery_date) },
-    { key: "item_count", label: "Số dòng", align: "center" },
+    { key: "note_code", label: "Số phiếu", filter: "text", minWidth: "120px", render: (r) => <button onClick={() => { setEditId(r.id); setView("form"); }} className="font-medium text-blue-600 hover:underline">{r.note_code}</button> },
+    { key: "customer_name", label: "Khách hàng", filter: "select", minWidth: "200px", tdClass: "text-slate-800" },
+    { key: "sales_order_code", label: "Đơn hàng", filter: "text", minWidth: "120px", render: (r) => r.sales_order_code || "—" },
+    { key: "delivery_date", label: "Ngày giao", filter: "date", minWidth: "130px", render: (r) => fmtDate(r.delivery_date) },
+    { key: "item_count", label: "Số dòng", align: "center", minWidth: "80px" },
     ...(showMoney ? [
-      { key: "total_amount", label: "Tổng tiền", align: "right", render: (r) => <span className="font-semibold">{fmt(r.total_amount)} đ</span> },
-      { key: "debt", label: "Công nợ", align: "right", render: (r) => { const dbt = Number(r.total_amount || 0) - Number(r.paid_amount || 0); return <span className={`font-semibold ${dbt > 0 ? "text-rose-600" : "text-emerald-600"}`}>{fmt(dbt)} đ</span>; } },
+      { key: "total_amount", label: "Tổng tiền", align: "right", minWidth: "120px", render: (r) => <span className="font-semibold">{fmt(r.total_amount)} đ</span> },
+      { key: "debt", label: "Công nợ", align: "right", minWidth: "120px", render: (r) => { const dbt = Number(r.total_amount || 0) - Number(r.paid_amount || 0); return <span className={`font-semibold ${dbt > 0 ? "text-rose-600" : "text-emerald-600"}`}>{fmt(dbt)} đ</span>; } },
     ] : []),
-    { key: "status", label: "Trạng thái", filter: "select", render: (r) => <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${statusClass(r.status)}`}>{r.status}</span> },
+    { key: "status", label: "Trạng thái", filter: "select", minWidth: "160px", render: (r) => <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${statusClass(r.status)}`}>{r.status}</span> },
     { key: "_act", label: "", align: "right", render: (r) => (<>
         <button onClick={() => { setVoucherId(r.id); setView("voucher"); }} title="In phiếu" className="text-slate-400 hover:text-emerald-600 p-1"><FileText size={15} /></button>
         <button onClick={() => { setEditId(r.id); setView("form"); }} title="Sửa" className="text-slate-400 hover:text-blue-600 p-1"><Pencil size={15} /></button>

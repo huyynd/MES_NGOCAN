@@ -15,7 +15,7 @@ import { usePerm } from "../../perm.jsx";
 import { ListHeader, Section } from "../../components.jsx";
 
 /* ── helpers ── */
-const today      = () => new Date().toISOString().slice(0, 10);
+const today = () => new Date().toISOString().slice(0, 10);
 const monthStart = () =>
   new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
 const weekStart = () => {
@@ -24,9 +24,9 @@ const weekStart = () => {
   const diff = d.getDate() - day + (day === 0 ? -6 : 1);
   return new Date(d.setDate(diff)).toISOString().slice(0, 10);
 };
-const pct      = (a, b) => (b > 0 ? Math.round((Number(a) / Number(b)) * 100) : 0);
+const pct = (a, b) => (b > 0 ? Math.round((Number(a) / Number(b)) * 100) : 0);
 const pctColor = (p) => p >= 100 ? "text-emerald-600" : p >= 80 ? "text-amber-600" : "text-rose-600";
-const pctBg    = (p) => p >= 100 ? "bg-emerald-500" : p >= 80 ? "bg-amber-400"    : "bg-rose-400";
+const pctBg = (p) => p >= 100 ? "bg-emerald-500" : p >= 80 ? "bg-amber-400" : "bg-rose-400";
 
 /* ── Paginator ── */
 function Pager({ page, totalPages, onChange }) {
@@ -51,8 +51,7 @@ function Pager({ page, totalPages, onChange }) {
         p === "…"
           ? <span key={`e${i}`} className="px-1 text-slate-400 text-xs">…</span>
           : <button key={p} onClick={() => onChange(p)}
-              className={`w-7 h-7 rounded text-xs font-medium transition-colors ${
-                p === page ? "bg-indigo-600 text-white" : "text-slate-600 hover:bg-slate-100"
+            className={`w-7 h-7 rounded text-xs font-medium transition-colors ${p === page ? "bg-indigo-600 text-white" : "text-slate-600 hover:bg-slate-100"
               }`}>{p}</button>
       )}
       <button
@@ -66,19 +65,19 @@ function Pager({ page, totalPages, onChange }) {
 /* ── KPI mini card ── */
 function KpiCard({ label, value, sub, icon: Icon, color = "blue", extra }) {
   const C = {
-    blue:   ["bg-blue-50",    "text-blue-500",    "text-blue-700"    ],
-    green:  ["bg-emerald-50", "text-emerald-500", "text-emerald-700" ],
-    amber:  ["bg-amber-50",   "text-amber-500",   "text-amber-700"   ],
-    rose:   ["bg-rose-50",    "text-rose-500",    "text-rose-700"    ],
-    indigo: ["bg-indigo-50",  "text-indigo-500",  "text-indigo-700"  ],
-  }[color] || ["bg-blue-50","text-blue-500","text-blue-700"];
+    blue: ["bg-blue-50", "text-blue-500", "text-blue-700"],
+    green: ["bg-emerald-50", "text-emerald-500", "text-emerald-700"],
+    amber: ["bg-amber-50", "text-amber-500", "text-amber-700"],
+    rose: ["bg-rose-50", "text-rose-500", "text-rose-700"],
+    indigo: ["bg-indigo-50", "text-indigo-500", "text-indigo-700"],
+  }[color] || ["bg-blue-50", "text-blue-500", "text-blue-700"];
   return (
     <div className="bg-white rounded-xl border border-slate-200 p-4 flex items-start gap-3">
       <div className={`${C[0]} rounded-lg p-2.5 shrink-0`}><Icon size={18} className={C[1]} /></div>
       <div className="min-w-0">
         <p className="text-xs text-slate-500 font-medium truncate">{label}</p>
         <p className={`text-xl font-bold ${C[2]}`}>{value}</p>
-        {sub   && <p className="text-xs text-slate-400 mt-0.5">{sub}</p>}
+        {sub && <p className="text-xs text-slate-400 mt-0.5">{sub}</p>}
         {extra && <div className="mt-1.5">{extra}</div>}
       </div>
     </div>
@@ -99,13 +98,13 @@ function BulletBar({ label, planned, actual }) {
         <div className="flex items-center gap-2">
           <span className="text-xs text-slate-400 w-16 text-right shrink-0">KH {fmt(planned)}</span>
           <div className="flex-1 h-2.5 bg-slate-100 rounded-full overflow-hidden">
-            <div className="h-full bg-blue-200 rounded-full" style={{ width: `${(Number(planned)/maxV)*100}%` }} />
+            <div className="h-full bg-blue-200 rounded-full" style={{ width: `${(Number(planned) / maxV) * 100}%` }} />
           </div>
         </div>
         <div className="flex items-center gap-2">
           <span className="text-xs text-slate-400 w-16 text-right shrink-0">TT {fmt(actual)}</span>
           <div className="flex-1 h-2.5 bg-slate-100 rounded-full overflow-hidden">
-            <div className={`h-full rounded-full ${pctBg(p)}`} style={{ width: `${(Number(actual)/maxV)*100}%` }} />
+            <div className={`h-full rounded-full ${pctBg(p)}`} style={{ width: `${(Number(actual) / maxV) * 100}%` }} />
           </div>
         </div>
       </div>
@@ -115,7 +114,7 @@ function BulletBar({ label, planned, actual }) {
 
 /* ── Stage bar (horizontal) ── */
 function StageBar({ stage, actual, planned, maxActual }) {
-  const p   = pct(actual, planned);
+  const p = pct(actual, planned);
   const barW = maxActual > 0 ? Math.round((Number(actual) / maxActual) * 100) : 0;
   return (
     <div className="mb-3 last:mb-0">
@@ -185,10 +184,10 @@ function WorkOrdersTable({ tasks }) {
           <tbody className="divide-y divide-slate-100">
             {slice.map((t) => {
               const isUrgent = t.priority === 'Cao';
-              const actual  = t.status === "Hoàn thành" ? (Number(t.actual_qty) || 0) : (Number(t.actual_qty) || 0);
+              const actual = t.status === "Hoàn thành" ? (Number(t.actual_qty) || 0) : (Number(t.actual_qty) || 0);
               const planned = Number(t.quantity) || 0;
               // Đơn gấp: tỷ lệ tính bình thường (planned = po.quantity đã chuẩn hóa từ backend)
-              const p       = pct(actual, planned);
+              const p = pct(actual, planned);
               return (
                 <tr key={t.id} className="hover:bg-slate-50 transition-colors">
                   <td className="py-2.5 px-3">
@@ -205,11 +204,10 @@ function WorkOrdersTable({ tasks }) {
                     <span className="font-medium text-slate-700">{t.product_code}</span>
                     <span className="block text-slate-400">{t.product_name}</span>
                     {t.material_type && (
-                      <span className={`inline-flex items-center gap-1 mt-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide ${
-                        t.material_type === 'zin'
+                      <span className={`inline-flex items-center gap-1 mt-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide ${t.material_type === 'zin'
                           ? 'bg-emerald-100 text-emerald-700'
                           : 'bg-amber-100 text-amber-700'
-                      }`}>
+                        }`}>
                         {t.material_type === 'zin' ? '✦ Hàng zin' : '⟳ Hàng pha'}
                       </span>
                     )}
@@ -279,7 +277,7 @@ function EmployeeDetail({ workerData, detail, loading, onClose }) {
       }
       map[s.date].total_scrap = Number(s.total_scrap);
     });
-    return Object.values(map).sort((a,b) => a._ts - b._ts).map(d => ({
+    return Object.values(map).sort((a, b) => a._ts - b._ts).map(d => ({
       ...d,
       scrap_ratio: d.actual_qty > 0 ? Number((d.total_scrap / d.actual_qty).toFixed(4)) : 0
     }));
@@ -326,12 +324,12 @@ function EmployeeDetail({ workerData, detail, loading, onClose }) {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <KpiCard label="Sản lượng đã làm" value={fmt(actual_qty)} sub="tổng thực tế" icon={Layers} color="indigo" />
         <KpiCard label="Tổng phế" value={scrap_qty > 0 ? fmt(scrap_qty) : "0"} sub="phế phẩm (kg)" icon={AlertCircle} color={scrap_qty > 0 ? "rose" : "green"} />
-        <KpiCard label="Phế/kg" value={actual_qty > 0 ? (Number(scrap_qty)/Number(actual_qty)).toFixed(4) : "0.0000"} sub="tỷ lệ" icon={Target} color="amber" />
+        <KpiCard label="Phế/kg" value={actual_qty > 0 ? (Number(scrap_qty) / Number(actual_qty)).toFixed(4) : "0.0000"} sub="tỷ lệ" icon={Target} color="amber" />
         <KpiCard label="Tỷ lệ hoàn thành" value={`${overall}%`} sub="KH so với TT" icon={TrendingUp} color="emerald" />
         <KpiCard label="Số lệnh làm việc" value={tasks_count} sub="tổng số lệnh" icon={Package} color="blue" />
         <KpiCard label="Ngày làm việc" value={work_days ?? "—"} sub="ngày có phân công" icon={CalendarDays} color="indigo" />
         <KpiCard label="Giờ làm việc" value={work_hours > 0 ? `${work_hours}h` : "—"} sub="ước tính từ ca" icon={Clock} color="amber" />
-        <KpiCard label="Năng suất" value={work_hours > 0 && actual_qty > 0 ? `${(Number(actual_qty)/work_hours).toFixed(1)}/h` : "—"} sub="sản phẩm / giờ" icon={TrendingUp} color="green" />
+        <KpiCard label="Năng suất" value={work_hours > 0 && actual_qty > 0 ? `${(Number(actual_qty) / work_hours).toFixed(1)}/h` : "—"} sub="sản phẩm / giờ" icon={TrendingUp} color="green" />
       </div>
 
       {loading ? (
@@ -364,9 +362,9 @@ function EmployeeDetail({ workerData, detail, loading, onClose }) {
               {stages.length === 0
                 ? <p className="text-slate-400 text-sm text-center py-6">Không có dữ liệu</p>
                 : stages.map(s => (
-                    <StageBar key={s.stage} stage={s.stage}
-                      actual={Number(s.actual_qty)} planned={Number(s.planned_qty)} maxActual={maxStage} />
-                  ))
+                  <StageBar key={s.stage} stage={s.stage}
+                    actual={Number(s.actual_qty)} planned={Number(s.planned_qty)} maxActual={maxStage} />
+                ))
               }
             </div>
           </div>
@@ -407,7 +405,7 @@ function EmployeeDetail({ workerData, detail, loading, onClose }) {
                     <Tooltip content={<ChartTooltip />} />
                     <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />
                     <Bar yAxisId="left" dataKey="total_scrap" name="Tổng phế (kg)" fill="#f43f5e" radius={[3, 3, 0, 0]} maxBarSize={32} />
-                    <Line yAxisId="right" type="monotone" dataKey="scrap_ratio" name="Phế/kg" stroke="#f59e0b" strokeWidth={2} dot={{r:3}} />
+                    <Line yAxisId="right" type="monotone" dataKey="scrap_ratio" name="Phế/kg" stroke="#f59e0b" strokeWidth={2} dot={{ r: 3 }} />
                   </ComposedChart>
                 </ResponsiveContainer>
               </div>
@@ -469,23 +467,23 @@ export default function EmployeeReport() {
   if (!isAdmin && !can('reports', 'view')) return (
     <div className="flex items-center justify-center h-64 text-slate-400 text-sm">Bạn không có quyền xem báo cáo nhân viên.</div>
   );
-  const [workers, setWorkers]         = useState([]);
-  const [loading, setLoading]         = useState(false);
-  const [reportTab, setReportTab]     = useState("overview"); // 'overview' | 'detail'
-  const [selected, setSelected]       = useState(null);
-  const [detail, setDetail]           = useState(null);
+  const [workers, setWorkers] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [reportTab, setReportTab] = useState("overview"); // 'overview' | 'detail'
+  const [selected, setSelected] = useState(null);
+  const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [empPage, setEmpPage]         = useState(1);
+  const [empPage, setEmpPage] = useState(1);
 
   const isManager = isAdmin || can('reports', 'view_all');
 
   /* filters — mặc định 1 tháng gần nhất để mở màn là thấy số ngay */
-  const [from, setFrom]               = useState(monthStart());
-  const [to, setTo]                   = useState(today());
-  const [timeRange, setTimeRange]     = useState("month");
-  const [teamFilter, setTeamFilter]   = useState("");
+  const [from, setFrom] = useState(monthStart());
+  const [to, setTo] = useState(today());
+  const [timeRange, setTimeRange] = useState("month");
+  const [teamFilter, setTeamFilter] = useState("");
   const [orderFilter, setOrderFilter] = useState("");
-  const [nameFilter, setNameFilter]   = useState("");
+  const [nameFilter, setNameFilter] = useState("");
 
   const handleTimeRangeChange = (val) => {
     setTimeRange(val);
@@ -553,38 +551,38 @@ export default function EmployeeReport() {
 
   /* unique option lists */
   const stageOptions = [...new Set(workers.flatMap(w => (w.stages || "").split(", ").filter(Boolean)))];
-  const teamOptions  = [...new Set(workers.flatMap(w => (w.team || "").split(", ").filter(Boolean)))];
+  const teamOptions = [...new Set(workers.flatMap(w => (w.team || "").split(", ").filter(Boolean)))];
 
   /* export */
   const exportExcel = () => {
     const wb = XLSX.utils.book_new();
     const summaryData = workers.map(w => ({
-      "Nhân viên":         w.worker,
-      "Đội / Nhà máy":    w.team || "",
-      "Công đoạn":         w.stages || "",
-      "Ca làm việc":       w.shifts || "",
-      "Số lệnh":           w.tasks_count,
-      "Số đơn hàng":       w.orders_count,
-      "Kế hoạch":          Number(w.planned_qty),
-      "Thực tế":           Number(w.actual_qty),
-      "Tỷ lệ (%)":         pct(w.actual_qty, w.planned_qty),
-      "Phế phẩm":          Number(w.scrap_qty),
-      "Ngày làm việc":     w.work_days,
+      "Nhân viên": w.worker,
+      "Đội / Nhà máy": w.team || "",
+      "Công đoạn": w.stages || "",
+      "Ca làm việc": w.shifts || "",
+      "Số lệnh": w.tasks_count,
+      "Số đơn hàng": w.orders_count,
+      "Kế hoạch": Number(w.planned_qty),
+      "Thực tế": Number(w.actual_qty),
+      "Tỷ lệ (%)": pct(w.actual_qty, w.planned_qty),
+      "Phế phẩm": Number(w.scrap_qty),
+      "Ngày làm việc": w.work_days,
       "Giờ làm (ước tính)": w.work_hours,
     }));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summaryData), "Tổng hợp NV");
     if (detail?.tasks?.length) {
       const taskData = detail.tasks.map(t => ({
-        "Đơn hàng":   t.sales_order_code || "",
-        "Mã LSX":      t.order_code,
-        "Sản phẩm":   t.product_name,
-        "Công đoạn":  t.stage,
-        "Kế hoạch":   Number(t.quantity),
-        "Thực tế":    t.status === "Hoàn thành" ? (Number(t.actual_qty) ?? Number(t.quantity)) : 0,
-        "Phế phẩm":   Number(t.scrap_qty),
+        "Đơn hàng": t.sales_order_code || "",
+        "Mã LSX": t.order_code,
+        "Sản phẩm": t.product_name,
+        "Công đoạn": t.stage,
+        "Kế hoạch": Number(t.quantity),
+        "Thực tế": t.status === "Hoàn thành" ? (Number(t.actual_qty) ?? Number(t.quantity)) : 0,
+        "Phế phẩm": Number(t.scrap_qty),
         "Trạng thái": t.status,
-        "Ca":         t.shift || "",
-        "Ngày":       fmtDate(t.planned_date) || "",
+        "Ca": t.shift || "",
+        "Ngày": fmtDate(t.planned_date) || "",
       }));
       XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(taskData), `Chi tiết ${selected?.worker || ""}`);
     }
@@ -600,7 +598,7 @@ export default function EmployeeReport() {
   return (
     <div className="space-y-4">
       {/* ── Header ── */}
-      <ListHeader 
+      <ListHeader
         title="Hiệu suất nhân viên sản xuất"
         actions={<>
           <button onClick={loadWorkers} disabled={loading}
@@ -628,8 +626,8 @@ export default function EmployeeReport() {
           ) : (
             <>
               {[
-                { label: "Từ ngày",   type: "date",   value: from,        set: setFrom        },
-                { label: "Đến ngày",  type: "date",   value: to,          set: setTo          },
+                { label: "Từ ngày", type: "date", value: from, set: setFrom },
+                { label: "Đến ngày", type: "date", value: to, set: setTo },
               ].map(({ label, type, value, set }) => (
                 <div key={label}>
                   <label className="block text-xs font-medium text-slate-500 mb-1">{label}</label>
@@ -671,103 +669,101 @@ export default function EmployeeReport() {
 
         {/* LEFT — Employee list (chỉ ở tab "chi tiết") */}
         {reportTab === "detail" && (
-        <div className="w-80 xl:w-96 shrink-0 sticky top-4 self-start">
-          <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-            {/* List header */}
-            <div className="px-4 py-3 border-b border-slate-100 bg-slate-50">
-              <div className="flex items-center justify-between mb-2.5">
-                <span className="text-xs font-semibold text-slate-600">
-                  Nhân viên ({filteredWorkers.length})
-                </span>
-                {selected && (
-                  <button onClick={() => { setSelected(null); setDetail(null); }}
-                    className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1">
-                    <X size={11} /> Bỏ chọn
-                  </button>
+          <div className="w-80 xl:w-96 shrink-0 sticky top-4 self-start">
+            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+              {/* List header */}
+              <div className="px-4 py-3 border-b border-slate-100 bg-slate-50">
+                <div className="flex items-center justify-between mb-2.5">
+                  <span className="text-xs font-semibold text-slate-600">
+                    Nhân viên ({filteredWorkers.length})
+                  </span>
+                  {selected && (
+                    <button onClick={() => { setSelected(null); setDetail(null); }}
+                      className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1">
+                      <X size={11} /> Bỏ chọn
+                    </button>
+                  )}
+                </div>
+                {/* Search within list */}
+                <input value={nameFilter} onChange={e => { setNameFilter(e.target.value); setEmpPage(1); }}
+                  placeholder="Tìm tên nhân viên…"
+                  className="w-full border border-slate-200 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-400/40" />
+              </div>
+
+              {/* Employee rows */}
+              <div className="divide-y divide-slate-100 max-h-[65vh] overflow-y-auto">
+                {loading ? (
+                  <div className="py-10 text-center text-slate-400 text-sm flex items-center justify-center gap-2">
+                    <RefreshCcw size={14} className="animate-spin" /> Đang tải…
+                  </div>
+                ) : empSlice.length === 0 ? (
+                  <div className="py-10 text-center text-slate-400 text-sm">Không có dữ liệu</div>
+                ) : (
+                  empSlice.map((w, idx) => {
+                    const p = pct(w.actual_qty, w.planned_qty);
+                    const isSelected = selected?.worker === w.worker;
+                    const rank = (empPage - 1) * EMP_PER_PAGE + idx + 1;
+                    return (
+                      <button key={w.worker} onClick={() => handleSelectWorker(w)}
+                        className={`w-full text-left px-4 py-3 transition-all hover:bg-slate-50 ${isSelected ? "bg-indigo-50 border-l-4 border-indigo-500" : "border-l-4 border-transparent"
+                          }`}
+                      >
+                        <div className="flex items-center gap-2.5">
+                          {/* Avatar */}
+                          <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${isSelected ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-600"
+                            }`}>
+                            {rank <= 3 && !isSelected
+                              ? ["🥇", "🥈", "🥉"][rank - 1]
+                              : w.worker?.[0]?.toUpperCase() || "?"}
+                          </div>
+                          {/* Name + team */}
+                          <div className="min-w-0 flex-1">
+                            <p className={`text-xs font-semibold truncate ${isSelected ? "text-indigo-700" : "text-slate-800"}`}>
+                              {w.worker}
+                            </p>
+                            <p className="text-xs text-slate-400 truncate">{w.team || w.stages || "—"}</p>
+                          </div>
+                          {/* % badge */}
+                          <span className={`text-xs font-bold shrink-0 ${pctColor(p)}`}>{p}%</span>
+                        </div>
+                        {/* Progress bar */}
+                        <div className="mt-2 flex items-center gap-2">
+                          <div className="flex-1 h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                            <div className={`h-full rounded-full ${pctBg(p)}`} style={{ width: `${Math.min(p, 100)}%` }} />
+                          </div>
+                          <span className="text-xs text-slate-400 shrink-0 whitespace-nowrap">
+                            {fmt(w.actual_qty)} / {fmt(w.planned_qty)}
+                          </span>
+                        </div>
+                        {/* Tags */}
+                        <div className="mt-1.5 flex flex-wrap gap-1">
+                          {w.tasks_count > 0 && (
+                            <span className="text-xs px-1.5 py-0.5 rounded bg-blue-50 text-blue-600">{w.tasks_count} lệnh</span>
+                          )}
+                          {w.shifts && (
+                            <span className="text-xs px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">{w.shifts}</span>
+                          )}
+                          {w.scrap_qty > 0 && (
+                            <span className="text-xs px-1.5 py-0.5 rounded bg-rose-50 text-rose-500">⚠ {fmt(w.scrap_qty)}</span>
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })
                 )}
               </div>
-              {/* Search within list */}
-              <input value={nameFilter} onChange={e => { setNameFilter(e.target.value); setEmpPage(1); }}
-                placeholder="Tìm tên nhân viên…"
-                className="w-full border border-slate-200 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-400/40" />
-            </div>
 
-            {/* Employee rows */}
-            <div className="divide-y divide-slate-100 max-h-[65vh] overflow-y-auto">
-              {loading ? (
-                <div className="py-10 text-center text-slate-400 text-sm flex items-center justify-center gap-2">
-                  <RefreshCcw size={14} className="animate-spin" /> Đang tải…
+              {/* Pager */}
+              <div className="border-t border-slate-100 px-4 pb-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-slate-400 py-2">
+                    {(empPage - 1) * EMP_PER_PAGE + 1}–{Math.min(empPage * EMP_PER_PAGE, filteredWorkers.length)} / {filteredWorkers.length}
+                  </span>
+                  <Pager page={empPage} totalPages={empTotalPages} onChange={setEmpPage} />
                 </div>
-              ) : empSlice.length === 0 ? (
-                <div className="py-10 text-center text-slate-400 text-sm">Không có dữ liệu</div>
-              ) : (
-                empSlice.map((w, idx) => {
-                  const p = pct(w.actual_qty, w.planned_qty);
-                  const isSelected = selected?.worker === w.worker;
-                  const rank = (empPage - 1) * EMP_PER_PAGE + idx + 1;
-                  return (
-                    <button key={w.worker} onClick={() => handleSelectWorker(w)}
-                      className={`w-full text-left px-4 py-3 transition-all hover:bg-slate-50 ${
-                        isSelected ? "bg-indigo-50 border-l-4 border-indigo-500" : "border-l-4 border-transparent"
-                      }`}
-                    >
-                      <div className="flex items-center gap-2.5">
-                        {/* Avatar */}
-                        <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${
-                          isSelected ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-600"
-                        }`}>
-                          {rank <= 3 && !isSelected
-                            ? ["🥇","🥈","🥉"][rank - 1]
-                            : w.worker?.[0]?.toUpperCase() || "?"}
-                        </div>
-                        {/* Name + team */}
-                        <div className="min-w-0 flex-1">
-                          <p className={`text-xs font-semibold truncate ${isSelected ? "text-indigo-700" : "text-slate-800"}`}>
-                            {w.worker}
-                          </p>
-                          <p className="text-xs text-slate-400 truncate">{w.team || w.stages || "—"}</p>
-                        </div>
-                        {/* % badge */}
-                        <span className={`text-xs font-bold shrink-0 ${pctColor(p)}`}>{p}%</span>
-                      </div>
-                      {/* Progress bar */}
-                      <div className="mt-2 flex items-center gap-2">
-                        <div className="flex-1 h-1.5 bg-slate-200 rounded-full overflow-hidden">
-                          <div className={`h-full rounded-full ${pctBg(p)}`} style={{ width: `${Math.min(p, 100)}%` }} />
-                        </div>
-                        <span className="text-xs text-slate-400 shrink-0 whitespace-nowrap">
-                          {fmt(w.actual_qty)} / {fmt(w.planned_qty)}
-                        </span>
-                      </div>
-                      {/* Tags */}
-                      <div className="mt-1.5 flex flex-wrap gap-1">
-                        {w.tasks_count > 0 && (
-                          <span className="text-xs px-1.5 py-0.5 rounded bg-blue-50 text-blue-600">{w.tasks_count} lệnh</span>
-                        )}
-                        {w.shifts && (
-                          <span className="text-xs px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">{w.shifts}</span>
-                        )}
-                        {w.scrap_qty > 0 && (
-                          <span className="text-xs px-1.5 py-0.5 rounded bg-rose-50 text-rose-500">⚠ {fmt(w.scrap_qty)}</span>
-                        )}
-                      </div>
-                    </button>
-                  );
-                })
-              )}
-            </div>
-
-            {/* Pager */}
-            <div className="border-t border-slate-100 px-4 pb-1">
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-slate-400 py-2">
-                  {(empPage - 1) * EMP_PER_PAGE + 1}–{Math.min(empPage * EMP_PER_PAGE, filteredWorkers.length)} / {filteredWorkers.length}
-                </span>
-                <Pager page={empPage} totalPages={empTotalPages} onChange={setEmpPage} />
               </div>
             </div>
           </div>
-        </div>
         )}
 
         {/* RIGHT — Nội dung báo cáo */}
