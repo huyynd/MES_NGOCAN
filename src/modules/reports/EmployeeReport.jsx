@@ -12,6 +12,7 @@ import { reports } from "../../mesApi.js";
 import { fmt, fmtDate, statusClass, toast } from "../../ui.js";
 import * as XLSX from "xlsx";
 import { usePerm } from "../../perm.jsx";
+import { ListHeader, Section } from "../../components.jsx";
 
 /* ── helpers ── */
 const today      = () => new Date().toISOString().slice(0, 10);
@@ -598,16 +599,10 @@ export default function EmployeeReport() {
 
   return (
     <div className="space-y-4">
-
       {/* ── Header ── */}
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <div className="flex items-center gap-2">
-            <Users size={20} className="text-indigo-600" />
-            <h1 className="text-xl font-bold text-slate-800">Hiệu suất nhân viên sản xuất</h1>
-          </div>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
+      <ListHeader 
+        title="Hiệu suất nhân viên sản xuất"
+        actions={<>
           <button onClick={loadWorkers} disabled={loading}
             className="btn-ghost flex items-center gap-1.5 text-sm">
             <RefreshCcw size={14} className={loading ? "animate-spin" : ""} /> Làm mới
@@ -615,11 +610,11 @@ export default function EmployeeReport() {
           <button onClick={exportExcel} className="btn-primary flex items-center gap-1.5 text-sm">
             <Download size={14} /> Xuất Excel
           </button>
-        </div>
-      </div>
+        </>}
+      />
 
       {/* ── Filters ── */}
-      <div className="bg-white rounded-xl border border-slate-200 p-4">
+      <Section title="Bộ lọc báo cáo" defaultOpen={true}>
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
           {!isManager ? (
             <div>
@@ -657,7 +652,7 @@ export default function EmployeeReport() {
             </>
           )}
         </div>
-      </div>
+      </Section>
 
       {/* ── Chuyển giữa 2 báo cáo ── */}
       <div className="flex items-center gap-1 border-b border-slate-200">

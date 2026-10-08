@@ -92,6 +92,10 @@ export const production = {
   },
   taskByCode: (code) => http(`/production/task-by-code/${encodeURIComponent(code)}`),
   updateTask: (taskId, data) => http(`/production/tasks/${taskId}`, body("PUT", data)),
+  // Thiết kế cuộn BTP: tồn cuộn khả dụng, hoàn thành nhiều dòng, admin hủy hoàn thành
+  rollAvailability: (id) => http(`/production-orders/${id}/roll-availability`).then((r) => r.data),
+  completeTasks: (id, tasks) => http(`/production-orders/${id}/complete-tasks`, body("POST", { tasks })),
+  reopenTask: (taskId) => http(`/production/tasks/${taskId}/reopen`, body("POST", {})),
   materials: (id) => http(`/production-orders/${id}/materials`),
   saveMaterials: (id, lines) => http(`/production-orders/${id}/materials`, body("POST", { lines })),
   // NVL cần cung cấp (kế hoạch) + Yêu cầu NVL (xuất kho)

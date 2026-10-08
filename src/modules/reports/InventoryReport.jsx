@@ -8,7 +8,7 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   PieChart, Pie, Cell
 } from "recharts";
-import { ListHeader } from "../../components.jsx";
+import { ListHeader, Section } from "../../components.jsx";
 import { inventory } from "../../mesApi.js";
 import { fmt, fmtDate, toast } from "../../ui.js";
 import * as XLSX from "xlsx";
@@ -284,7 +284,8 @@ export default function InventoryReport({ lookups }) {
       />
 
       {/* Filter bar */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-4 py-3 flex flex-wrap items-end gap-4">
+      <Section title="Bộ lọc báo cáo" defaultOpen={true}>
+        <div className="flex flex-wrap items-end gap-4">
         <div>
           <label className="block text-xs font-medium text-slate-500 mb-1">Sản phẩm</label>
           <input
@@ -308,7 +309,8 @@ export default function InventoryReport({ lookups }) {
         <div className="text-xs text-slate-400 self-end pb-1.5 ml-auto">
           {loading ? "Đang tải…" : `${filteredStock.length} sản phẩm · ${recentTxns.length} giao dịch`}
         </div>
-      </div>
+        </div>
+      </Section>
 
       {/* KPI row */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">

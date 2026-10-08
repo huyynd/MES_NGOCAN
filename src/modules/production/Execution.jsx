@@ -113,15 +113,9 @@ function TaskCard({ t, canEdit, onSaved, lookups }) {
     catch (e) { toast.error("Lỗi cập nhật: " + e.message); }
     finally { setSaving(false); }
   };
-  const start = () => doUpdate({ status: "Đang sản xuất" });                                   // Bắt đầu / Tiếp tục
-  const saveProgress = () => doUpdate({ status: "Đang sản xuất", actual_qty: actual });
-  const pause = () => doUpdate({ status: "Dừng sản xuất", actual_qty: actual }); // Tạm dừng
-  const complete = () => {
-    const need = Number(t.quantity) || 0, act = Number(actual) || 0;
-    if (act < need) return toast.error(`Chưa thể Hoàn thành: SL thực tế (${fmt(act)}) phải ≥ SL đơn hàng (${fmt(need)}).`);
-    finishComplete(); // NVL cấp xuống coi như dùng hết → không cần ghi NVL thực tế để hoàn thành
-  };
-  const finishComplete = () => doUpdate({ status: "Hoàn thành", actual_qty: actual });
+  // 8c: màn Thực thi CHỈ đổi trạng thái vận hành; SL thực & Hoàn thành ghi ở màn chi tiết lệnh.
+  const start = () => doUpdate({ status: "Đang sản xuất" });   // Bắt đầu / Tiếp tục
+  const pause = () => doUpdate({ status: "Dừng sản xuất" });   // Tạm dừng
 
   return (
     <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
@@ -202,15 +196,15 @@ function TaskCard({ t, canEdit, onSaved, lookups }) {
           <Info label="Đội / Công nhân" value={[t.assigned_team, t.assigned_worker].filter(Boolean).join(" · ")} />
         </div>
 
-        <div className="pt-1 border-t border-slate-100">
-          <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1">SL thực tế sản xuất</label>
-            <input type="number" min="0" className={inputCls + (editable ? "" : " bg-slate-50")} disabled={!editable} value={actual} onChange={(e) => setActual(e.target.value)} placeholder="0" />
+        {(t.actual_qty != null && t.actual_qty !== '') && (
+          <div className="pt-1 border-t border-slate-100">
+            <div className="text-[11px] text-slate-400">SL thực tế đã ghi (ở màn chi tiết lệnh)</div>
+            <div className="text-sm font-semibold text-slate-800">{fmt(t.actual_qty)} {t.unit || ""}</div>
           </div>
-        </div>
-        {!isRunning && !isDone && <div className="text-[11px] text-slate-400">Bấm <b>"Bắt đầu sản xuất"</b> để mở nhập số lượng.</div>}
+        )}
+        <div className="text-[11px] text-slate-400 pt-1">Ghi SL thực & Hoàn thành ở màn <b>Chi tiết lệnh sản xuất</b>.</div>
 
-        {/* Nút điều khiển sản xuất theo trạng thái */}
+        {/* Nút điều khiển sản xuất theo trạng thái (chỉ đổi trạng thái vận hành) */}
         {canEdit && (
           <div className="flex flex-wrap gap-2 pt-1">
             {!isRunning && !isDone && (
@@ -218,14 +212,9 @@ function TaskCard({ t, canEdit, onSaved, lookups }) {
                 <Play size={16} /> {st === "Dừng sản xuất" ? "Tiếp tục sản xuất" : "Bắt đầu sản xuất"}
               </button>
             )}
-            {isRunning && (<>
-              <button onClick={saveProgress} disabled={saving} className="btn-ghost"><Save size={16} /> Lưu SL</button>
+            {isRunning && (
               <button onClick={pause} disabled={saving} className="btn-ghost text-amber-600 border-amber-200 hover:bg-amber-50"><Pause size={16} /> Tạm dừng</button>
-              <button onClick={complete} disabled={saving} className="btn-primary flex-1 justify-center" style={{ background: "#059669" }}><CheckCircle2 size={16} /> Hoàn thành sản xuất</button>
-            </>)}
-            {/* Ẩn nút ghi NVL thực tế — NVL cấp xuống coi như dùng hết (trừ kho qua phiếu xuất kho).
-                Đổi false → true để bật lại khi cần dùng sau này. */}
-            {false && <button onClick={() => { setMatMode("view"); setShowMat(true); }} className="btn-ghost text-blue-600 border-blue-200 hover:bg-blue-50"><Boxes size={16} /> NVL thực tế</button>}
+            )}
           </div>
         )}
       </div>

@@ -253,15 +253,15 @@ function Sidebar({ user, onLogout, collapsed, onToggle, mobileMenuOpen, onCloseM
   }).filter(Boolean);
 
   const itemCls = (isActive) =>
-    `w-full flex items-center ${collapsed ? "justify-center" : "gap-3 px-3"} py-2.5 rounded-lg text-sm font-medium transition ${isActive ? "bg-blue-600 text-white shadow-sm" : "text-slate-600 hover:bg-blue-50 hover:text-blue-700"}`;
+    `w-full flex items-center ${collapsed ? "justify-center" : "gap-3 px-3"} py-2.5 rounded-lg text-sm font-medium transition-all duration-200 ${isActive ? "bg-primary text-primary-foreground shadow-md shadow-primary/20 scale-[0.98]" : "text-slate-600 hover:bg-slate-100 hover:text-slate-900 hover:scale-[0.99]"}`;
 
   return (
     <>
       {mobileMenuOpen && (
         <div className="fixed inset-0 bg-slate-900/50 z-40 md:hidden" onClick={onCloseMobile} />
       )}
-      <aside className={`fixed inset-y-0 left-0 z-50 transform ${mobileMenuOpen ? "translate-x-0" : "-translate-x-full"} md:relative md:translate-x-0 ${collapsed ? "md:w-16 w-60" : "w-60"} shrink-0 bg-white border-r border-slate-200 text-slate-600 h-screen flex flex-col transition-all duration-300`}>
-        <div className={`px-4 py-4 border-b border-slate-100 shrink-0 flex items-center ${collapsed ? 'justify-center' : 'gap-3'} transition-all`}>
+      <aside className={`fixed inset-y-0 left-0 z-50 transform ${mobileMenuOpen ? "translate-x-0" : "-translate-x-full"} md:relative md:translate-x-0 ${collapsed ? "md:w-16 w-60" : "w-64"} shrink-0 glass-panel text-slate-600 h-screen flex flex-col transition-all duration-300 shadow-glass`}>
+        <div className={`px-4 py-4 border-b border-border shrink-0 flex items-center ${collapsed ? 'justify-center' : 'gap-3'} transition-all`}>
           <button onClick={onToggle} className="hidden md:block p-1 shrink-0 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded transition" title="Thu gọn/Mở rộng menu">
             <Menu size={20} />
           </button>

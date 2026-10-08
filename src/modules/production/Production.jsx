@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Plus, Trash2, ArrowLeft, Save, CalendarClock, Factory, List, GanttChartSquare, Pencil, Printer, GitBranch, Copy, ChevronDown, ChevronRight } from "lucide-react";
 import { production, processes } from "../../mesApi.js";
 import { usePerm } from "../../perm.jsx";
 import { inputCls, fmt, fmtDate, statusClass, toast } from "../../ui.js";
 import { PageHeader, Section, ListHeader, DataTable, UnitSelect, SearchSelect } from "../../components.jsx";
-import { PackageCheck } from "lucide-react";
+import { PackageCheck, CheckCircle2, Lock, RotateCcw } from "lucide-react";
 import Qr from "../../Qr.jsx";
 import ProductionGantt from "./ProductionGantt.jsx";
 
@@ -12,7 +12,7 @@ const STATUSES = ["Chờ duyệt", "Đã lên kế hoạch", "Chờ nguyên vậ
 
 /* ---- Form tạo / sửa lệnh sản xuất ---- */
 function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
-  const { can, fperm } = usePerm();
+  const { can, fperm, isAdmin } = usePerm();
   const fhid = (k) => fperm("production", k) === "hidden";
   const fdis = (k) => fperm("production", k) !== "edit";
   const [f, setF] = useState({
@@ -162,16 +162,22 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
 
   const [editing, setEditing] = useState(!editId); // tạo mới = sửa ngay; mở sẵn = xem
   const [meta, setMeta] = useState(null); // dữ liệu lệnh đã nạp (mã lệnh, SP, đơn...) cho tem QR
-  // Lệnh Hoàn thành nhưng có công đoạn chưa gán máy/ca/đội/công nhân/thực tế → vẫn cho sửa để bổ sung
-  const tasksIncomplete = (ts) => ts.some(
-    (t) => !t.machine_id || !t.shift || !t.assigned_team || !t.assigned_worker_id || (t.actual_qty === '' || t.actual_qty == null)
-  );
-  const locked = meta?.status === 'Đã hủy' ||
-    (meta?.status === 'Hoàn thành' && !tasksIncomplete(tasks));
+  // M40: khoá nút Lưu trong lúc đang gửi (chống bấm 2 lần). Ref chặn ngay lập tức — state chỉ cập nhật
+  // sau lần render, 2 cú bấm sát nhau vẫn lọt nếu chỉ dựa vào state.
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
+  // Chỉ lệnh Đã hủy mới khóa toàn bộ form. Dòng ĐÃ Hoàn thành khóa riêng từng dòng (bất biến).
+  const locked = meta?.status === 'Đã hủy';
+  const [rollAvail, setRollAvail] = useState(null);       // tồn cuộn khả dụng ở BTP cho công đoạn Cắt
+  const [selCodes, setSelCodes] = useState(() => new Set()); // task_code các dòng đang tích chọn để hoàn thành
+  const [completing, setCompleting] = useState(false);
+  const [cutModal, setCutModal] = useState(null);         // hộp xác nhận lô cuộn khi hoàn thành dòng Cắt
+  const toggleSel = (code) => setSelCodes((s) => { const n = new Set(s); n.has(code) ? n.delete(code) : n.add(code); return n; });
 
   // Nạp dữ liệu khi sửa
   const loadData = useCallback(() => {
     if (!editId) return;
+    production.rollAvailability(editId).then(setRollAvail).catch(() => setRollAvail(null));
     production.get(editId).then((d) => {
       setMeta(d);
       setF({
@@ -186,7 +192,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
       production.getTasks(editId).then((rows) => {
         if (rows && rows.length) {
           setTasks(rows.map((t, i) => ({
-            _k: i + 1, task_code: t.task_code, stage: t.stage, quantity: t.quantity, actual_qty: t.actual_qty ?? "", scrap_qty: t.scrap_qty ?? "",
+            _k: i + 1, id: t.id, task_code: t.task_code, stage: t.stage, quantity: t.quantity, actual_qty: t.actual_qty ?? "", scrap_qty: t.scrap_qty ?? "",
             machine_id: t.machine_id || "", shift: t.shift || "",
             planned_date: t.planned_date?.slice(0, 10) || "", planned_end_date: t.planned_end_date?.slice(0, 10) || "",
             assigned_team: t.assigned_team || "", assigned_worker: t.assigned_worker || "", assigned_worker_id: t.assigned_worker_id || "", status: t.status,
@@ -312,6 +318,9 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
     // Tỷ lệ (%) ở bảng NVL gộp → đồng bộ về mix_ratio (cấp lệnh); Số KG lưu riêng ở savePlannedMaterials.
     const mixRatio = plannedMats.filter((m) => m.material_id).map((m) => ({ material_id: m.material_id, ratio: m.ratio === '' || m.ratio == null ? null : Number(m.ratio) }));
     const matLines = plannedMats.filter((m) => m.material_id);
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
     try {
       if (editId) {
         // Status: chỉ áp khi người dùng CHỦ ĐỘNG đổi (khác trạng thái đã nạp).
@@ -332,6 +341,69 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
         onSaved(); // tạo mới → về list
       }
     } catch (e) { toast.error("Lỗi lưu lệnh sản xuất: " + e.message); }
+    finally { savingRef.current = false; setSaving(false); }
+  };
+
+  // ===== Hoàn thành dòng phân công (thiết kế cuộn BTP) =====
+  // Kiểm tra các dòng (theo task_code) đã đủ máy / công nhân / SL thực chưa.
+  const validateForComplete = (codes) => {
+    const rows = tasks.filter((t) => codes.includes(t.task_code));
+    const missing = rows.filter((t) => !t.machine_id || !(t.assigned_worker_id || t.assigned_worker) || !(Number(t.actual_qty) > 0));
+    if (missing.length) {
+      const details = missing.map((t) => {
+        const lacks = [];
+        if (!t.machine_id) lacks.push('máy');
+        if (!(t.assigned_worker_id || t.assigned_worker)) lacks.push('công nhân');
+        if (!(Number(t.actual_qty) > 0)) lacks.push('SL thực');
+        return `${t.stage} (${lacks.join(', ')})`;
+      }).join('; ');
+      toast.error(`Chưa đủ điều kiện hoàn thành: ${details}. Vui lòng điền đủ rồi thử lại.`);
+      return false;
+    }
+    return true;
+  };
+
+  // Bắt đầu hoàn thành: nếu có dòng Cắt → mở hộp xác nhận lô cuộn; nếu không → hoàn thành ngay.
+  const startComplete = async (codes) => {
+    codes = codes.filter((c) => c); // bỏ dòng chưa lưu (chưa có task_code)
+    if (!codes.length) return toast.error('Chưa chọn dòng nào đã lưu để hoàn thành. Hãy "Lưu phân công" trước.');
+    if (!validateForComplete(codes)) return;
+    const hasCut = tasks.some((t) => codes.includes(t.task_code) && t.stage === 'Cắt');
+    if (hasCut) {
+      try {
+        const info = await production.rollAvailability(editId);
+        setCutModal({ codes, lots: info.lots || [], finish: new Set(), spec_label: info.spec_label, total_kg: info.total_kg });
+      } catch (e) { toast.error('Lỗi tải tồn cuộn: ' + e.message); }
+    } else {
+      finishComplete(codes, []);
+    }
+  };
+
+  // Gọi API: lưu nháp (giữ task_code) rồi hoàn thành. Lô "đã hết cuộn" gắn vào dòng Cắt cuối cùng.
+  const finishComplete = async (codes, finishLots) => {
+    if (completing) return;
+    setCompleting(true);
+    try {
+      await production.saveTasks(editId, tasks.filter((t) => t.stage));
+      const cutCodes = tasks.filter((t) => codes.includes(t.task_code) && t.stage === 'Cắt').map((t) => t.task_code);
+      const blowCodes = codes.filter((c) => !cutCodes.includes(c));
+      const items = [
+        ...blowCodes.map((c) => ({ task_code: c })),
+        ...cutCodes.map((c, i) => ({ task_code: c, roll_finish_lots: i === cutCodes.length - 1 ? finishLots : [] })),
+      ];
+      await production.completeTasks(editId, items);
+      toast.success(`Đã hoàn thành ${codes.length} dòng phân công`);
+      setSelCodes(new Set()); setCutModal(null); loadData();
+    } catch (e) { toast.error('Lỗi hoàn thành: ' + e.message); }
+    finally { setCompleting(false); }
+  };
+
+  // Admin hủy hoàn thành 1 dòng
+  const reopenRow = async (taskId) => {
+    if (!taskId) return;
+    if (!confirm('Hủy hoàn thành dòng này và hoàn kho về đúng như đã ghi?')) return;
+    try { await production.reopenTask(taskId); toast.success('Đã hủy hoàn thành dòng'); loadData(); }
+    catch (e) { toast.error('Lỗi hủy hoàn thành: ' + e.message); }
   };
 
   const del = async () => {
@@ -354,7 +426,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
           {can("production", "delete") && <button onClick={del} className="btn-ghost" style={{ color: "#e11d48" }}><Trash2 size={16} /> Xóa</button>}
         </>) : (<>
           {editId && <button onClick={() => { setEditing(false); loadData(); }} className="btn-ghost">Hủy</button>}
-          <button onClick={save} className="btn-primary"><Save size={16} /> Lưu lệnh sản xuất</button>
+          <button onClick={save} disabled={saving} className="btn-primary disabled:opacity-60 disabled:cursor-not-allowed"><Save size={16} /> {saving ? "Đang lưu..." : "Lưu lệnh sản xuất"}</button>
         </>)} />
 
       <fieldset disabled={!editing} className="space-y-5">
@@ -392,10 +464,12 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
             </select>
           </Field>}
           {editId && <Field label="Trạng thái">
+            {/* 'Hoàn thành' được suy ra tự động khi hoàn thành các dòng phân công — không đặt tay ở đây. */}
             <select className={inputCls} value={f.status} onChange={(e) => set("status", e.target.value)}>
               {!f.status && <option value="">-- Chọn trạng thái --</option>}
-              {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+              {STATUSES.filter((s) => s !== 'Hoàn thành' || f.status === 'Hoàn thành').map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
+            {f.status === 'Hoàn thành' && <p className="text-xs text-slate-400 mt-1">Lệnh đã Hoàn thành (tự động theo sản lượng). Dùng "Hủy hoàn thành" trên từng dòng nếu cần sửa.</p>}
           </Field>}
           <Field label="Ghi chú">
             <input className={inputCls} value={f.note} onChange={(e) => set("note", e.target.value)} />
@@ -407,9 +481,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
       {editId && meta && (() => {
         const target = Number(f.quantity) || 0;
         const produced = Number(meta.produced_qty) || 0;
-        const scrap = Number(meta.scrap_qty) || 0;
         const pctDone = target > 0 ? Math.min(100, Math.round((produced / target) * 100)) : 0;
-        const pctScrap = produced + scrap > 0 ? Math.round((scrap / (produced + scrap)) * 100) : 0;
         const remain = Math.max(0, target - produced);
         const stat = (label, value, sub, cls = "text-slate-800") => (
           <div className="bg-white rounded-xl border border-slate-200 px-4 py-3">
@@ -420,13 +492,12 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
         );
         return (
           <Section title="Kết quả thực tế">
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+            {/* Phế không ghi theo lệnh — chỉ thống kê ở màn Phế phẩm (Áp phế). */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               {stat("Trạng thái", <span className={`inline-flex px-2.5 py-0.5 rounded-full text-sm font-medium ${statusClass(meta.status)}`}>{meta.status}</span>, `${meta.task_done || 0}/${meta.task_count || 0} việc xong`)}
               {stat("Số lượng cần SX", fmt(target), f.unit)}
               {stat("Đã sản xuất", fmt(produced), `Còn lại ${fmt(remain)} ${f.unit || ""}`, pctDone >= 100 ? "text-emerald-600" : "text-blue-600")}
               {stat("% đã sản xuất", pctDone + "%", null, pctDone >= 100 ? "text-emerald-600" : "text-blue-600")}
-              {stat("Phế phẩm", fmt(scrap), f.unit, scrap > 0 ? "text-rose-600" : "text-slate-800")}
-              {stat("% phế phẩm", pctScrap + "%", "trên tổng SX", pctScrap > 0 ? "text-rose-600" : "text-slate-800")}
             </div>
             <div className="mt-3">
               <div className="flex justify-between text-xs text-slate-500 mb-1">
@@ -607,7 +678,14 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
       )}
 
       {editId && !fhid("tasks") && (
-        <Section title="Phân công sản xuất — chia lệnh nhỏ (công đoạn + sản lượng)">
+        <Section title="Phân công sản xuất — chia lệnh nhỏ (công đoạn + sản lượng)"
+          action={!fdis("tasks") && !locked && (
+            <button type="button" disabled={completing || !selCodes.size}
+              onClick={() => startComplete([...selCodes])}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-700 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed">
+              <CheckCircle2 size={15} /> Hoàn thành các dòng đã chọn{selCodes.size ? ` (${selCodes.size})` : ''}
+            </button>
+          )}>
           <fieldset disabled={fdis("tasks")}>
           <div className="overflow-x-auto">
             <table className="w-full text-sm whitespace-nowrap">
@@ -622,7 +700,8 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
                   <th className="text-left py-2 font-medium min-w-[130px]">Đội</th>
                   <th className="text-left py-2 font-medium min-w-[160px]">Công nhân</th>
                   <th className="text-left py-2 font-medium min-w-[100px]">Thực tế</th>
-                  <th className="text-left py-2 font-medium min-w-[130px]">Trạng thái</th>
+                  <th className="text-left py-2 font-medium min-w-[150px]">Trạng thái</th>
+                  <th className="text-center py-2 font-medium min-w-[120px]">Hoàn thành</th>
                   <th className="w-10" />
                 </tr>
               </thead>
@@ -655,39 +734,65 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
                           </td>
                           {/* SẢN LƯỢNG (kế hoạch): tổng cho phép các lần — trung tính, không ràng buộc */}
                           <td className="py-2 pr-2 font-medium text-slate-500 cursor-pointer" onClick={() => toggleStage(stg)} title="Tổng sản lượng cho phép của các lần (kế hoạch)">Σ KH {fmt(sumQty)}</td>
-                          <td colSpan={6} className="cursor-pointer" onClick={() => toggleStage(stg)} />
+                          <td colSpan={6} className="cursor-pointer py-2 pr-2" onClick={() => toggleStage(stg)}>
+                            {stg === "Cắt" && rollAvail && (
+                              <span className="inline-flex items-center gap-1.5 text-xs font-medium text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-full px-2.5 py-0.5">
+                                🧵 Tồn cuộn khả dụng: {fmt(rollAvail.total_kg)} kg ({rollAvail.spec_label})
+                              </span>
+                            )}
+                          </td>
                           {/* THỰC TẾ: total cộng dồn so với SL cần SX — ràng buộc ≤ 150% */}
                           <td className={`py-2 pr-2 font-semibold ${actOver ? "text-rose-600" : actMet ? "text-emerald-600" : "text-slate-600"}`} title={actOver ? `Vượt 150% SL cần SX (tối đa ${fmt(capStage)})` : undefined}>Σ {fmt(sumAct)} / {fmt(qtyReq)}{actOver ? " ⚠ >150%" : actMet ? " ✓" : ""}</td>
-                          <td className="py-2 pr-2 text-right" colSpan={2}>
+                          <td className="py-2 pr-2 text-right" colSpan={3}>
                             {!fdis("tasks") && <button type="button" onClick={() => addTaskFor(stg)} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-blue-200 bg-white text-blue-600 text-xs font-medium hover:bg-blue-50 hover:border-blue-300 shadow-sm transition-colors"><Plus size={15} /> Thêm lần {stg.toLowerCase()}</button>}
                           </td>
                         </tr>
                         {/* Các dòng CON: từng lần làm (ẩn khi thu gọn) */}
                         {isOpen && rows.map((t) => {
                           const qtyOver = (Number(t.quantity) || 0) > capStage + 1e-6; // sản lượng 1 lần vượt 150%
+                          const rowLocked = t.status === 'Hoàn thành'; // dòng đã hoàn thành: bất biến
+                          const dis = rowLocked; // khóa mọi ô nhập
                           return (
-                          <tr key={t._k} className="border-b border-slate-100">
-                            <td className="py-1.5 pr-2 pl-8" />
-                            <td className="py-1.5 pr-2"><input type="number" min="0" className={`${inputCls}${qtyOver ? " !border-rose-400 !ring-2 !ring-rose-200" : ""}`} value={t.quantity} onChange={(e) => upTask(t._k, "quantity", e.target.value)} title={qtyOver ? `Sản lượng 1 lần vượt 150% SL cần SX (tối đa ${fmt(capStage)})` : undefined} /></td>
-                            <td className="py-1.5 pr-2"><select className={inputCls} value={t.machine_id} onChange={(e) => upTask(t._k, "machine_id", e.target.value)}><option value="">-- Chọn máy --</option>{machinesForStage.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</select></td>
-                            <td className="py-1.5 pr-2"><select className={inputCls} value={t.shift} onChange={(e) => upTask(t._k, "shift", e.target.value)}><option value="">--</option>{(lookups.shifts || []).map((c) => <option key={c}>{c}</option>)}</select></td>
-                            <td className="py-1.5 pr-2"><input type="date" className={inputCls} value={t.planned_date} onChange={(e) => upTask(t._k, "planned_date", e.target.value)} /></td>
-                            <td className="py-1.5 pr-2"><input type="date" className={inputCls} value={t.planned_end_date} onChange={(e) => upTask(t._k, "planned_end_date", e.target.value)} /></td>
+                          <tr key={t._k} className={`border-b border-slate-100${rowLocked ? " bg-emerald-50/40" : ""}`}>
+                            <td className="py-1.5 pr-2 pl-8">{rowLocked && <Lock size={13} className="text-emerald-600 inline" />}</td>
+                            <td className="py-1.5 pr-2"><input disabled={dis} type="number" min="0" className={`${inputCls}${qtyOver ? " !border-rose-400 !ring-2 !ring-rose-200" : ""}`} value={t.quantity} onChange={(e) => upTask(t._k, "quantity", e.target.value)} title={qtyOver ? `Sản lượng 1 lần vượt 150% SL cần SX (tối đa ${fmt(capStage)})` : undefined} /></td>
+                            <td className="py-1.5 pr-2"><select disabled={dis} className={inputCls} value={t.machine_id} onChange={(e) => upTask(t._k, "machine_id", e.target.value)}><option value="">-- Chọn máy --</option>{machinesForStage.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</select></td>
+                            <td className="py-1.5 pr-2"><select disabled={dis} className={inputCls} value={t.shift} onChange={(e) => upTask(t._k, "shift", e.target.value)}><option value="">--</option>{(lookups.shifts || []).map((c) => <option key={c}>{c}</option>)}</select></td>
+                            <td className="py-1.5 pr-2"><input disabled={dis} type="date" className={inputCls} value={t.planned_date} onChange={(e) => upTask(t._k, "planned_date", e.target.value)} /></td>
+                            <td className="py-1.5 pr-2"><input disabled={dis} type="date" className={inputCls} value={t.planned_end_date} onChange={(e) => upTask(t._k, "planned_end_date", e.target.value)} /></td>
                             <td className="py-1.5 pr-2">
-                              <select className={inputCls} value={t.assigned_team} onChange={(e) => setTaskTeam(t._k, e.target.value)}>
+                              <select disabled={dis} className={inputCls} value={t.assigned_team} onChange={(e) => setTaskTeam(t._k, e.target.value)}>
                                 <option value="">-- Đội --</option>
                                 {teams.map((tm) => <option key={tm}>{tm}</option>)}
                               </select>
                             </td>
                             <td className="py-1.5 pr-2">
-                              <select className={inputCls} value={t.assigned_worker_id || ""} onChange={(e) => setTaskWorker(t._k, e.target.value)}>
+                              <select disabled={dis} className={inputCls} value={t.assigned_worker_id || ""} onChange={(e) => setTaskWorker(t._k, e.target.value)}>
                                 <option value="">-- Công nhân --</option>
                                 {workersOf(t.assigned_team).map((e) => <option key={e.id} value={e.id}>{e.employee_code ? `${e.employee_code} · ` : ""}{e.name}</option>)}
                               </select>
                             </td>
-                            <td className="py-1.5 pr-2"><input type="number" min="0" className={inputCls} value={t.actual_qty} onChange={(e) => upTask(t._k, "actual_qty", e.target.value)} placeholder="SL thực" /></td>
-                            <td className="py-1.5 pr-2"><select className={inputCls} value={t.status} onChange={(e) => upTask(t._k, "status", e.target.value)}><option>Chờ</option><option>Đang sản xuất</option><option>Hoàn thành</option><option>Đã hủy</option></select></td>
-                            <td className="py-1.5 text-center"><button onClick={() => rmTask(t._k)} className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={16} /></button></td>
+                            <td className="py-1.5 pr-2"><input disabled={dis} type="number" min="0" className={inputCls} value={t.actual_qty} onChange={(e) => upTask(t._k, "actual_qty", e.target.value)} placeholder="SL thực" /></td>
+                            <td className="py-1.5 pr-2">
+                              {rowLocked
+                                ? <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">Hoàn thành</span>
+                                : <select disabled={dis} className={inputCls} value={t.status === 'Hoàn thành' ? 'Chờ' : t.status} onChange={(e) => upTask(t._k, "status", e.target.value)}><option>Chờ</option><option>Đang sản xuất</option><option>Dừng sản xuất</option><option>Đã hủy</option></select>}
+                            </td>
+                            <td className="py-1.5 pr-2 text-center">
+                              {rowLocked
+                                ? (isAdmin && !fdis("tasks") && <button type="button" onClick={() => reopenRow(t.id)} className="inline-flex items-center gap-1 text-xs text-amber-600 hover:text-amber-800" title="Hủy hoàn thành (Admin)"><RotateCcw size={14} /> Hủy HT</button>)
+                                : (!fdis("tasks") && !locked && (
+                                  <div className="inline-flex items-center gap-2">
+                                    <input type="checkbox" title="Chọn để hoàn thành nhiều dòng" disabled={!t.task_code}
+                                      checked={selCodes.has(t.task_code)} onChange={() => t.task_code && toggleSel(t.task_code)} />
+                                    <button type="button" disabled={completing || !t.task_code} onClick={() => startComplete([t.task_code])}
+                                      className="inline-flex items-center gap-1 text-xs text-emerald-600 hover:text-emerald-800 disabled:opacity-40" title={t.task_code ? "Hoàn thành dòng này" : "Lưu phân công trước"}>
+                                      <CheckCircle2 size={14} /> HT
+                                    </button>
+                                  </div>
+                                ))}
+                            </td>
+                            <td className="py-1.5 text-center">{!rowLocked && <button disabled={dis} onClick={() => rmTask(t._k)} className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={16} /></button>}</td>
                           </tr>
                           );
                         })}
@@ -695,7 +800,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
                     );
                   });
                 })()}
-                {!tasks.length && <tr><td colSpan={11} className="py-4 text-center text-slate-400 text-sm">Chưa có phân công. Bấm "＋ Thổi" hoặc "＋ Cắt" để thêm lần làm.</td></tr>}
+                {!tasks.length && <tr><td colSpan={12} className="py-4 text-center text-slate-400 text-sm">Chưa có phân công. Bấm "＋ Thổi" hoặc "＋ Cắt" để thêm lần làm.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -704,6 +809,51 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
         </Section>
       )}
       </fieldset>
+
+      {/* Hộp xác nhận lô cuộn khi hoàn thành công đoạn Cắt */}
+      {cutModal && (() => {
+        const cutQty = tasks.filter((t) => cutModal.codes.includes(t.task_code) && t.stage === 'Cắt').reduce((s, t) => s + (Number(t.actual_qty) || 0), 0);
+        const enough = cutModal.total_kg >= cutQty - 1e-6;
+        return (
+        <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center p-4 z-[70]">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-lg flex flex-col max-h-[90vh]">
+            <div className="flex items-center justify-between p-4 border-b border-slate-100">
+              <h2 className="text-lg font-semibold text-slate-800">Hoàn thành Cắt — trừ cuộn BTP</h2>
+              <button onClick={() => setCutModal(null)} className="text-slate-400 hover:text-slate-600">&times;</button>
+            </div>
+            <div className="p-4 overflow-y-auto space-y-3 text-sm">
+              <p>Thông số: <b>{cutModal.spec_label}</b></p>
+              <p>Cần cắt: <b>{fmt(cutQty)} kg</b> · Tồn cuộn khả dụng: <b className={enough ? "text-emerald-600" : "text-rose-600"}>{fmt(cutModal.total_kg)} kg</b></p>
+              {!enough && <p className="text-rose-600 font-medium">⚠ Không đủ cuộn để cắt — hệ thống sẽ chặn khi xác nhận.</p>}
+              <p className="text-slate-500">Các lô sẽ bị trừ (ưu tiên lô của lệnh rồi FIFO). Tích <b>"Đã hết cuộn"</b> để xóa phần kg dư của lô sau khi cắt (ghi "Điều chỉnh – Hao hụt cắt"):</p>
+              <div className="border border-slate-200 rounded-lg divide-y divide-slate-100">
+                {cutModal.lots.length === 0 && <div className="p-3 text-slate-400">Không có lô cuộn khớp thông số.</div>}
+                {cutModal.lots.map((lot) => (
+                  <label key={lot.lot_code} className="flex items-center justify-between gap-3 p-2.5 cursor-pointer hover:bg-slate-50">
+                    <span>
+                      <b>{lot.lot_code}</b>{lot.is_own ? <span className="ml-1 text-xs text-indigo-600">(lô của lệnh)</span> : ""}
+                      <span className="text-slate-500"> · {lot.location} · {fmt(lot.qty)} kg</span>
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 text-xs">
+                      <input type="checkbox" checked={cutModal.finish.has(lot.lot_code)}
+                        onChange={() => setCutModal((m) => { const f = new Set(m.finish); f.has(lot.lot_code) ? f.delete(lot.lot_code) : f.add(lot.lot_code); return { ...m, finish: f }; })} />
+                      Đã hết cuộn
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div className="p-4 border-t border-slate-100 flex justify-end gap-3 bg-slate-50 rounded-b-lg">
+              <button onClick={() => setCutModal(null)} className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-200 rounded-lg">Hủy</button>
+              <button onClick={() => finishComplete(cutModal.codes, [...cutModal.finish])} disabled={completing}
+                className="px-4 py-2 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg disabled:opacity-60 flex items-center gap-2">
+                <CheckCircle2 size={16} /> {completing ? "Đang xử lý..." : "Xác nhận hoàn thành"}
+              </button>
+            </div>
+          </div>
+        </div>
+        );
+      })()}
 
       {false /* editId */ && (
         <Section title="Mã truy xuất các lô"
@@ -752,14 +902,19 @@ export function ScheduleModal({ lookups, order, onClose, onSaved }) {
     }).catch(e => { toast.error("Lỗi tải phân công: " + e.message); onClose(); });
   }, [order.id, onClose]);
 
+  const [saving, setSaving] = useState(false); // M40: chống bấm "Lưu thay đổi" 2 lần
+  const savingRef = useRef(false);
   const save = async () => {
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
     try {
       await production.saveTasks(order.id, tasks.filter(t => t.stage));
       toast.success("Lưu lịch phân công thành công");
       onSaved();
     } catch (e) {
       toast.error("Lỗi lưu lập lịch: " + e.message);
-    }
+    } finally { savingRef.current = false; setSaving(false); }
   };
 
   const setTask = (id, k, v) => setTasks(ts => ts.map(t => t.id === id ? { ...t, [k]: v } : t));
@@ -822,7 +977,7 @@ export function ScheduleModal({ lookups, order, onClose, onSaved }) {
         </div>
         <div className="p-4 border-t border-slate-100 flex justify-end gap-3 bg-slate-50 rounded-b-lg">
           <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-200 rounded-lg transition-colors">Hủy</button>
-          <button onClick={save} disabled={loading} className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors flex items-center gap-2"><Save size={16}/> Lưu thay đổi</button>
+          <button onClick={save} disabled={loading || saving} className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors flex items-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"><Save size={16}/> {saving ? "Đang lưu..." : "Lưu thay đổi"}</button>
         </div>
       </div>
     </div>
@@ -894,7 +1049,7 @@ export default function ProductionModule({ lookups, focusId, onFocusConsumed, on
             <div className={`h-full rounded-full ${Number(r.produced_qty) >= Number(r.quantity) ? "bg-emerald-500" : "bg-blue-500"}`}
               style={{ width: `${Math.max(Math.min(100, (Number(r.produced_qty) / Number(r.quantity)) * 100), 2)}%` }} />
           </div>
-          <div className="text-[11px] text-slate-400 mt-0.5">{r.task_done}/{r.task_count} việc xong{Number(r.scrap_qty) > 0 && <span className="text-rose-500"> · phế {fmt(r.scrap_qty)}</span>}</div>
+          <div className="text-[11px] text-slate-400 mt-0.5">{r.task_done}/{r.task_count} việc xong</div>
         </div>
       ) : <span className="text-slate-400 text-xs">Chưa phân công</span> },
     { key: "priority", label: "Ưu tiên", filter: "select", render: (r) => {

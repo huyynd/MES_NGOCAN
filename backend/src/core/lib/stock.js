@@ -42,6 +42,9 @@ async function applyStock(client, o) {
                    -- Không ghi đè specs đã có bằng {} (trường hợp xuất chỉ biết spec_key)
                    specs = CASE WHEN inventory_stock.specs = '{}'::jsonb THEN EXCLUDED.specs ELSE inventory_stock.specs END,
                    unit = COALESCE(EXCLUDED.unit, inventory_stock.unit),
+                   -- FIFO (M50): dòng đã hết hàng nay nhập lại → coi như lô mới vào kho
+                   created_at = CASE WHEN inventory_stock.quantity <= 0 AND EXCLUDED.quantity > 0
+                                     THEN now() ELSE inventory_stock.created_at END,
                    updated_at = now()
      RETURNING quantity`,
     [o.product_id, o.location_id || null, JSON.stringify(specs), spec_key, o.lot_code || '',

@@ -1,6 +1,6 @@
 // backend/controllers/productionController.js
 const db = require('../../core/db');
-const { buildSpecKey, legacyAttrs, specsFromBody } = require('../../core/lib/specs');
+const { buildSpecKey, legacyAttrs, specsFromBody, cleanSpecs } = require('../../core/lib/specs');
 const { upUnit } = require('../../core/lib/units');
 const { guardDelete } = require('../../core/lib/deleteGuard');
 const { getDataScope } = require('../../core/dataScope');
@@ -113,71 +113,140 @@ async function hasPostedStock(conn, poId) {
   return Number(r.rows[0].s) > 0;
 }
 
-/**
- * Kho tự động (backflush) khi lệnh hoàn thành lần đầu:
- *  - Nhập kho Thành phẩm/BTP đúng sản phẩm + thuộc tính (SL = sản lượng thực)
- *  - Trừ NVL theo định mức BOM còn hiệu lực (theo tỉ lệ sản lượng)
- */
-// Đồng bộ kho theo TỪNG công đoạn (WIP): mỗi công đoạn xong nhập kho đầu ra của nó
-// (công đoạn giữa → BTP, công đoạn cuối → TP); công đoạn sau TIÊU HAO (trừ) BTP mà công đoạn trước tạo ra.
-// Nhập/điều chỉnh theo CHÊNH LỆCH so với đã nhập trước đó (posted_qty theo từng công đoạn) → sửa SL là kho tự khớp.
-async function syncOrderInventory(client, poId) {
-  const o = (await client.query(`
-    SELECT po.id, po.product_id, po.specs, po.spec_key,
-           po.attr_size, po.attr_thickness, po.attr_color, po.order_code, p.product_type, p.unit
-    FROM production_orders po JOIN products p ON p.id = po.product_id WHERE po.id = $1`, [poId])).rows[0];
-  if (!o) return;
-  const tasks = (await client.query(
-    `SELECT id, stage, quantity, actual_qty, status, posted_qty FROM production_tasks WHERE production_order_id = $1 ORDER BY seq`, [poId])).rows;
-  if (!tasks.length) return;
+// ===== GHI KHO THEO SỰ KIỆN (thiết kế cuộn BTP — xem docs/ai/plans/2026-10-08-thiet-ke-cuon-btp.md) =====
+// Thổi hoàn thành → nhập cuộn vào BTP. Cắt hoàn thành → trừ cuộn BTP (FIFO, ưu tiên lô của lệnh) + nhập bao bì TP.
+// Chỉ ghi khi một dòng CHUYỂN sang Hoàn thành mà posted_qty = 0. Dòng hoàn thành bị khóa nên không ghi lại.
 
-  const locOf = async (whType) => (await client.query(
-    `SELECT l.id FROM locations l JOIN warehouses w ON w.id = l.warehouse_id
-     WHERE w.warehouse_type = $1 AND l.is_deleted = FALSE ORDER BY l.created_at LIMIT 1`, [whType])).rows[0]?.id || null;
-  // Kho theo LÔ: mỗi lệnh SX = 1 lô (lot_code = mã LSX), gom theo spec_key (chuẩn hoá qua applyStock);
-  // BTP và TP khác vị trí kho. Mọi thay đổi tồn đi qua applyStock → nhất quán + tự ghi giao dịch.
-  const stockOpts = (locId, delta, note) => ({
-    product_id: o.product_id, location_id: locId, delta, unit: o.unit,
-    specs: o.specs || {}, lot_code: o.order_code, prod_order_id: o.id,
-    clampZero: false, ref_code: o.order_code, note,
-  });
-
-  const btpLoc = await locOf('BTP');
-  const tpLoc = await locOf('TP');
-  const finalStage = tasks.some(t => t.stage === 'Cắt') ? 'Cắt' : 'Thổi';
-  const firstStage = tasks[0].stage;                                  // công đoạn đầu (theo seq)
-  const finalLoc = o.product_type === 'Bán thành phẩm' ? btpLoc : tpLoc; // đầu ra công đoạn cuối theo loại SP
-
-  let totalFinal = 0;
-  for (const t of tasks) {
-    const producedT = t.status === 'Hoàn thành' ? (Number(t.actual_qty == null ? t.quantity : t.actual_qty) || 0) : 0;
-    const delta = producedT - Number(t.posted_qty || 0);
-    if (delta !== 0) {
-      // (a) Nhập kho ĐẦU RA của công đoạn này — THIẾU KHO thì THROW để rollback,
-      //     tránh mất sản lượng (trước đây bỏ qua nhập kho nhưng vẫn ghi posted_qty → tồn lệch).
-      const outLoc = t.stage === finalStage ? finalLoc : btpLoc;
-      if (!outLoc) throw new Error(`Chưa có kho ${t.stage === finalStage ? (o.product_type === 'Bán thành phẩm' ? 'Bán thành phẩm' : 'Thành phẩm') : 'Bán thành phẩm'} để nhập kho tự động — vui lòng tạo kho trước khi hoàn thành lệnh.`);
-      await applyStock(client, stockOpts(outLoc, delta, `Nhập kho ${t.stage} (tự động)`));
-      // (b) TIÊU HAO BTP của công đoạn trước (mọi công đoạn trừ công đoạn đầu)
-      if (t.stage !== firstStage) {
-        if (!btpLoc) throw new Error('Chưa có kho Bán thành phẩm để tiêu hao BTP — vui lòng tạo kho BTP trước.');
-        await applyStock(client, stockOpts(btpLoc, -delta, `Tiêu hao BTP cho ${t.stage} (tự động)`));
-      }
-      await client.query(`UPDATE production_tasks SET posted_qty = $2 WHERE id = $1`, [t.id, producedT]);
-    }
-    if (t.stage === finalStage) totalFinal += producedT;
-  }
-  // Giữ tổng thành phẩm ở cấp lệnh cho hiển thị/tương thích
-  await client.query(`UPDATE production_orders SET posted_qty = $2::numeric, inventory_posted = ($2::numeric > 0) WHERE id = $1`, [poId, totalFinal]);
+// Mã cuộn chung (SP-PE-TC) lấy từ app_settings.roll_product_id (jsonb chứa chuỗi uuid)
+async function getRollProductId(client) {
+  const r = await client.query(`SELECT value FROM app_settings WHERE key = 'roll_product_id'`);
+  const v = r.rows[0]?.value;
+  return v == null ? null : String(v);
 }
 
-// One-off backfill: đồng bộ lại kho theo công đoạn cho 1 lệnh (tự mở transaction).
-exports.resyncInventory = async (poId) => {
-  const client = await db.pool.connect();
-  try { await client.query('BEGIN'); await syncOrderInventory(client, poId); await client.query('COMMIT'); }
-  catch (e) { await client.query('ROLLBACK'); throw e; }
-  finally { client.release(); }
-};
+// Location đầu tiên của một loại kho
+async function locOf(client, whType) {
+  return (await client.query(
+    `SELECT l.id FROM locations l JOIN warehouses w ON w.id = l.warehouse_id
+     WHERE w.warehouse_type = $1 AND l.is_deleted = FALSE ORDER BY l.created_at LIMIT 1`, [whType])).rows[0]?.id || null;
+}
+
+// Nhãn thông số dễ đọc cho thông báo lỗi ("60×40 · 2 dem · Trắng")
+function specLabel(specs) {
+  const vals = Object.values(cleanSpecs(specs || {}));
+  return vals.length ? vals.join(' · ') : '(không có thông số)';
+}
+
+/**
+ * Ghi kho khi MỘT dòng phân công chuyển sang Hoàn thành (posted_qty = 0 → chưa ghi).
+ * @param po   { id, order_code, product_id, product_type, unit, product_code, specs }
+ * @param task { id, task_code, stage, actual_qty }
+ * @param finishLots  danh sách lô cuộn "đã hết cuộn" (chỉ dùng cho Cắt)
+ * Trả về số kg đầu ra (để cộng dồn posted_qty cấp lệnh). Ném lỗi nếu thiếu kho/thiếu cuộn → rollback.
+ */
+async function postTaskStock(client, po, task, finishLots = []) {
+  const q = Number(task.actual_qty);
+  if (!(q > 0)) throw new Error(`Lần ${task.task_code} (${task.stage}): chưa có SL thực để nhập kho.`);
+  const specs = po.specs || {};
+  const btpLoc = await locOf(client, 'BTP');
+
+  if (task.stage === 'Thổi') {
+    if (!btpLoc) throw new Error('Chưa có kho Bán thành phẩm (BTP) để nhập cuộn — vui lòng tạo kho trước.');
+    // SP của lệnh là BTP (gồm SP-PE-TC và mã BTP cũ) → nhập chính SP; ngược lại → nhập mã cuộn chung
+    let outProduct = po.product_id;
+    if (po.product_type !== 'Bán thành phẩm') {
+      outProduct = await getRollProductId(client);
+      if (!outProduct) throw new Error('Chưa cấu hình mã cuộn chung (SP-PE-TC) trong app_settings.roll_product_id.');
+    }
+    await applyStock(client, {
+      product_id: outProduct, location_id: btpLoc, delta: q, unit: 'kg',
+      specs, lot_code: po.order_code, prod_order_id: po.id, clampZero: false,
+      trx_type: 'Nhập', ref_code: po.order_code, note: `Nhập cuộn — Thổi (LSX ${po.order_code})`,
+    });
+    return q;
+  }
+
+  if (task.stage === 'Cắt') {
+    const tpLoc = await locOf(client, 'TP');
+    if (!tpLoc) throw new Error('Chưa có kho Thành phẩm (TP) để nhập bao bì — vui lòng tạo kho trước.');
+    if (!btpLoc) throw new Error('Chưa có kho Bán thành phẩm (BTP) để trừ cuộn — vui lòng tạo kho trước.');
+    const rollId = await getRollProductId(client);
+    if (!rollId) throw new Error('Chưa cấu hình mã cuộn chung (SP-PE-TC) trong app_settings.roll_product_id.');
+    if (upUnit(po.unit) !== 'Kg') throw new Error(`Đơn vị sản phẩm "${po.product_code}" là "${po.unit}" — công đoạn Cắt chỉ hỗ trợ đơn vị kg.`);
+
+    const specKey = buildSpecKey(specs);
+    // Các lô cuộn khả dụng ở BTP, khớp 100% thông số; ưu tiên lô của chính lệnh rồi FIFO. Khóa để chống cắt song song.
+    const lots = (await client.query(`
+      SELECT s.id, s.location_id, s.lot_code, s.quantity, s.specs
+      FROM inventory_stock s
+      JOIN locations l  ON l.id = s.location_id
+      JOIN warehouses w ON w.id = l.warehouse_id
+      WHERE s.product_id = $1 AND s.spec_key = $2 AND w.warehouse_type = 'BTP' AND s.quantity > 0
+      ORDER BY (s.lot_code = $3) DESC, s.created_at ASC
+      FOR UPDATE OF s`, [rollId, specKey, po.order_code])).rows;
+    const total = lots.reduce((s, r) => s + Number(r.quantity), 0);
+    if (total < q - 1e-6) {
+      throw new Error(`Kho BTP chỉ còn ${total} kg cuộn [${specLabel(specs)}]. Không đủ để cắt ${q} kg.`);
+    }
+
+    const finishSet = new Set((finishLots || []).map(String));
+    let need = q;
+    for (const lot of lots) {
+      const avail = Number(lot.quantity);
+      const take = Math.min(avail, Math.max(need, 0));
+      const marked = finishSet.has(lot.lot_code);
+      const writeOff = marked ? avail - take : 0; // phần dư xóa do "đã hết cuộn"
+      if (take <= 1e-6 && writeOff <= 1e-6) { if (need <= 1e-6) continue; else continue; }
+      if (take > 0) {
+        await applyStock(client, {
+          product_id: rollId, location_id: lot.location_id, delta: -take, unit: 'kg',
+          specs: lot.specs || specs, spec_key: specKey, lot_code: lot.lot_code, prod_order_id: po.id,
+          clampZero: true, trx_type: 'Xuất', ref_code: po.order_code,
+          note: `Trừ cuộn để cắt (LSX ${po.order_code}, lô ${lot.lot_code})`,
+        });
+      }
+      if (writeOff > 1e-6) {
+        await applyStock(client, {
+          product_id: rollId, location_id: lot.location_id, delta: -writeOff, unit: 'kg',
+          specs: lot.specs || specs, spec_key: specKey, lot_code: lot.lot_code, prod_order_id: po.id,
+          clampZero: true, trx_type: 'Điều chỉnh', ref_code: po.order_code,
+          note: `Hao hụt cắt — ${task.task_code} (lô ${lot.lot_code})`,
+        });
+      }
+      await client.query(
+        `INSERT INTO production_roll_usage
+           (production_order_id, task_code, roll_product_id, location_id, lot_code, spec_key, specs, qty_used, qty_written_off)
+         VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9)`,
+        [po.id, task.task_code, rollId, lot.location_id, lot.lot_code, specKey,
+         JSON.stringify(lot.specs || specs), take, writeOff]);
+      need -= take;
+    }
+
+    // Nhập bao bì (SP của lệnh) vào TP
+    await applyStock(client, {
+      product_id: po.product_id, location_id: tpLoc, delta: q, unit: 'kg',
+      specs, lot_code: po.order_code, prod_order_id: po.id, clampZero: false,
+      trx_type: 'Nhập', ref_code: po.order_code, note: `Nhập bao bì — Cắt (LSX ${po.order_code})`,
+    });
+    return q;
+  }
+
+  // Công đoạn khác (nếu có): không ghi kho
+  return 0;
+}
+
+// Ràng buộc cấu trúc lệnh (§3.3): SP Bán thành phẩm chỉ Thổi; SP Thành phẩm phải có Cắt (không được chỉ Thổi).
+// Trả về thông báo lỗi, hoặc null nếu hợp lệ.
+function orderStructureError(productType, stages) {
+  const hasCut = stages.includes('Cắt');
+  const hasBlow = stages.includes('Thổi');
+  if (productType === 'Bán thành phẩm') {
+    if (hasCut) return 'Lệnh sản phẩm là Bán thành phẩm (cuộn) — chỉ được có công đoạn Thổi, không được thêm công đoạn Cắt.';
+  } else {
+    if (hasBlow && !hasCut) return 'Lệnh sản phẩm là Thành phẩm (bao bì) — phải có công đoạn Cắt, không được chỉ có Thổi.';
+  }
+  return null;
+}
 
 /**
  * Tính lại trạng thái lệnh từ các phân công trong DB, đồng bộ đơn hàng,
@@ -204,8 +273,12 @@ async function recomputeOrder(client, poId) {
     : null;
   // Chỉ cập nhật nếu có kết quả tính toán VÀ trạng thái hiện tại không phải do người dùng đặt thủ công
   if (poStatus && !MANUAL_STATUSES.has(cur)) await client.query(`UPDATE production_orders SET status = $1 WHERE id = $2`, [poStatus, poId]);
-  // Đồng bộ kho theo từng công đoạn (WIP): xong công đoạn nào nhập kho đầu ra công đoạn đó, công đoạn sau tiêu hao BTP.
-  await syncOrderInventory(client, poId);
+  // Ghi kho KHÔNG còn làm ở đây: kho ghi theo sự kiện khi dòng hoàn thành (completeTasks → postTaskStock).
+  // Chỉ đồng bộ lại posted_qty cấp lệnh (hiển thị/tương thích) = tổng posted_qty các lần công đoạn cuối.
+  const pq = (await client.query(
+    `SELECT COALESCE(SUM(posted_qty),0) AS s FROM production_tasks WHERE production_order_id = $1 AND stage = $2`,
+    [poId, finalStage])).rows[0].s;
+  await client.query(`UPDATE production_orders SET posted_qty = $2::numeric, inventory_posted = ($2::numeric > 0) WHERE id = $1`, [poId, pq]);
 
   // Ghi ngày thực tế lên dòng đơn hàng gắn với lệnh SX này
   if (ord.sales_order_item_id) {
@@ -382,30 +455,11 @@ exports.update = async (req, res) => {
         }
       }
     }
-    // Kiểm tra khi thủ công chuyển status sang 'Hoàn thành': bắt buộc tất cả công đoạn phải có đủ thông tin
+    // Kho nay ghi theo SỰ KIỆN (khi từng dòng phân công hoàn thành — completeTasks). Nếu cho đặt tay
+    // lệnh sang 'Hoàn thành' qua đây, lệnh sẽ mang trạng thái Hoàn thành mà KHÔNG ghi kho (tồn thiếu).
+    // Trạng thái 'Hoàn thành' cấp lệnh chỉ được suy ra tự động từ các dòng đã hoàn thành (recomputeOrder).
     if (b.status === 'Hoàn thành') {
-      const { rows: incompleteTasks } = await db.query(
-        `SELECT stage, machine_id, shift, assigned_team, assigned_worker, actual_qty
-         FROM production_tasks
-         WHERE production_order_id = $1
-           AND (machine_id IS NULL OR shift IS NULL OR shift = ''
-                OR assigned_team IS NULL OR assigned_team = ''
-                OR assigned_worker IS NULL OR assigned_worker = ''
-                OR actual_qty IS NULL OR actual_qty <= 0)`,
-        [req.params.id]
-      );
-      if (incompleteTasks.length > 0) {
-        const details = incompleteTasks.map((t) => {
-          const lacks = [];
-          if (!t.machine_id) lacks.push('máy');
-          if (!t.shift) lacks.push('ca');
-          if (!t.assigned_team) lacks.push('đội');
-          if (!t.assigned_worker) lacks.push('công nhân');
-          if (!t.actual_qty || t.actual_qty <= 0) lacks.push('SL thực tế');
-          return `${t.stage} (thiếu: ${lacks.join(', ')})`;
-        }).join('; ');
-        return res.status(400).json({ message: `Không thể xác nhận Hoàn thành — các công đoạn chưa đủ thông tin: ${details}. Vui lòng gán đủ máy, ca, đội, công nhân và nhập sản lượng thực tế.` });
-      }
+      return res.status(400).json({ message: 'Không đặt tay trạng thái lệnh sang "Hoàn thành". Hãy hoàn thành từng dòng phân công ở màn chi tiết lệnh (nút "Hoàn thành"); lệnh sẽ tự chuyển Hoàn thành khi đủ sản lượng.' });
     }
     // Khi lệnh đã Hoàn thành: CHỈ cho phép các trường bổ sung bên dưới (không đụng SP/SL/thông số).
     const ASSIGNMENT_ONLY = new Set(['machine_id', 'shift', 'assigned_team', 'assigned_worker', 'planned_date', 'note', 'status']);
@@ -797,49 +851,23 @@ exports.updateTask = async (req, res) => {
     const taskId = req.params.taskId;
     const badQty = invalidTaskQty(b);
     if (badQty) return res.status(400).json({ message: badQty });
-    // Ràng buộc SL thực: Σ thực tế cộng dồn theo công đoạn ≤ 110% SL cần sản xuất.
-    // Áp ở backend nên mọi đường vào đều bị chặn (màn Thực thi + Sửa LSX).
-    if (b.actual_qty !== undefined && b.actual_qty !== '' && b.actual_qty !== null) {
-      const chk = (await client.query(`
-        SELECT t.stage, po.quantity AS order_qty,
-               COALESCE((SELECT SUM(t2.actual_qty) FROM production_tasks t2
-                         WHERE t2.production_order_id = t.production_order_id
-                           AND t2.stage = t.stage AND t2.id <> t.id), 0) AS others_actual
-        FROM production_tasks t JOIN production_orders po ON po.id = t.production_order_id
-        WHERE t.id = $1`, [taskId])).rows[0];
-      if (chk) {
-        const cap = Number(chk.order_qty) * 1.5;
-        const newSum = Number(chk.others_actual) + Number(b.actual_qty);
-        if (newSum > cap + 1e-6) {
-          return res.status(400).json({ message: `SL thực cộng dồn công đoạn ${chk.stage} (${newSum}) vượt quá 150% SL cần sản xuất (${chk.order_qty} → tối đa ${cap}). Vui lòng xem xét lại số lượng thực tế.` });
-        }
-      }
+    // 8c: CHỈ màn chi tiết lệnh (completeTasks/saveTasks) mới ghi SL thực & hoàn thành.
+    // Đường này chỉ cho đổi trạng thái vận hành (Đang sản xuất / Dừng sản xuất / Chờ).
+    if (b.status === 'Hoàn thành') {
+      return res.status(400).json({ message: 'Hãy hoàn thành dòng phân công ở màn chi tiết lệnh (nút "Hoàn thành"), không qua màn này.' });
     }
-    // Phương án 2: lần TỰ "Hoàn thành" khi SL thực ≥ SL kế hoạch của lần (trừ khi đã hủy / đang tạm dừng)
-    {
-      const task = (await client.query(`SELECT quantity, actual_qty, status FROM production_tasks WHERE id = $1`, [taskId])).rows[0];
-      if (task) {
-        const effActual = (b.actual_qty !== undefined)
-          ? (b.actual_qty === '' || b.actual_qty == null ? null : Number(b.actual_qty))
-          : (task.actual_qty == null ? null : Number(task.actual_qty));
-        const plan = Number(task.quantity) || 0;
-        const effStatus = (b.status !== undefined) ? b.status : task.status;
-        if (effActual != null && plan > 0 && effActual >= plan - 1e-6 && effStatus !== 'Đã hủy' && effStatus !== 'Dừng sản xuất') {
-          b.status = 'Hoàn thành';
-        }
-      }
+    if (b.actual_qty !== undefined) {
+      return res.status(400).json({ message: 'SL thực chỉ được ghi ở màn chi tiết lệnh.' });
     }
     const cols = [], vals = []; let i = 1;
     const add = (c, v) => { cols.push(`${c} = $${i++}`); vals.push(v); };
     if (b.status !== undefined) add('status', b.status);
-    if (b.actual_qty !== undefined) add('actual_qty', b.actual_qty === '' ? null : b.actual_qty);
     if (b.scrap_qty !== undefined) add('scrap_qty', b.scrap_qty || 0);
     if (!cols.length) return res.status(400).json({ message: 'Không có trường để cập nhật' });
     await client.query('BEGIN');
-    // M05: kiểm trạng thái LỆNH (khoá dòng lệnh để không chạy song song với sửa lệnh / lưu phân công).
-    // Trước đây lệnh "Đã hủy" vẫn nhập kho khi hoàn thành lô; lệnh "Hoàn thành" đổi lô về "Chờ" thì kho bị trừ ngược.
+    // Khoá dòng lệnh để không chạy song song với sửa lệnh / lưu phân công.
     const own = (await client.query(
-      `SELECT po.status AS po_status, t.status AS task_status, t.actual_qty
+      `SELECT po.status AS po_status, t.status AS task_status
        FROM production_tasks t JOIN production_orders po ON po.id = t.production_order_id
        WHERE t.id = $1 AND po.is_deleted = FALSE FOR UPDATE OF po`, [taskId])).rows[0];
     if (!own) { await client.query('ROLLBACK'); return res.status(404).json({ message: 'Không tìm thấy lô' }); }
@@ -847,15 +875,10 @@ exports.updateTask = async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(400).json({ message: 'Lệnh sản xuất đã Hủy — không cập nhật lô được.' });
     }
-    if (own.po_status === 'Hoàn thành') {
-      // Lệnh đã hoàn thành: chỉ cho sửa SL phế; đổi trạng thái lô / SL thực sẽ làm đổi kho đã nhập.
-      const normQty = (v) => (v === '' || v == null ? null : Number(v));
-      const statusChanged = b.status !== undefined && b.status !== own.task_status;
-      const actualChanged = b.actual_qty !== undefined && normQty(b.actual_qty) !== normQty(own.actual_qty);
-      if (statusChanged || actualChanged) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ message: 'Lệnh sản xuất đã Hoàn thành — không đổi trạng thái / SL thực của lô được. Hãy chuyển lệnh về "Đang sản xuất" trước nếu cần sửa.' });
-      }
+    // Dòng ĐÃ Hoàn thành thì bất biến (khóa toàn bộ) — không đổi trạng thái qua đường này.
+    if (own.task_status === 'Hoàn thành') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: 'Dòng đã Hoàn thành — đã khóa. Admin có thể "Hủy hoàn thành" ở màn chi tiết lệnh nếu cần sửa.' });
     }
     const r = await client.query(`UPDATE production_tasks SET ${cols.join(', ')} WHERE id = $${i} RETURNING production_order_id`, [...vals, req.params.taskId]);
     if (!r.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ message: 'Không tìm thấy lô' }); }
@@ -871,105 +894,90 @@ exports.saveTasks = async (req, res) => {
   const client = await db.pool.connect();
   try {
     const poId = req.params.id;
-    const po = (await client.query(`SELECT order_code, quantity, status FROM production_orders WHERE id = $1 AND is_deleted = FALSE`, [poId])).rows[0];
-    if (!po) return res.status(404).json({ message: 'Không tìm thấy lệnh sản xuất' });
-    // Cho phép lưu phân công khi lệnh Hoàn thành nhưng có công đoạn chưa gán máy/ca/đội/công nhân/thực tế
-    if (po.status === 'Đã hủy') return res.status(400).json({ message: `Lệnh đã Hủy — không thể sửa phân công.` });
-    if (po.status === 'Hoàn thành') {
-      const { rows: incompleteTasks } = await client.query(
-        `SELECT id FROM production_tasks
-         WHERE production_order_id = $1
-           AND (machine_id IS NULL OR shift IS NULL OR shift = ''
-                OR assigned_team IS NULL OR assigned_team = ''
-                OR assigned_worker IS NULL OR assigned_worker = ''
-                OR actual_qty IS NULL)`,
-        [poId]
-      );
-      if (!incompleteTasks.length) {
-        return res.status(400).json({ message: `Lệnh đã Hoàn thành và tất cả công đoạn đã đầy đủ thông tin — không thể sửa phân công.` });
-      }
-    }
+    // M40: khoá lệnh (FOR UPDATE) ngay đầu transaction → 2 lần bấm "Lưu" cùng lúc chạy LẦN LƯỢT.
+    // Trước đây đọc không khoá: cả hai cùng thấy posted_qty = 0 → nhập kho 2 lần (TP 2000 thay vì 1000)
+    // và DELETE+INSERT chồng nhau → nhân đôi các lần phân công.
+    await client.query('BEGIN');
+    const bail = async (code, message) => { await client.query('ROLLBACK'); return res.status(code).json({ message }); };
+    const po = (await client.query(
+      `SELECT po.order_code, po.quantity, po.status, p.product_type
+       FROM production_orders po JOIN products p ON p.id = po.product_id
+       WHERE po.id = $1 AND po.is_deleted = FALSE FOR UPDATE OF po`, [poId])).rows[0];
+    if (!po) return bail(404, 'Không tìm thấy lệnh sản xuất');
+    if (po.status === 'Đã hủy') return bail(400, `Lệnh đã Hủy — không thể sửa phân công.`);
     const tasks = Array.isArray(req.body.tasks) ? req.body.tasks.filter(t => t && t.stage) : [];
     for (const [idx, t] of tasks.entries()) {
       const badQty = invalidTaskQty(t, `Lần ${idx + 1} (${t.stage}): `);
-      if (badQty) return res.status(400).json({ message: badQty });
+      if (badQty) return bail(400, badQty);
     }
 
-    // Ràng buộc 150% (đồng bộ với frontend, chặn cả khi gọi API trực tiếp):
-    const cap = Number(po.quantity) * 1.5;
-    // 1) SẢN LƯỢNG kế hoạch từng lần không vượt 150%
-    const badPlan = tasks.find(t => (Number(t.quantity) || 0) > cap + 1e-6);
-    if (badPlan) return res.status(400).json({ message: `Sản lượng một lần (${badPlan.stage} ${Number(badPlan.quantity)}) vượt quá 150% SL cần sản xuất (${po.quantity} → tối đa ${cap}).` });
-    // 2) Σ SL thực cộng dồn mỗi công đoạn không vượt 150%
-    const actByStage = {};
-    tasks.forEach(t => { actByStage[t.stage] = (actByStage[t.stage] || 0) + (Number(t.actual_qty) || 0); });
-    const badAct = Object.entries(actByStage).find(([, s]) => s > cap + 1e-6);
-    if (badAct) return res.status(400).json({ message: `SL thực cộng dồn công đoạn ${badAct[0]} (${badAct[1]}) vượt quá 150% SL cần sản xuất (${po.quantity} → tối đa ${cap}).` });
-
-    await client.query('BEGIN');
-    // Giữ lại SL đã nhập kho (posted_qty) của từng lần qua lần lưu — nếu không, DELETE+INSERT
-    // sẽ reset posted_qty=0 và backflush nhập kho LẶP LẠI toàn bộ sản lượng mỗi lần "Lưu phân công".
-    // Khóa bền theo task_code (frontend gửi lại cho lần đã có); lần mới → mã mới + posted_qty=0.
+    // §3.4: DÒNG ĐÃ HOÀN THÀNH LÀ BẤT BIẾN. Lấy bản ghi cũ đầy đủ để giữ nguyên các dòng đã hoàn thành.
+    // Kiểm tra BẤT BIẾN trước ràng buộc cấu trúc/150% để thông báo đúng việc "không xóa dòng đã hoàn thành".
     const prevRows = (await client.query(
-      `SELECT task_code, stage, posted_qty FROM production_tasks WHERE production_order_id = $1`, [poId])).rows;
-    const postedByCode = new Map(prevRows.map((r) => [r.task_code, Number(r.posted_qty) || 0]));
+      `SELECT task_code, stage, quantity, actual_qty, scrap_qty, machine_id, shift, planned_date,
+              planned_end_date, assigned_team, assigned_worker, status, seq, note, assigned_worker_id, posted_qty
+       FROM production_tasks WHERE production_order_id = $1`, [poId])).rows;
+    const doneByCode = new Map(prevRows.filter(r => r.status === 'Hoàn thành').map(r => [r.task_code, r]));
     let maxSuffix = 0;
     for (const r of prevRows) { const m = /-(\d+)$/.exec(r.task_code || ''); if (m) maxSuffix = Math.max(maxSuffix, Number(m[1])); }
 
-    // L55: chặn XÓA lần đã nhập kho (posted_qty > 0). Nếu bị bỏ khỏi payload, tồn đã nhập sẽ không được đảo lại.
-    // Muốn hủy sản lượng lần đó: GIỮ lần lại và đưa SL thực về 0 (backflush sẽ tự đảo tồn), rồi mới xóa.
     const incomingCodes = new Set(tasks.filter((t) => t.task_code).map((t) => t.task_code));
-    const removedPosted = prevRows.filter((r) => Number(r.posted_qty) > 0 && !incomingCodes.has(r.task_code));
-    if (removedPosted.length) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ message: `Không thể xóa lần đã nhập kho: ${removedPosted.map((r) => r.task_code).join(', ')}. Hãy đưa SL thực của lần đó về 0 (giữ lần lại) để hoàn tồn, rồi mới xóa.` });
+    // Dòng đã hoàn thành không được xóa (phải còn trong payload).
+    const removedDone = [...doneByCode.keys()].filter((code) => !incomingCodes.has(code));
+    if (removedDone.length) {
+      return bail(400, `Không thể xóa dòng đã Hoàn thành (đã khóa): ${removedDone.join(', ')}. Nhờ Admin "Hủy hoàn thành" trước nếu cần.`);
+    }
+    // Dòng mới không được tự đặt trạng thái "Hoàn thành" qua lưu phân công (phải dùng nút Hoàn thành).
+    const illegalDone = tasks.find((t) => t.status === 'Hoàn thành' && !doneByCode.has(t.task_code));
+    if (illegalDone) {
+      return bail(400, `Dùng nút "Hoàn thành" để hoàn thành dòng ${illegalDone.stage} — không đặt trạng thái Hoàn thành khi lưu phân công.`);
     }
 
-    // M03: kho đầu ra của Thổi phụ thuộc lệnh có công đoạn Cắt hay không (có Cắt → Thổi ra BTP;
-    // không có → Thổi là công đoạn cuối, ra kho TP). syncOrderInventory chỉ nhớ posted_qty, không nhớ đã
-    // nhập vào kho nào → đổi cấu trúc công đoạn sau khi đã nhập kho làm phần đã nhập nằm sai kho
-    // (vd. thêm Cắt sau khi Thổi đã nhập TP → TP gấp đôi, BTP âm). Chặn và hướng dẫn đưa SL về 0 trước.
-    const prevByCode = new Map(prevRows.map((r) => [r.task_code, r]));
-    const stageChanged = tasks.filter((t) => {
-      const p = t.task_code && prevByCode.get(t.task_code);
-      return p && Number(p.posted_qty) > 0 && p.stage !== t.stage;
-    });
-    if (stageChanged.length) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ message: `Không đổi được công đoạn của lần đã nhập kho: ${stageChanged.map((t) => t.task_code).join(', ')}. Hãy đưa SL thực của lần đó về 0 trước.` });
-    }
-    const hadCut = prevRows.some((r) => r.stage === 'Cắt');
-    const hasCut = tasks.some((t) => t.stage === 'Cắt');
-    if (hadCut !== hasCut && prevRows.some((r) => r.stage === 'Thổi' && Number(r.posted_qty) > 0)) {
-      const ptype = (await client.query(
-        `SELECT p.product_type FROM production_orders po JOIN products p ON p.id = po.product_id WHERE po.id = $1`, [poId])).rows[0]?.product_type;
-      if (ptype !== 'Bán thành phẩm') { // SP là BTP: Thổi và Cắt đều ra kho BTP → không lệch
-        await client.query('ROLLBACK');
-        return res.status(400).json({ message: `Lệnh đã có lần Thổi nhập kho — không ${hasCut ? 'thêm' : 'bỏ'} công đoạn Cắt được (phần đã nhập sẽ nằm sai kho). Hãy đưa SL thực các lần Thổi về 0 trước, rồi ${hasCut ? 'thêm' : 'bỏ'} Cắt và nhập lại sản lượng.` });
-      }
-    }
+    // §3.3: ràng buộc cấu trúc công đoạn theo loại sản phẩm
+    const structErr = orderStructureError(po.product_type, tasks.map(t => t.stage));
+    if (structErr) return bail(400, structErr);
+
+    // Ràng buộc 150% (đồng bộ với frontend, chặn cả khi gọi API trực tiếp):
+    const cap = Number(po.quantity) * 1.5;
+    const badPlan = tasks.find(t => (Number(t.quantity) || 0) > cap + 1e-6);
+    if (badPlan) return bail(400, `Sản lượng một lần (${badPlan.stage} ${Number(badPlan.quantity)}) vượt quá 150% SL cần sản xuất (${po.quantity} → tối đa ${cap}).`);
+    const actByStage = {};
+    tasks.forEach(t => { actByStage[t.stage] = (actByStage[t.stage] || 0) + (Number(t.actual_qty) || 0); });
+    const badAct = Object.entries(actByStage).find(([, s]) => s > cap + 1e-6);
+    if (badAct) return bail(400, `SL thực cộng dồn công đoạn ${badAct[0]} (${badAct[1]}) vượt quá 150% SL cần sản xuất (${po.quantity} → tối đa ${cap}).`);
 
     await client.query(`DELETE FROM production_tasks WHERE production_order_id = $1`, [poId]);
     let n = 1;
     for (const t of tasks) {
+      const done = t.task_code && doneByCode.get(t.task_code);
+      if (done) {
+        // Giữ NGUYÊN bản ghi cũ của dòng đã hoàn thành (bỏ qua mọi sửa đổi từ payload).
+        await client.query(`
+          INSERT INTO production_tasks
+            (production_order_id, task_code, stage, quantity, actual_qty, scrap_qty, machine_id, shift, planned_date, planned_end_date, assigned_team, assigned_worker, status, seq, note, assigned_worker_id, posted_qty)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+          [poId, done.task_code, done.stage, done.quantity, done.actual_qty, done.scrap_qty,
+           done.machine_id, done.shift, done.planned_date, done.planned_end_date,
+           done.assigned_team, done.assigned_worker, 'Hoàn thành', n, done.note, done.assigned_worker_id, done.posted_qty]);
+        n++;
+        continue;
+      }
       const plan = Number(t.quantity) || 0;
       const act = t.actual_qty === '' || t.actual_qty == null ? null : Number(t.actual_qty);
       let st = t.status || 'Chờ';
-      // Phương án 2: lần TỰ "Hoàn thành" khi SL thực ≥ SL kế hoạch (trừ khi đã hủy / đang tạm dừng)
-      if (act != null && plan > 0 && act >= plan - 1e-6 && st !== 'Đã hủy' && st !== 'Dừng sản xuất') st = 'Hoàn thành';
-      // Lần đã có (gửi kèm task_code trùng) → giữ nguyên mã + posted_qty; lần mới → mã mới, posted_qty=0
-      const code = (t.task_code && postedByCode.has(t.task_code)) ? t.task_code : `${po.order_code}-${++maxSuffix}`;
-      const carriedPosted = postedByCode.get(code) || 0;
-      postedByCode.delete(code); // L56: mỗi mã chỉ mang posted_qty 1 lần (payload trùng task_code → lần 2 nhận 0)
+      if (st === 'Hoàn thành') st = 'Đang sản xuất'; // an toàn: không bao giờ hoàn thành qua đường này
+      // Dòng đã có (task_code trùng, chưa hoàn thành) → giữ mã; dòng mới → mã mới. Chưa hoàn thành ⇒ posted_qty = 0.
+      const prev = t.task_code && prevRows.find(r => r.task_code === t.task_code);
+      const code = prev ? prev.task_code : `${po.order_code}-${++maxSuffix}`;
       await client.query(`
         INSERT INTO production_tasks
           (production_order_id, task_code, stage, quantity, actual_qty, scrap_qty, machine_id, shift, planned_date, planned_end_date, assigned_team, assigned_worker, status, seq, note, assigned_worker_id, posted_qty)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,0)`,
         [poId, code, t.stage, plan,
          act, t.scrap_qty || 0,
          t.machine_id || null, t.shift || null,
          t.planned_date || null, t.planned_end_date || t.planned_date || null,
-         t.assigned_team || null, t.assigned_worker || null, st, n, t.note || null, t.assigned_worker_id || null, carriedPosted]);
+         t.assigned_team || null, t.assigned_worker || null, st, n, t.note || null, t.assigned_worker_id || null]);
       n++;
     }
     await recomputeOrder(client, poId);
@@ -978,5 +986,162 @@ exports.saveTasks = async (req, res) => {
   } catch (err) {
     await client.query('ROLLBACK'); console.error(err);
     res.status(500).json({ message: err.detail || err.message || 'Lỗi khi lưu phân công' });
+  } finally { client.release(); }
+};
+
+// GET /api/production-orders/:id/roll-availability — tồn cuộn khả dụng ở BTP khớp thông số lệnh
+// (ưu tiên lô của chính lệnh, rồi FIFO) — cho màn Cắt.
+exports.rollAvailability = async (req, res) => {
+  try {
+    const po = (await db.query(
+      `SELECT po.id, po.order_code, po.specs, p.product_type FROM production_orders po
+       JOIN products p ON p.id = po.product_id WHERE po.id = $1 AND po.is_deleted = FALSE`, [req.params.id])).rows[0];
+    if (!po) return res.status(404).json({ message: 'Không tìm thấy lệnh sản xuất' });
+    const rollId = await getRollProductId(db);
+    if (!rollId) return res.json({ data: { spec_label: specLabel(po.specs), total_kg: 0, lots: [] } });
+    const specKey = buildSpecKey(po.specs || {});
+    const { rows } = await db.query(`
+      SELECT s.lot_code, s.quantity::numeric AS qty, s.created_at, w.name AS location
+      FROM inventory_stock s
+      JOIN locations l  ON l.id = s.location_id
+      JOIN warehouses w ON w.id = l.warehouse_id
+      WHERE s.product_id = $1 AND s.spec_key = $2 AND w.warehouse_type = 'BTP' AND s.quantity > 0
+      ORDER BY (s.lot_code = $3) DESC, s.created_at ASC`, [rollId, specKey, po.order_code]);
+    const total = rows.reduce((s, r) => s + Number(r.qty), 0);
+    res.json({ data: { spec_label: specLabel(po.specs), total_kg: total,
+      lots: rows.map(r => ({ lot_code: r.lot_code, location: r.location, qty: Number(r.qty), created_at: r.created_at, is_own: r.lot_code === po.order_code })) } });
+  } catch (err) { console.error(err); res.status(500).json({ message: 'Lỗi khi lấy tồn cuộn khả dụng' }); }
+};
+
+// POST /api/production-orders/:id/complete-tasks — hoàn thành nhiều dòng phân công trong MỘT transaction.
+// Body: { tasks: [{ task_code, roll_finish_lots?: string[] }] }. Thiếu máy/công nhân/SL thực → chặn, không ghi dòng nào.
+exports.completeTasks = async (req, res) => {
+  const client = await db.pool.connect();
+  try {
+    const poId = req.params.id;
+    const items = Array.isArray(req.body.tasks) ? req.body.tasks.filter(t => t && t.task_code) : [];
+    if (!items.length) return res.status(400).json({ message: 'Chưa chọn dòng nào để hoàn thành.' });
+    const finishByCode = new Map(items.map(it => [it.task_code, Array.isArray(it.roll_finish_lots) ? it.roll_finish_lots : []]));
+
+    await client.query('BEGIN');
+    const bail = async (code, message) => { await client.query('ROLLBACK'); return res.status(code).json({ message }); };
+    const po = (await client.query(
+      `SELECT po.id, po.order_code, po.product_id, po.unit, po.specs, po.status, p.product_type, p.product_code
+       FROM production_orders po JOIN products p ON p.id = po.product_id
+       WHERE po.id = $1 AND po.is_deleted = FALSE FOR UPDATE OF po`, [poId])).rows[0];
+    if (!po) return bail(404, 'Không tìm thấy lệnh sản xuất');
+    if (po.status === 'Đã hủy') return bail(400, 'Lệnh đã Hủy — không hoàn thành được.');
+
+    const rawCodes = [...finishByCode.keys()];
+    const rows = (await client.query(
+      `SELECT * FROM production_tasks WHERE production_order_id = $1 AND task_code = ANY($2::text[]) FOR UPDATE`,
+      [poId, rawCodes])).rows;
+    const byCode = new Map(rows.map(r => [r.task_code, r]));
+    // Ghi kho Thổi TRƯỚC Cắt (bất kể thứ tự client gửi): cuộn vừa thổi phải có trong BTP để Cắt cùng đợt trừ được.
+    const stageRank = (c) => { const s = byCode.get(c)?.stage; return s === 'Thổi' ? 0 : s === 'Cắt' ? 2 : 1; };
+    const codes = [...rawCodes].sort((a, b) => stageRank(a) - stageRank(b));
+
+    // Kiểm tra TẤT CẢ trước (báo gộp), rồi mới ghi — thiếu một dòng thì không dòng nào được ghi.
+    const problems = [];
+    for (const code of codes) {
+      const t = byCode.get(code);
+      if (!t) { problems.push(`${code} (không tìm thấy)`); continue; }
+      if (t.status === 'Hoàn thành') { problems.push(`${code} (đã hoàn thành)`); continue; }
+      const lacks = [];
+      if (!t.machine_id) lacks.push('máy');
+      if (!t.assigned_worker) lacks.push('công nhân');
+      if (!(Number(t.actual_qty) > 0)) lacks.push('SL thực');
+      if (lacks.length) problems.push(`${t.stage} ${code} (thiếu: ${lacks.join(', ')})`);
+    }
+    if (problems.length) return bail(400, `Không thể hoàn thành — các dòng chưa đủ điều kiện: ${problems.join('; ')}.`);
+
+    for (const code of codes) {
+      const t = byCode.get(code);
+      const outQty = await postTaskStock(client, po, t, finishByCode.get(code) || []);
+      await client.query(`UPDATE production_tasks SET status = 'Hoàn thành', posted_qty = $2 WHERE id = $1`, [t.id, outQty]);
+    }
+    const result = await recomputeOrder(client, poId);
+    await client.query('COMMIT');
+    res.json({ message: `Đã hoàn thành ${codes.length} dòng`, ...result });
+  } catch (err) {
+    await client.query('ROLLBACK'); console.error(err);
+    res.status(400).json({ message: err.detail || err.message || 'Lỗi khi hoàn thành phân công' });
+  } finally { client.release(); }
+};
+
+// POST /api/production/tasks/:taskId/reopen — Admin "Hủy hoàn thành" một dòng, hoàn kho đúng như đã ghi.
+exports.reopenTask = async (req, res) => {
+  const client = await db.pool.connect();
+  try {
+    if (!req.user || !req.user.is_admin) return res.status(403).json({ message: 'Chỉ Admin được hủy hoàn thành.' });
+    const taskId = req.params.taskId;
+    await client.query('BEGIN');
+    const bail = async (code, message) => { await client.query('ROLLBACK'); return res.status(code).json({ message }); };
+    const row = (await client.query(
+      `SELECT t.*, po.order_code, po.product_id, po.specs, p.product_type
+       FROM production_tasks t
+       JOIN production_orders po ON po.id = t.production_order_id AND po.is_deleted = FALSE
+       JOIN products p ON p.id = po.product_id
+       WHERE t.id = $1 FOR UPDATE OF t, po`, [taskId])).rows[0];
+    if (!row) return bail(404, 'Không tìm thấy dòng phân công');
+    if (row.status !== 'Hoàn thành') return bail(400, 'Dòng chưa Hoàn thành — không cần hủy.');
+
+    const q = Number(row.posted_qty) || 0;
+    const specs = row.specs || {};
+    const specKey = buildSpecKey(specs);
+    const btpLoc = await locOf(client, 'BTP');
+    const tpLoc = await locOf(client, 'TP');
+    const rollId = await getRollProductId(client);
+
+    if (row.stage === 'Thổi') {
+      const outProduct = row.product_type === 'Bán thành phẩm' ? row.product_id : rollId;
+      const cur = (await client.query(
+        `SELECT COALESCE(quantity,0) AS q FROM inventory_stock
+         WHERE product_id = $1 AND location_id = $2 AND spec_key = $3 AND lot_code = $4`,
+        [outProduct, btpLoc, specKey, row.order_code])).rows[0];
+      if (!cur || Number(cur.q) < q - 1e-6) {
+        return bail(400, 'Cuộn của lần thổi này đã được cắt / bán — hãy "Hủy hoàn thành" dòng Cắt trước.');
+      }
+      await applyStock(client, {
+        product_id: outProduct, location_id: btpLoc, delta: -q, unit: 'kg', specs, spec_key: specKey,
+        lot_code: row.order_code, prod_order_id: row.production_order_id, clampZero: true,
+        trx_type: 'Điều chỉnh', ref_code: row.order_code, note: `Hủy hoàn thành Thổi — ${row.task_code}`,
+      });
+    } else if (row.stage === 'Cắt') {
+      const cur = (await client.query(
+        `SELECT COALESCE(quantity,0) AS q FROM inventory_stock
+         WHERE product_id = $1 AND location_id = $2 AND spec_key = $3 AND lot_code = $4`,
+        [row.product_id, tpLoc, specKey, row.order_code])).rows[0];
+      if (!cur || Number(cur.q) < q - 1e-6) {
+        return bail(400, 'Bao bì của lần cắt này đã được giao / dùng tiếp — không hủy hoàn thành được.');
+      }
+      // Trừ lại bao bì ở TP
+      await applyStock(client, {
+        product_id: row.product_id, location_id: tpLoc, delta: -q, unit: 'kg', specs, spec_key: specKey,
+        lot_code: row.order_code, prod_order_id: row.production_order_id, clampZero: true,
+        trx_type: 'Điều chỉnh', ref_code: row.order_code, note: `Hủy hoàn thành Cắt — ${row.task_code}` });
+      // Hoàn lại cuộn vào đúng lô đã trừ (gồm cả phần hao hụt)
+      const usage = (await client.query(
+        `SELECT * FROM production_roll_usage WHERE production_order_id = $1 AND task_code = $2`,
+        [row.production_order_id, row.task_code])).rows;
+      for (const u of usage) {
+        const back = Number(u.qty_used) + Number(u.qty_written_off);
+        if (back > 1e-6) await applyStock(client, {
+          product_id: u.roll_product_id, location_id: u.location_id, delta: back, unit: 'kg',
+          specs: u.specs || specs, spec_key: u.spec_key, lot_code: u.lot_code,
+          prod_order_id: row.production_order_id, clampZero: false,
+          trx_type: 'Điều chỉnh', ref_code: row.order_code, note: `Hoàn cuộn (hủy hoàn thành Cắt ${row.task_code})` });
+      }
+      await client.query(`DELETE FROM production_roll_usage WHERE production_order_id = $1 AND task_code = $2`,
+        [row.production_order_id, row.task_code]);
+    }
+
+    await client.query(`UPDATE production_tasks SET status = 'Đang sản xuất', posted_qty = 0 WHERE id = $1`, [taskId]);
+    await recomputeOrder(client, row.production_order_id);
+    await client.query('COMMIT');
+    res.json({ message: 'Đã hủy hoàn thành dòng và hoàn kho.' });
+  } catch (err) {
+    await client.query('ROLLBACK'); console.error(err);
+    res.status(400).json({ message: err.detail || err.message || 'Lỗi khi hủy hoàn thành' });
   } finally { client.release(); }
 };

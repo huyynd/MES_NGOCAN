@@ -14,8 +14,11 @@ router.get('/production/machine-availability', production.machineAvailability);
 router.get('/production/execution', production.executionTasks);
 router.get('/production/task-by-code/:code', production.getTaskByCode);
 router.put('/production/tasks/:taskId', requirePerm('production:edit'), production.updateTask);
+router.post('/production/tasks/:taskId/reopen', production.reopenTask);
 router.get('/production-orders/:id/tasks', production.getTasks);
+router.get('/production-orders/:id/roll-availability', production.rollAvailability);
 router.put('/production-orders/:id/tasks', requirePerm('production:edit'), production.saveTasks);
+router.post('/production-orders/:id/complete-tasks', requirePerm('production:edit'), production.completeTasks);
 router.get('/production-orders/:id/materials', production.getMaterials);
 router.post('/production-orders/:id/materials', requirePerm('production:edit'), production.saveMaterials);
 // NVL cần cung cấp (kế hoạch cấp NVL) + Yêu cầu NVL → xuất kho

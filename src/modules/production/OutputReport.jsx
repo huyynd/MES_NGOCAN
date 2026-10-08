@@ -4,7 +4,7 @@ import {
   X, User, Users, CalendarDays, Factory, ShoppingCart, Tag, ClipboardList, Layers,
   ChevronRight, AlertCircle,
 } from "lucide-react";
-import { ListHeader, DataTable, PageHeader } from "../../components.jsx";
+import { ListHeader, Section, DataTable } from "../../components.jsx";
 import { production } from "../../mesApi.js";
 import { fmt, fmtDate, statusClass, toast } from "../../ui.js";
 import * as XLSX from "xlsx";
@@ -356,21 +356,23 @@ export default function OutputReport({ lookups }) {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <PageHeader title="Sản lượng sản xuất" icon={Activity} />
-        <div className="flex items-center gap-2 flex-wrap">
-          <button onClick={load} disabled={loading} className="btn-ghost flex items-center gap-2">
-            <RefreshCcw size={15} className={loading ? "animate-spin" : ""} />
-            Làm mới
-          </button>
-          <button onClick={exportExcel} className="btn-primary flex items-center gap-2">
-            <Download size={15} /> Xuất Excel
-          </button>
-        </div>
-      </div>
+      <ListHeader 
+        title="Sản lượng sản xuất" 
+        actions={
+          <>
+            <button onClick={load} disabled={loading} className="btn-ghost flex items-center gap-2">
+              <RefreshCcw size={15} className={loading ? "animate-spin" : ""} />
+              Làm mới
+            </button>
+            <button onClick={exportExcel} className="btn-primary flex items-center gap-2">
+              <Download size={15} /> Xuất Excel
+            </button>
+          </>
+        }
+      />
 
       {/* Filters */}
-      <div className="bg-white rounded-xl border border-slate-200 p-4">
+      <Section title="Bộ lọc báo cáo" defaultOpen={true}>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <div>
             <label className="block text-xs font-medium text-slate-500 mb-1">Từ ngày</label>
@@ -393,7 +395,7 @@ export default function OutputReport({ lookups }) {
               placeholder="Tên đội…" value={teamFilter} onChange={e => setTeamFilter(e.target.value)} />
           </div>
         </div>
-      </div>
+      </Section>
 
       {/* KPI Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -404,15 +406,11 @@ export default function OutputReport({ lookups }) {
       </div>
 
       {/* Table */}
-      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
-          <div>
-            <h3 className="font-semibold text-slate-800">Chi tiết sản lượng</h3>
-            <p className="text-xs text-slate-400 mt-0.5">Nhấn vào mã lệnh SX để xem chi tiết</p>
-          </div>
-          <span className="text-sm text-slate-500">{filtered.length} lệnh sản xuất</span>
-        </div>
-        <div className="p-4">
+      <Section 
+        title="Chi tiết sản lượng" 
+        actions={<span className="text-sm text-slate-500">{filtered.length} lệnh sản xuất</span>}
+        bodyClass="p-4"
+      >
           <DataTable
             dense
             columns={columns}
@@ -420,8 +418,7 @@ export default function OutputReport({ lookups }) {
             rowKey={(r) => r.id}
             emptyText={loading ? "Đang tải dữ liệu..." : "Không có dữ liệu trong khoảng thời gian này"}
           />
-        </div>
-      </div>
+      </Section>
 
       {/* Detail drawer */}
       {selected && (

@@ -144,6 +144,7 @@ function TreeTab({ lookups }) {
   const [openState, setOpenState] = useState(() => new Set());
   const [adjusting, setAdjusting] = useState(false);
   const [lowStockOnly, setLowStockOnly] = useState(false);
+  const [showZero, setShowZero] = useState(false); // mặc định ẩn các lô 0 kg
 
   const load = useCallback(async () => {
     try { 
@@ -165,6 +166,7 @@ function TreeTab({ lookups }) {
   
   // Bước 1: Lọc dữ liệu phẳng
   let filteredData = data.filter(r => {
+    if (!showZero && Math.abs(Number(r.quantity) || 0) < 1e-9) return false; // ẩn lô 0 kg (lô đã trừ hết)
     if (q && !norm(r.product_code).includes(norm(q)) && !norm(r.product_name).includes(norm(q)) && !norm(r.lot_code).includes(norm(q))) return false;
     if (filterWh && r.warehouse_id !== filterWh) return false;
     if (filterZone && r.zone_id !== filterZone) return false;
@@ -473,8 +475,12 @@ function TreeTab({ lookups }) {
               <option>Thành phẩm</option>
             </select>
           </div>
+          <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer ml-auto">
+            <input type="checkbox" checked={showZero} onChange={(e) => setShowZero(e.target.checked)} className="w-4 h-4 accent-slate-500" />
+            Hiện lô 0 kg
+          </label>
           {viewMode === "product" && (
-            <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer ml-auto">
+            <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
               <input type="checkbox" checked={lowStockOnly} onChange={(e) => setLowStockOnly(e.target.checked)} className="w-4 h-4 accent-rose-600" />
               Chỉ hiện hàng dưới định mức
             </label>

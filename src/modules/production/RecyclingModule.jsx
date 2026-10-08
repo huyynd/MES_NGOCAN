@@ -3,7 +3,7 @@ import {
   Recycle, Plus, Trash2, Save, FileText, Scale, CheckCircle2, 
   ArrowRight, Box, Package, Calendar, User, X
 } from "lucide-react";
-import { PageHeader, DataTable } from "../../components.jsx";
+import { ListHeader, DataTable } from "../../components.jsx";
 import { recycling, resource } from "../../mesApi.js";
 import { inputCls, fmt, toast } from "../../ui.js";
 
@@ -86,9 +86,8 @@ export default function RecyclingModule() {
 
   return (
     <div className="space-y-6">
-      <PageHeader 
+      <ListHeader 
         title="Quản lý Tái chế" 
-        icon={<Recycle size={28} className="text-emerald-500" />}
         actions={
           <button onClick={startNewTicket} className="btn-primary">
             <Plus size={18}/> Tạo phiếu tái chế

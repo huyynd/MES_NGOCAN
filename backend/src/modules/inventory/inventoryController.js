@@ -349,65 +349,66 @@ exports.confirmOutboundSlip = async (req, res) => {
     const lines = (await client.query(`SELECT * FROM outbound_slip_lines WHERE slip_id = $1`, [req.params.id])).rows;
     if (!lines.length) return res.status(400).json({ message: 'Phiếu chưa có dòng hàng.' });
 
-    // Chặn tồn âm — báo cần mua (Kiểm tra theo đúng vị trí xuất)
-    const shortages = [];
-    const allocations = []; // { product_id, lot_code, quantity, unit }
+    await client.query('BEGIN');
+    // Chống bấm đúp / gọi đồng thời: chỉ MỘT request "chiếm" được phiếu từ Chờ xuất (atomic) → không trừ tồn 2 lần.
+    // Thiếu tồn → ROLLBACK trả phiếu về Chờ xuất.
+    const claim = await client.query(
+      `UPDATE outbound_slips SET status = 'Đã xuất', confirmed_at = now() WHERE id = $1 AND status = 'Chờ xuất' RETURNING id`, [req.params.id]);
+    if (!claim.rows.length) { await client.query('ROLLBACK'); return res.status(409).json({ message: 'Phiếu đã được xuất hoặc đang được xử lý — vui lòng tải lại.' }); }
 
-    // Gộp SL theo sản phẩm TRƯỚC khi kiểm tồn — nhiều dòng cùng 1 SP không được kiểm độc lập
-    // (vd 80 + 80 khi tồn 100 PHẢI báo thiếu, không được cho qua rồi trừ xuống -60).
-    const needByProduct = new Map();
+    // Gộp SL theo (sản phẩm, lô) TRƯỚC khi kiểm tồn — nhiều dòng cùng 1 SP không được kiểm độc lập
+    // (vd 80 + 80 khi tồn 100 PHẢI báo thiếu). M50: dòng có ghi lô chỉ được trừ đúng lô đó.
+    const needs = new Map(); // key product|lot → { product_id, lot_code, unit, qty }
     for (const l of lines) {
       const q = Number(l.quantity) || 0; if (q <= 0) continue;
-      const cur = needByProduct.get(l.product_id) || { product_id: l.product_id, unit: l.unit, qty: 0 };
-      cur.qty += q; needByProduct.set(l.product_id, cur);
+      const lot = l.lot_code || '';
+      const key = `${l.product_id}|${lot}`;
+      const cur = needs.get(key) || { product_id: l.product_id, lot_code: lot, unit: l.unit, qty: 0 };
+      cur.qty += q; needs.set(key, cur);
     }
-    for (const l of needByProduct.values()) {
-      const requiredQty = l.qty;
+    const productIds = [...new Set([...needs.values()].map((n) => n.product_id))];
 
-      // Lấy danh sách các lô có tồn > 0 của sản phẩm tại vị trí xuất, ưu tiên FIFO (id ASC)
-      const { rows: stockRows } = await client.query(
-        `SELECT lot_code, quantity, unit, spec_key, specs
-         FROM inventory_stock
-         WHERE product_id = $1 AND location_id = $2 AND quantity > 0
-         ORDER BY id ASC`,
-        [l.product_id, s.location_id]
-      );
+    // M50: khoá tồn tại vị trí xuất TRONG transaction (2 phiếu khác nhau cùng xác nhận không trừ quá tồn).
+    // Khoá theo id cho thứ tự khoá cố định (tránh deadlock), rồi xếp FIFO: lô vào kho sớm nhất trước.
+    const { rows: locked } = await client.query(
+      `SELECT id, product_id, lot_code, quantity, unit, spec_key, specs, created_at
+       FROM inventory_stock
+       WHERE product_id = ANY($1::uuid[]) AND location_id = $2 AND quantity > 0
+       ORDER BY id FOR UPDATE`,
+      [productIds, s.location_id]);
+    const fifo = locked
+      .map((r) => ({ ...r, left: Number(r.quantity) }))
+      .sort((a, b) => (a.created_at - b.created_at) || String(a.lot_code).localeCompare(String(b.lot_code)) || String(a.id).localeCompare(String(b.id)));
 
-      const totalOnHand = stockRows.reduce((sum, r) => sum + Number(r.quantity), 0);
-      
-      if (requiredQty > totalOnHand) {
-        const p = (await client.query(`SELECT product_code, product_name, unit FROM products WHERE id = $1`, [l.product_id])).rows[0] || {};
-        shortages.push({ code: p.product_code, name: p.product_name, unit: l.unit || p.unit || '', on_hand: totalOnHand, need: requiredQty, buy: requiredQty - totalOnHand });
-      } else {
-        // Phân bổ FIFO
-        let remain = requiredQty;
-        for (const sr of stockRows) {
-          if (remain <= 0) break;
-          const qtyToTake = Math.min(remain, Number(sr.quantity));
-          allocations.push({
-            product_id: l.product_id,
-            lot_code: sr.lot_code || '',
-            spec_key: sr.spec_key,
-            specs: sr.specs || {},
-            quantity: qtyToTake,
-            unit: l.unit || sr.unit,
-          });
-          remain -= qtyToTake;
-        }
+    const shortages = [];
+    const allocations = []; // { product_id, lot_code, spec_key, specs, quantity, unit }
+    // Dòng ghi lô xử lý trước, dòng không ghi lô lấy FIFO trên phần còn lại
+    const ordered = [...needs.values()].sort((a, b) => (a.lot_code ? 0 : 1) - (b.lot_code ? 0 : 1));
+    for (const n of ordered) {
+      const pool = fifo.filter((r) => r.product_id === n.product_id && (!n.lot_code || r.lot_code === n.lot_code));
+      const onHand = pool.reduce((sum, r) => sum + r.left, 0);
+      if (n.qty > onHand + 1e-9) {
+        const p = (await client.query(`SELECT product_code, product_name, unit FROM products WHERE id = $1`, [n.product_id])).rows[0] || {};
+        shortages.push({ code: p.product_code, name: p.product_name, lot_code: n.lot_code, unit: n.unit || p.unit || '', on_hand: onHand, need: n.qty, buy: n.qty - onHand });
+        continue;
+      }
+      let remain = n.qty;
+      for (const sr of pool) {
+        if (remain <= 1e-9) break;
+        const take = Math.min(remain, sr.left);
+        if (take <= 0) continue;
+        allocations.push({ product_id: n.product_id, lot_code: sr.lot_code || '', spec_key: sr.spec_key, specs: sr.specs || {}, quantity: take, unit: n.unit || sr.unit });
+        sr.left -= take; remain -= take;
       }
     }
 
     if (shortages.length) {
+      await client.query('ROLLBACK');
       const msg = 'Không đủ tồn kho tại vị trí xuất — vui lòng nhập/chuyển kho đến vị trí này trước:\n' +
-        shortages.map((x) => `• ${x.code} ${x.name}: tồn ${x.on_hand} ${x.unit}, cần ${x.need} ${x.unit} → thiếu ${x.buy} ${x.unit}`).join('\n');
+        shortages.map((x) => `• ${x.code} ${x.name}${x.lot_code ? ` (lô ${x.lot_code})` : ''}: tồn ${x.on_hand} ${x.unit}, cần ${x.need} ${x.unit} → thiếu ${x.buy} ${x.unit}`).join('\n');
       return res.status(400).json({ message: msg, shortages });
     }
 
-    await client.query('BEGIN');
-    // Chống bấm đúp / gọi đồng thời: chỉ MỘT request "chiếm" được phiếu từ Chờ xuất (atomic) → không trừ tồn 2 lần
-    const claim = await client.query(
-      `UPDATE outbound_slips SET status = 'Đã xuất', confirmed_at = now() WHERE id = $1 AND status = 'Chờ xuất' RETURNING id`, [req.params.id]);
-    if (!claim.rows.length) { await client.query('ROLLBACK'); return res.status(409).json({ message: 'Phiếu đã được xuất hoặc đang được xử lý — vui lòng tải lại.' }); }
     for (const alloc of allocations) {
       // Trừ ĐÚNG dòng tồn đã phân bổ (giữ nguyên spec_key của lô) → không tạo dòng '' ảo
       await applyStock(client, {
@@ -482,7 +483,7 @@ exports.transfer = async (req, res) => {
     const { rows: srcRows } = await client.query(
       `SELECT spec_key, specs, lot_code, quantity, unit FROM inventory_stock
        WHERE product_id = $1 AND location_id = $2 AND quantity > 0 AND ($3 = '' OR lot_code = $3)
-       ORDER BY id ASC FOR UPDATE`,
+       ORDER BY created_at, lot_code, id FOR UPDATE`, // M50: FIFO — lô vào kho sớm nhất chuyển trước
       [b.product_id, b.from_location_id, lot]);
     const onHand = srcRows.reduce((s, r) => s + Number(r.quantity), 0);
     if (qty > onHand + 1e-9) {

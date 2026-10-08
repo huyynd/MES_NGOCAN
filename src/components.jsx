@@ -112,7 +112,7 @@ export function Logo({ className = "" }) {
  */
 export function PageHeader({ title, subtitle, badge, onBack, backLabel = "Quay lại", actions }) {
   return (
-    <div className="sticky -top-4 md:-top-8 z-10 -mx-4 md:-mx-8 -mt-4 md:-mt-8 mb-4 md:mb-6 px-4 md:px-8 pt-4 md:pt-5 pb-3 md:pb-4 bg-white border-b border-slate-200">
+    <div className="sticky -top-4 md:-top-8 z-10 -mx-4 md:-mx-8 -mt-4 md:-mt-8 mb-4 md:mb-6 px-4 md:px-8 pt-4 md:pt-5 pb-3 md:pb-4 glass-panel border-x-0 border-t-0 shadow-sm">
       {onBack && (
         <button onClick={onBack} className="flex items-center gap-1.5 text-slate-500 hover:text-slate-800 text-sm mb-2">
           <ArrowLeft size={16} /> {backLabel}
@@ -136,7 +136,7 @@ export function PageHeader({ title, subtitle, badge, onBack, backLabel = "Quay l
  */
 export function ListHeader({ title, subtitle, actions }) {
   return (
-    <div className="sticky -top-4 md:-top-8 z-20 -mx-4 md:-mx-8 -mt-4 md:-mt-8 mb-4 md:mb-5 px-4 md:px-8 pt-4 md:pt-5 pb-3 md:pb-4 bg-slate-50 border-b border-slate-200">
+    <div className="sticky -top-4 md:-top-8 z-20 -mx-4 md:-mx-8 -mt-4 md:-mt-8 mb-4 md:mb-5 px-4 md:px-8 pt-4 md:pt-5 pb-3 md:pb-4 glass-panel border-x-0 border-t-0 shadow-sm">
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div className="flex items-center gap-3">
           <h1 className="text-xl font-bold text-slate-800">{title}</h1>

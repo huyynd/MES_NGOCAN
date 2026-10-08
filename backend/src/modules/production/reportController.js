@@ -516,7 +516,7 @@ exports.director = async (req, res) => {
     const f = ymd(from), t = ymd(now);
     const showAmt = canViewAmounts(req);
 
-    const [salesQ, moneyQ, poCountQ, nvlQ, lowQ, workerCntQ, perfQ, agQ, custQ, billQ] = await Promise.all([
+    const [salesQ, moneyQ, poCountQ, nvlQ, lowQ, workerCntQ, perfQ, agQ, custQ, billQ, salesListQ, deliveriesListQ] = await Promise.all([
       // Kh\u1ed1i 1: \u0111\u01a1n h\u00e0ng trong k\u1ef3 + gi\u00e1 tr\u1ecb + \u0111\u00e3 giao / ch\u01b0a giao (theo \u0111\u01a1n)
       db.query(`
         WITH ord AS (
@@ -643,6 +643,29 @@ exports.director = async (req, res) => {
       db.query(`
         SELECT COALESCE(SUM(total_amount),0)::numeric AS billed, COALESCE(SUM(paid_amount),0)::numeric AS paid
         FROM delivery_notes WHERE is_deleted=FALSE AND status NOT IN ('Bản nháp','Đã hủy')`),
+      // Danh sách đơn hàng trong kỳ
+      db.query(`
+        SELECT so.id, so.order_code, so.order_date, c.name AS customer_name,
+          COALESCE((SELECT SUM(it.quantity*COALESCE(it.unit_price,0)) FROM sales_order_items it WHERE it.sales_order_id=so.id),0) AS val,
+          COALESCE((SELECT SUM(di.quantity*COALESCE(soi.unit_price,0))
+                    FROM delivery_note_items di
+                    JOIN delivery_notes dn ON dn.id=di.delivery_note_id
+                    LEFT JOIN sales_order_items soi ON soi.id=di.sales_order_item_id
+                    WHERE soi.sales_order_id=so.id AND dn.is_deleted=FALSE AND dn.status NOT IN ('Bản nháp','Đã hủy')),0) AS delivered_val
+        FROM sales_orders so
+        LEFT JOIN customers c ON c.id=so.customer_id
+        WHERE so.is_deleted=FALSE AND so.status<>'Đã hủy' AND so.order_date BETWEEN $1 AND $2
+        ORDER BY so.order_date DESC
+      `, [f, t]),
+      // Danh sách phiếu giao (đã xuất/thu tiền) trong kỳ
+      db.query(`
+        SELECT dn.id, dn.note_code, dn.delivery_date, c.name AS customer_name,
+               dn.total_amount, dn.paid_amount
+        FROM delivery_notes dn
+        LEFT JOIN customers c ON c.id=dn.customer_id
+        WHERE dn.is_deleted=FALSE AND dn.status<>'Đã hủy' AND dn.delivery_date BETWEEN $1 AND $2
+        ORDER BY dn.delivery_date DESC
+      `, [f, t]),
     ]);
 
     const s = salesQ.rows[0], m = moneyQ.rows[0], nv = nvlQ.rows[0];
@@ -670,6 +693,14 @@ exports.director = async (req, res) => {
         debt: showAmt ? num(m.debt) : null,
         delivered_value: showAmt ? num(s.delivered_value) : null,
         undelivered_value: showAmt ? num(s.undelivered_value) : null,
+        orders: showAmt ? salesListQ.rows.map((r) => ({
+          id: r.id, order_code: r.order_code, date: r.order_date, customer: r.customer_name,
+          total: num(r.val), delivered: num(r.delivered_val), undelivered: Math.max(0, num(r.val) - num(r.delivered_val))
+        })) : [],
+        deliveries: showAmt ? deliveriesListQ.rows.map((r) => ({
+          id: r.id, code: r.note_code, date: r.delivery_date, customer: r.customer_name,
+          total: num(r.total_amount), paid: num(r.paid_amount)
+        })) : [],
       },
       production: {
         request_count: poCountQ.rows[0].n,
