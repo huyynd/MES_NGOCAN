@@ -19,13 +19,14 @@ const Field = ({ label, required, children }) => (
 function SpecFields({ specs, onChange, disabled, cls = inputCls }) {
   const get = (n) => specs?.[n] || "";
   const setV = (n, v) => { const next = { ...specs }; if (v) next[n] = v; else delete next[n]; onChange(next); };
+  const baseCls = cls + (disabled ? " bg-slate-50" : "");
   return (
     <>
       {PRODUCT_SPECS.map((spec) => {
         const lbl = <span className="block text-xs font-medium text-slate-500 mb-1">{spec.name}</span>;
         if (spec.kind === "select") return (
           <label key={spec.name}>{lbl}
-            <select className={cls} disabled={disabled} value={get(spec.name)} onChange={(e) => setV(spec.name, e.target.value)}>
+            <select className={baseCls} disabled={disabled} value={get(spec.name)} onChange={(e) => setV(spec.name, e.target.value)}>
               <option value="">-- Chọn --</option>{spec.options.map((o) => <option key={o}>{o}</option>)}
             </select>
           </label>
@@ -33,7 +34,7 @@ function SpecFields({ specs, onChange, disabled, cls = inputCls }) {
         if (spec.kind === "num") { const { num } = splitNU(get(spec.name)); return (
           <label key={spec.name}>{lbl}
             <div className="relative">
-              <input type="number" className={cls + " pr-10"} disabled={disabled} value={num} placeholder="0"
+              <input type="number" className={baseCls + " pr-10"} disabled={disabled} value={num} placeholder="0"
                 onChange={(e) => setV(spec.name, e.target.value ? `${e.target.value} ${spec.unit}` : "")} />
               <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs pointer-events-none">{spec.unit}</span>
             </div>
@@ -42,18 +43,19 @@ function SpecFields({ specs, onChange, disabled, cls = inputCls }) {
         if (spec.kind === "text") {
           return (
             <label key={spec.name}>{lbl}
-              <input type="text" className={cls} disabled={disabled} value={get(spec.name)} placeholder={spec.placeholder || ""}
+              <input type="text" className={baseCls} disabled={disabled} value={get(spec.name)} placeholder={spec.placeholder || ""}
                 onChange={(e) => setV(spec.name, e.target.value)} />
             </label>
           );
         }
         const { num, unit } = splitNU(get(spec.name)); const cu = unit || spec.units[0];
+        const selectCls = baseCls.replace(/\bw-full\b/g, "").replace(/\bpx-3\b/g, "px-2").trim() + " shrink-0 w-20";
         return (
           <label key={spec.name}>{lbl}
             <div className="flex gap-1.5">
-              <input type="number" className={cls + " flex-1"} disabled={disabled} value={num} placeholder="0"
+              <input type="number" className={baseCls + " flex-1 min-w-0"} disabled={disabled} value={num} placeholder="0"
                 onChange={(e) => setV(spec.name, e.target.value ? `${e.target.value} ${cu}` : "")} />
-              <select className={cls + " w-20"} disabled={disabled} value={cu}
+              <select className={selectCls} disabled={disabled} value={cu}
                 onChange={(e) => setV(spec.name, num ? `${num} ${e.target.value}` : "")}>
                 {spec.units.map((u) => <option key={u}>{u}</option>)}
               </select>
