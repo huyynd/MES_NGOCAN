@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { Layers, CalendarClock, RotateCcw, ShoppingCart, AlertTriangle, ClipboardList, Save, ChevronLeft, ChevronRight, CalendarRange, Star } from "lucide-react";
 import { ListHeader, usePager, DataTable } from "../../components.jsx";
-import { planning, production, processes } from "../../mesApi.js";
+import { planning, production } from "../../mesApi.js";
+import { DEFAULT_STAGES, stageFactory } from "../../productionDefaults.js";
 import {  inputCls, fmt, fmtDate, statusClass , toast } from "../../ui.js";
 import { ScheduleModal } from "./Production.jsx";
 import { usePerm } from "../../perm.jsx";
@@ -29,8 +30,6 @@ const ProgressMini = ({ done, target, unit }) => {
 };
 
 /* ====== Modal phân bổ nguồn lực & tạo lệnh từ 1 lô ====== */
-const stageFactory = (stage) => (stage === "Cắt" ? "Nhà máy cắt" : "Nhà máy thổi");
-const mapStageName = (s) => (/c[ắa]t/i.test(`${s.name || ""} ${s.workshop || ""} ${s.machine_name || ""}`) ? "Cắt" : "Thổi");
 
 function AllocateModal({ lookups, batch, onClose, onDone }) {
   const [planned_date, setPlannedDate] = useState("");
@@ -40,31 +39,11 @@ function AllocateModal({ lookups, batch, onClose, onDone }) {
   const teams = [...new Set(emps.map((e) => e.factory).filter(Boolean))];
   const planItems = batch.items.map((i) => ({ item_id: i.item_id, qty: qty[i.item_id] })).filter((x) => Number(x.qty) > 0);
 
-  // Nạp các công đoạn từ quy trình công nghệ của sản phẩm → phân bổ RIÊNG từng công đoạn
-  const [stages, setStages] = useState([]);
-  const [loadingProc, setLoadingProc] = useState(true);
-  useEffect(() => {
-    let cancel = false;
-    (async () => {
-      setLoadingProc(true);
-      try {
-        const list = await processes.list({ product_id: batch.product_id });
-        if (!list.length) { if (!cancel) setStages([]); return; }
-        const proc = await processes.get(list[0].id);
-        const rows = (proc.steps || []).map((s, i) => {
-          const stage = mapStageName(s);
-          return {
-            _k: i, name: s.name || stage, stage,
-            machine_id: (s.machine_ids && s.machine_ids[0]) || s.machine_id || "",
-            shift: "", assigned_team: s.workshop || stageFactory(stage), assigned_worker: "",
-          };
-        });
-        if (!cancel) setStages(rows);
-      } catch { if (!cancel) setStages([]); }
-      finally { if (!cancel) setLoadingProc(false); }
-    })();
-    return () => { cancel = true; };
-  }, [batch.product_id]);
+  // Công đoạn mặc định: Thổi + Cắt — phân bổ RIÊNG từng công đoạn. Không dùng Quy trình công nghệ.
+  // Thừa công đoạn nào người dùng xóa ở màn LSX sau khi tạo.
+  const [stages, setStages] = useState(() => DEFAULT_STAGES.map((stage, i) => ({
+    _k: i, name: stage, stage, machine_id: "", shift: "", assigned_team: stageFactory(stage), assigned_worker: "",
+  })));
 
   const setStage = (k, field, v) => setStages((arr) => arr.map((s) => {
     if (s._k !== k) return s;
@@ -138,10 +117,8 @@ function AllocateModal({ lookups, batch, onClose, onDone }) {
         {/* Phân bổ theo TỪNG công đoạn — mỗi công đoạn có máy/ca/đội/người riêng */}
         <div>
           <div className="text-sm font-medium text-slate-600 mb-1.5">Phân bổ theo công đoạn <span className="text-slate-400 font-normal">(công đoạn nối tiếp: xong công đoạn trước mới sang công đoạn sau)</span></div>
-          {loadingProc ? (
-            <div className="text-sm text-slate-400 py-4 text-center">Đang nạp quy trình…</div>
-          ) : !stages.length ? (
-            <div className="text-sm text-amber-600 bg-amber-50 border border-amber-200 rounded-lg p-3">Sản phẩm chưa có quy trình công nghệ — lệnh sẽ tạo không kèm công đoạn. Hãy tạo quy trình ở mục "Quy trình CN" để phân bổ theo công đoạn.</div>
+          {!stages.length ? (
+            <div className="text-sm text-amber-600 bg-amber-50 border border-amber-200 rounded-lg p-3">Chưa có công đoạn — lệnh sẽ tạo không kèm công đoạn.</div>
           ) : (
             <div className="border border-slate-200 rounded-lg overflow-x-auto">
               <table className="w-full text-sm">
@@ -159,7 +136,7 @@ function AllocateModal({ lookups, batch, onClose, onDone }) {
                   {stages.map((s, idx) => (
                     <tr key={s._k}>
                       <td className="px-3 py-2 text-slate-400 font-semibold">{idx + 1}</td>
-                      <td className="px-3 py-2"><span className="font-medium text-slate-700">{s.name}</span><span className="text-slate-400"> · {s.stage}</span></td>
+                      <td className="px-3 py-2"><span className="font-medium text-slate-700">{s.name}</span>{s.name !== s.stage && <span className="text-slate-400"> · {s.stage}</span>}</td>
                       <td className="px-2 py-2">
                         <select className={inputCls + " py-1"} value={s.machine_id} onChange={(e) => setStage(s._k, "machine_id", e.target.value)}>
                           <option value="">-- Chọn máy --</option>

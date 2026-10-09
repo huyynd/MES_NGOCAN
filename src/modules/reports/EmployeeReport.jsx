@@ -173,8 +173,10 @@ function WorkOrdersTable({ tasks }) {
               <th className="text-left py-2.5 px-3 whitespace-nowrap">Mã LSX</th>
               <th className="text-left py-2.5 px-3 whitespace-nowrap">Sản phẩm</th>
               <th className="text-left py-2.5 px-3">Công đoạn</th>
-              <th className="text-right py-2.5 px-3" title="Sản lượng kế hoạch">Kế hoạch</th>
-              <th className="text-right py-2.5 px-3" title="Sản lượng đã làm">Thực tế</th>
+              <th className="text-right py-2.5 px-3" title="Số lượng cần sản xuất (Kế hoạch)">Cần SX</th>
+              <th className="text-right py-2.5 px-3" title="Số lượng đã sản xuất (Thực tế)">Đã SX</th>
+              <th className="text-right py-2.5 px-3" title="Số lượng còn lại cần sản xuất">Còn lại</th>
+              <th className="text-right py-2.5 px-3" title="Phế phẩm">Phế</th>
               <th className="text-center py-2.5 px-3 min-w-[100px]">Tiến độ</th>
               <th className="text-left py-2.5 px-3">Ca</th>
               <th className="text-left py-2.5 px-3 whitespace-nowrap">Ngày</th>
@@ -184,7 +186,7 @@ function WorkOrdersTable({ tasks }) {
           <tbody className="divide-y divide-slate-100">
             {slice.map((t) => {
               const isUrgent = t.priority === 'Cao';
-              const actual = t.status === "Hoàn thành" ? (Number(t.actual_qty) || 0) : (Number(t.actual_qty) || 0);
+              const actual = t.status === "Hoàn thành" ? ((t.actual_qty != null && t.actual_qty !== "") ? Number(t.actual_qty) : (Number(t.quantity) || 0)) : (Number(t.actual_qty) || 0);
               const planned = Number(t.quantity) || 0;
               // Đơn gấp: tỷ lệ tính bình thường (planned = po.quantity đã chuẩn hóa từ backend)
               const p = pct(actual, planned);
@@ -219,11 +221,17 @@ function WorkOrdersTable({ tasks }) {
                   </td>
                   <td className="py-2.5 px-3 text-right font-medium text-slate-600">
                     {isUrgent
-                      ? <span className="text-rose-500" title="Đơn gấp — kế hoạch = SL đơn hàng gốc">{fmt(planned)} <span className="text-slate-400">{t.unit}</span></span>
+                      ? <span className="text-rose-500" title="Đơn gấp">{fmt(planned)} <span className="text-slate-400">{t.unit}</span></span>
                       : <>{fmt(planned)} <span className="text-slate-400">{t.unit}</span></>
                     }
                   </td>
                   <td className={`py-2.5 px-3 text-right font-bold ${pctColor(p)}`}>{fmt(actual)}</td>
+                  <td className="py-2.5 px-3 text-right font-medium text-slate-500">
+                    {planned - actual > 0 ? fmt(planned - actual) : (planned - actual < 0 ? <span className="text-emerald-500" title="Sản xuất vượt mức">+{fmt(actual - planned)}</span> : "0")}
+                  </td>
+                  <td className="py-2.5 px-3 text-right text-rose-500 font-medium">
+                    {Number(t.scrap_qty) > 0 ? fmt(t.scrap_qty) : "—"}
+                  </td>
                   <td className="py-2.5 px-3">
                     <div className="flex items-center gap-1.5">
                       <div className="flex-1 h-1.5 bg-slate-200 rounded-full overflow-hidden">
@@ -578,7 +586,7 @@ export default function EmployeeReport() {
         "Sản phẩm": t.product_name,
         "Công đoạn": t.stage,
         "Kế hoạch": Number(t.quantity),
-        "Thực tế": t.status === "Hoàn thành" ? (Number(t.actual_qty) ?? Number(t.quantity)) : 0,
+        "Thực tế": t.status === "Hoàn thành" ? ((t.actual_qty != null && t.actual_qty !== "") ? Number(t.actual_qty) : (Number(t.quantity) || 0)) : (Number(t.actual_qty) || 0),
         "Phế phẩm": Number(t.scrap_qty),
         "Trạng thái": t.status,
         "Ca": t.shift || "",

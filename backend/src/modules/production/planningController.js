@@ -147,28 +147,13 @@ exports.generate = async (req, res) => {
     const headMachine = machine_id || (stages[0] && stages[0].machine_id) || null;
     const status = (headMachine || stages.length) ? 'Đã lên kế hoạch' : 'Chờ duyệt';
 
-    // Cache quy trình theo product_id để tránh query nhiều lần khi tạo nhiều lệnh
-    const processCache = {};
-    const getProcessStages = async (productId) => {
-      if (processCache[productId] !== undefined) return processCache[productId];
-      try {
-        const procs = (await client.query(
-          'SELECT id FROM tech_processes WHERE product_id = $1 AND is_deleted = FALSE ORDER BY created_at DESC LIMIT 1',
-          [productId])).rows;
-        if (!procs.length) { processCache[productId] = []; return []; }
-        const steps = (await client.query(
-          'SELECT name, workshop, machine_id FROM process_steps WHERE process_id = $1 ORDER BY seq',
-          [procs[0].id])).rows;
-        const mapStage = (s) => /c[ắa]t/i.test(`${s.name || ''} ${s.workshop || ''}`) ? 'Cắt' : 'Thổi';
-        processCache[productId] = steps.map((s) => ({
-          stage: mapStage(s),
-          name: s.name || mapStage(s),
-          assigned_team: s.workshop || (mapStage(s) === 'Cắt' ? 'Nhà máy cắt' : 'Nhà máy thổi'),
-          machine_id: s.machine_id || null, shift: null, assigned_worker: null,
-        }));
-      } catch (e) { console.warn('getProcessStages error:', e.message); processCache[productId] = []; }
-      return processCache[productId];
-    };
+    // Công đoạn MẶC ĐỊNH: luôn Thổi + Cắt (chủ dự án chốt 2026-10-09 — không chia theo loại SP vì
+    // 1 SP có thể vừa TP vừa BTP; không dùng Quy trình công nghệ). Đồng bộ src/productionDefaults.js.
+    // Chỉ là gợi ý ban đầu: thừa công đoạn nào người dùng xóa ở màn LSX.
+    const DEFAULT_STAGES = ['Thổi', 'Cắt'].map((stage) => ({
+      stage, name: stage, assigned_team: stage === 'Cắt' ? 'Nhà máy cắt' : 'Nhà máy thổi',
+      machine_id: null, shift: null, assigned_worker: null,
+    }));
 
     const created = [];
     for (const it of items) {
@@ -191,8 +176,8 @@ exports.generate = async (req, res) => {
       created.push(po.order_code);
 
       // Tạo sẵn công đoạn (production_tasks) theo phân bổ từng công đoạn — mỗi công đoạn làm đủ SL (nối tiếp)
-      // Nếu không truyền stages từ frontend → tự tìm quy trình sản phẩm để tạo tasks
-      const effectiveStages = stages.length > 0 ? stages : await getProcessStages(it.product_id);
+      // Có truyền stages từ frontend → dùng đúng như người dùng chọn; không có → mặc định Thổi + Cắt
+      const effectiveStages = stages.length > 0 ? stages : DEFAULT_STAGES;
       let n = 1;
       for (const s of effectiveStages) {
         await client.query(`

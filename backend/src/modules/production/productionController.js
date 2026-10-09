@@ -129,6 +129,10 @@ async function getRollProductId(client) {
 async function resolveBlowOutput(client, po, task) {
   if (task.output_product_id) return task.output_product_id;
   if (po.product_type === 'Bán thành phẩm') return po.product_id;
+  // Lệnh chỉ có Thổi (không có Cắt, vd SP vừa TP vừa BTP bán dạng cuộn) → cuộn chính là SP của lệnh
+  const cut = await client.query(
+    `SELECT 1 FROM production_tasks WHERE production_order_id = $1 AND stage = 'Cắt' LIMIT 1`, [po.id]);
+  if (!cut.rows.length) return po.product_id;
   const roll = await getRollProductId(client);
   if (!roll) throw new Error('Chưa cấu hình sản phẩm cuộn mặc định (app_settings.roll_product_id) và dòng Thổi chưa chọn Sản phẩm đầu ra.');
   return roll;
@@ -254,16 +258,19 @@ async function postTaskStock(client, po, task, finishLots = []) {
   return 0;
 }
 
-// Ràng buộc cấu trúc lệnh (§3.3): SP Bán thành phẩm chỉ Thổi; SP Thành phẩm phải có Cắt (không được chỉ Thổi).
-// Trả về thông báo lỗi, hoặc null nếu hợp lệ.
-function orderStructureError(productType, stages) {
+// Ràng buộc cấu trúc lệnh (§3.3), xét CẢ danh sách loại của SP (1 SP có thể vừa TP vừa BTP):
+//  - SP chỉ là Bán thành phẩm (không có loại TP) → không được có Cắt.
+//  - SP chỉ là Thành phẩm (không có loại BTP)   → có Thổi thì phải có Cắt (không được chỉ Thổi).
+//  - SP vừa TP vừa BTP → cho phép cả "chỉ Thổi" (bán cuộn) lẫn "Thổi + Cắt" (bao bì).
+// Mặc định tạo Thổi + Cắt; thừa công đoạn nào người dùng xóa. Trả về thông báo lỗi, hoặc null nếu hợp lệ.
+function orderStructureError(productType, stages, productTypes) {
+  const types = (Array.isArray(productTypes) && productTypes.length) ? productTypes : (productType ? [productType] : []);
+  const isTP = types.includes('Thành phẩm');
+  const isBTP = types.includes('Bán thành phẩm');
   const hasCut = stages.includes('Cắt');
   const hasBlow = stages.includes('Thổi');
-  if (productType === 'Bán thành phẩm') {
-    if (hasCut) return 'Lệnh sản phẩm là Bán thành phẩm (cuộn) — chỉ được có công đoạn Thổi, không được thêm công đoạn Cắt.';
-  } else {
-    if (hasBlow && !hasCut) return 'Lệnh sản phẩm là Thành phẩm (bao bì) — phải có công đoạn Cắt, không được chỉ có Thổi.';
-  }
+  if (isBTP && !isTP && hasCut) return 'Sản phẩm này chỉ là Bán thành phẩm (cuộn) — hãy xóa công đoạn Cắt (chỉ cần Thổi).';
+  if (!isBTP && hasBlow && !hasCut) return 'Sản phẩm này là Thành phẩm (bao bì) — phải có công đoạn Cắt, không được chỉ có Thổi.';
   return null;
 }
 
@@ -417,9 +424,23 @@ exports.update = async (req, res) => {
     const contentKeys = Object.keys(b).filter((k) => k !== 'status');
     let restrictToAssignment = false; // lệnh Hoàn thành: chỉ cho bổ sung máy/ca/đội/công nhân/ghi chú
     if (contentKeys.length) {
-      const cur = (await db.query(`SELECT status, product_id, quantity, unit, spec_key, specs FROM production_orders WHERE id = $1 AND is_deleted = FALSE`, [req.params.id])).rows[0];
+      const cur = (await db.query(`SELECT status, product_id, customer_id, quantity, unit, spec_key, specs, sales_order_item_id FROM production_orders WHERE id = $1 AND is_deleted = FALSE`, [req.params.id])).rows[0];
       if (cur && cur.status === 'Đã hủy') {
         return res.status(400).json({ message: `Lệnh đã Hủy — không thể sửa.` });
+      }
+      // LSX tạo từ dòng đơn hàng: Sản phẩm / Khách hàng / SL cần SX / Đơn vị KẾ THỪA từ đơn, không sửa ở LSX
+      // (sửa ở đây sẽ lệch ngược với đơn: planned_qty của dòng đơn tính theo Σ SL các LSX).
+      // Chỉ chặn khi giá trị THỰC SỰ đổi — form vẫn gửi lại đủ trường mỗi lần lưu.
+      if (cur && cur.sales_order_item_id) {
+        const s = (v) => (v == null ? '' : String(v));
+        const changed = [];
+        if (b.product_id !== undefined && s(b.product_id) !== s(cur.product_id)) changed.push('sản phẩm');
+        if (b.customer_id !== undefined && s(b.customer_id) !== s(cur.customer_id)) changed.push('khách hàng');
+        if (b.quantity !== undefined && Number(b.quantity) !== Number(cur.quantity)) changed.push('số lượng cần sản xuất');
+        if (b.unit !== undefined && s(b.unit && upUnit(b.unit)) !== s(cur.unit && upUnit(cur.unit))) changed.push('đơn vị');
+        if (changed.length) {
+          return res.status(400).json({ message: `Lệnh tạo từ đơn hàng — ${changed.join(', ')} kế thừa từ đơn, không sửa ở lệnh sản xuất. Hãy sửa ở đơn hàng (hoặc hủy lệnh rồi lên kế hoạch lại).` });
+        }
       }
       if (cur && cur.status === 'Hoàn thành') {
         // Kiểm tra xem có công đoạn chưa đủ thông tin không
@@ -921,7 +942,7 @@ exports.saveTasks = async (req, res) => {
     await client.query('BEGIN');
     const bail = async (code, message) => { await client.query('ROLLBACK'); return res.status(code).json({ message }); };
     const po = (await client.query(
-      `SELECT po.order_code, po.quantity, po.status, p.product_type
+      `SELECT po.order_code, po.quantity, po.status, p.product_type, p.product_types
        FROM production_orders po JOIN products p ON p.id = po.product_id
        WHERE po.id = $1 AND po.is_deleted = FALSE FOR UPDATE OF po`, [poId])).rows[0];
     if (!po) return bail(404, 'Không tìm thấy lệnh sản xuất');
@@ -955,7 +976,7 @@ exports.saveTasks = async (req, res) => {
     }
 
     // §3.3: ràng buộc cấu trúc công đoạn theo loại sản phẩm
-    const structErr = orderStructureError(po.product_type, tasks.map(t => t.stage));
+    const structErr = orderStructureError(po.product_type, tasks.map(t => t.stage), po.product_types);
     if (structErr) return bail(400, structErr);
 
     // Ràng buộc 150% (đồng bộ với frontend, chặn cả khi gọi API trực tiếp):

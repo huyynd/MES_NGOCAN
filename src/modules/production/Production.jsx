@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Plus, Trash2, ArrowLeft, Save, CalendarClock, Factory, List, GanttChartSquare, Pencil, Printer, GitBranch, Copy, ChevronDown, ChevronRight } from "lucide-react";
-import { production, processes } from "../../mesApi.js";
+import { production } from "../../mesApi.js";
+import { DEFAULT_STAGES, stageFactory } from "../../productionDefaults.js";
 import { usePerm } from "../../perm.jsx";
 import { inputCls, fmt, fmtDate, statusClass, toast } from "../../ui.js";
 import { PageHeader, Section, ListHeader, DataTable, UnitSelect, SearchSelect } from "../../components.jsx";
@@ -9,6 +10,14 @@ import Qr from "../../Qr.jsx";
 import ProductionGantt from "./ProductionGantt.jsx";
 
 const STATUSES = ["Chờ duyệt", "Đã lên kế hoạch", "Chờ nguyên vật liệu", "Đang sản xuất", "Hoàn thành", "Đã hủy"];
+
+// Ô CHỈ HIỂN THỊ (khóa) — thông tin LSX kế thừa từ đơn hàng, không sửa ở LSX
+const ReadOnly = ({ children }) => (
+  <div className={inputCls + " bg-slate-50 text-slate-700 flex items-center gap-2 cursor-default"}>
+    <Lock size={13} className="text-slate-400 shrink-0" />
+    <span className="truncate">{children}</span>
+  </div>
+);
 
 /* ---- Form tạo / sửa lệnh sản xuất ---- */
 function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
@@ -29,43 +38,74 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
   const [taskSeq, setTaskSeq] = useState(1);
   const [collapsed, setCollapsed] = useState({}); // { [stage]: true } = đang thu gọn
   const toggleStage = (s) => setCollapsed((c) => ({ ...c, [s]: !c[s] }));
-  // Sản phẩm đầu ra mặc định theo công đoạn: Cắt → SP của lệnh (bao bì);
-  // Thổi → SP của lệnh nếu lệnh là bán thành phẩm (bán cuộn), ngược lại = cuộn cấu hình.
-  const outputDefault = (stage) => {
-    if (stage === 'Cắt') return f.product_id || "";
-    if (meta?.product_type === 'Bán thành phẩm') return f.product_id || "";
-    return meta?.default_roll_product_id || "";
+  // ===== Sản phẩm đầu ra (tự điền, vẫn sửa được bằng dropdown) =====
+  //  - Lệnh 2 công đoạn (Thổi + Cắt): Cắt = SP của lệnh; Thổi = mã cuộn mặc định (app_settings).
+  //  - Lệnh 1 công đoạn, hoặc SP là Bán thành phẩm: đầu ra = chính SP của lệnh.
+  // Dòng được điền tự động mang cờ _auto: đổi SP lệnh / thêm-bớt công đoạn sẽ tính lại.
+  // Người dùng chọn tay trong dropdown → _auto = false, không bị ghi đè nữa.
+  const productById = (id) => (lookups.products || []).find((p) => p.id === id);
+  const typesOf = (p) => (p?.product_types?.length ? p.product_types : (p?.product_type ? [p.product_type] : []));
+  const computeOutput = (stage, pid, hasCut) => {
+    if (stage === "Cắt") return pid || "";
+    if (productById(pid)?.product_type === "Bán thành phẩm" || !hasCut) return pid || "";
+    return lookups.default_roll_product_id || "";
+  };
+  const withAutoOutputs = (rows, pid) => {
+    const hasCut = rows.some((r) => r.stage === "Cắt");
+    return rows.map((r) => (r.status === "Hoàn thành" || r._auto === false)
+      ? r : { ...r, output_product_id: computeOutput(r.stage, pid, hasCut), _auto: true });
+  };
+  // Dropdown: Thổi chỉ hiện SP có loại BTP; Cắt chỉ hiện SP có loại Thành phẩm.
+  // Luôn giữ giá trị đang chọn trong danh sách (dữ liệu cũ ngoài loại vẫn hiển thị được).
+  const outputOptions = (stage, current) => {
+    const want = stage === "Thổi" ? "Bán thành phẩm" : "Thành phẩm";
+    const list = (lookups.products || []).filter((p) => typesOf(p).includes(want));
+    const cur = current && !list.some((p) => p.id === current) ? productById(current) : null;
+    return cur ? [cur, ...list] : list;
   };
   // Thêm 1 "lần làm" (task con) cho một công đoạn (cha)
+  // Công đoạn đã có dòng → dòng mới KẾ THỪA toàn bộ thông tin của dòng cuối cùng cùng công đoạn
+  // (SL, máy, ca, ngày, đội, công nhân, sản phẩm đầu ra...). Chỉ bỏ những gì thuộc riêng dòng cũ:
+  // mã dòng/id, trạng thái (về "Chờ"), SL thực tế và phế — là kết quả, không phải kế hoạch.
   const addTaskFor = (stage) => {
     setCollapsed((c) => ({ ...c, [stage]: false })); // mở nhóm khi thêm lần mới
-    setTasks((a) => [...a, { _k: taskSeq, stage, quantity: "", actual_qty: "", scrap_qty: "", machine_id: "", shift: "", planned_date: "", planned_end_date: "", assigned_team: "", assigned_worker: "", assigned_worker_id: "", status: "Chờ", output_product_id: outputDefault(stage) }]);
+    setTasks((a) => {
+      const prev = [...a].reverse().find((x) => x.stage === stage);
+      let row;
+      if (prev) {
+        const { id, task_code, ...rest } = prev; // eslint-disable-line no-unused-vars
+        row = { ...rest, _k: taskSeq, status: "Chờ", actual_qty: "", scrap_qty: "" };
+      } else {
+        row = { _k: taskSeq, stage, quantity: "", actual_qty: "", scrap_qty: "", machine_id: "", shift: "", planned_date: "", planned_end_date: "", assigned_team: "", assigned_worker: "", assigned_worker_id: "", status: "Chờ", output_product_id: "", _auto: true };
+      }
+      return withAutoOutputs([...a, row], f.product_id);
+    });
     setTaskSeq((s) => s + 1);
   };
   const addTask = () => addTaskFor("Thổi");
-  const rmTask = (k) => setTasks((a) => a.filter((x) => x._k !== k));
-  const upTask = (k, field, v) => setTasks((a) => a.map((x) => (x._k === k ? { ...x, [field]: v } : x)));
-  // Đội / Công nhân (chọn từ danh sách, công nhân lọc theo đội)
+  const rmTask = (k) => setTasks((a) => withAutoOutputs(a.filter((x) => x._k !== k), f.product_id));
+  const upTask = (k, field, v) => setTasks((a) => a.map((x) => (x._k === k
+    ? { ...x, [field]: v, ...(field === "output_product_id" ? { _auto: false } : {}) } : x)));
+  // Đổi SP của lệnh → tính lại đầu ra cho các dòng đang tự động
+  useEffect(() => { setTasks((a) => (a.length ? withAutoOutputs(a, f.product_id) : a)); }, [f.product_id]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Ô nhập gọn cho bảng phân công (bớt đệm ngang/dọc so với inputCls chuẩn) — để bảng vừa 1 màn hình
+  const cellCls = inputCls.replace("px-3 py-2", "px-2 py-1.5");
+  // Công nhân (chọn theo ID; lưu kèm tên để hiển thị)
   const emps = lookups.employees || [];
-  const teams = [...new Set(emps.map((e) => e.factory).filter(Boolean))];
-  const workersOf = (team) => emps.filter((e) => !team || e.factory === team);
-  // Chọn công nhân theo ID; lưu kèm tên để hiển thị
-  const setTaskWorker = (k, empId) => setTasks((a) => a.map((x) => x._k === k
-    ? { ...x, assigned_worker_id: empId, assigned_worker: emps.find((e) => e.id === empId)?.name || "" } : x));
-  const setTaskTeam = (k, v) => setTasks((a) => a.map((x) => {
+  // Cột Đội đã ẩn → đội tự lấy theo nhà máy của công nhân vừa chọn (giữ dữ liệu cho báo cáo theo đội).
+  // Bỏ chọn công nhân thì giữ nguyên đội cũ.
+  const setTaskWorker = (k, empId) => setTasks((a) => a.map((x) => {
     if (x._k !== k) return x;
-    const keep = emps.find((e) => e.id === x.assigned_worker_id && (!v || e.factory === v));
-    return { ...x, assigned_team: v, assigned_worker_id: keep ? x.assigned_worker_id : "", assigned_worker: keep ? x.assigned_worker : "" };
+    const emp = emps.find((e) => e.id === empId);
+    return { ...x, assigned_worker_id: empId, assigned_worker: emp?.name || "", assigned_team: emp?.factory || x.assigned_team };
   }));
 
-  // Sinh phân công theo Quy trình công nghệ của sản phẩm (silent = tự động, không báo)
+  // Sinh phân công mặc định Thổi + Cắt (silent = tự động, không báo). Không dùng Quy trình công nghệ
+  // (chủ dự án chốt 2026-10-09). Chỉ là gợi ý — thừa công đoạn nào người dùng xóa, đổi máy/ca/đội rồi mới Lưu.
   const genFromProcess = async (productId, quantity, { silent = false, defaults = {} } = {}) => {
     if (!productId) { if (!silent) toast.error("Hãy chọn Sản phẩm trước."); return; }
     try {
-      const list = await processes.list({ product_id: productId });
-      if (!list.length) { if (!silent) toast.error("Sản phẩm này chưa có quy trình công nghệ. Tạo ở mục Quy trình CN."); return; }
-      const proc = await processes.get(list[0].id);
-      if (!proc.steps?.length) { if (!silent) toast.error("Quy trình chưa có bước nào."); return; }
+      const proc = { steps: DEFAULT_STAGES.map((stage) => ({ name: stage, workshop: stageFactory(stage) })) };
       let avail = [];
       try { avail = await production.machineAvailability(); } catch { /* không chặn nếu lỗi */ }
       const mapStage = (s) => /c[ắa]t/i.test(`${s.name || ""} ${s.workshop || ""} ${s.machine_name || ""} ${s.machine_type || ""}`) ? "Cắt" : "Thổi";
@@ -112,15 +152,17 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
             planned_date: defaults.planned_date || "", planned_end_date: "",
             assigned_team: teamMatch ? defaults.assigned_team : "", assigned_worker: teamMatch ? defaults.assigned_worker : "",
             assigned_worker_id: teamMatch ? (defaults.assigned_worker_id || "") : "",
-            status: "Chờ", note: s.name || "", output_product_id: outputDefault(stage)
+            status: "Chờ", note: s.name || "", output_product_id: "", _auto: true
           });
           seq++;
         });
       }
-      setTasks(newTasks); setTaskSeq(Date.now() + seq + 1);
+      // Dùng productId truyền vào (không đọc f.product_id — lúc nạp lệnh state chưa kịp cập nhật,
+      // trước đây làm ô "Sản phẩm đầu ra" rỗng → hiện "-- Cuộn mặc định --" thay vì mã thật)
+      setTasks(withAutoOutputs(newTasks, productId)); setTaskSeq(Date.now() + seq + 1);
       if (!silent) {
         const nMc = newTasks.filter((t) => t.machine_id).length;
-        toast.success(`Đã tạo ${newTasks.length} phân công theo quy trình "${proc.name}". Gợi ý máy rảnh cho ${nMc}/${newTasks.length} công đoạn (ưu tiên 1 máy/công đoạn). Hãy kiểm tra ca/ngày rồi Lưu.`);
+        toast.success(`Đã tạo ${newTasks.length} công đoạn mặc định (Thổi + Cắt). Gợi ý máy rảnh cho ${nMc}/${newTasks.length} công đoạn. Thừa công đoạn nào hãy xóa, kiểm tra ca/ngày rồi Lưu.`);
       }
     } catch (e) { if (!silent) toast.error("Lỗi: " + e.message); }
   };
@@ -129,10 +171,16 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
   } : {});
 
   // NVL cần cung cấp (kế hoạch cấp NVL) + trạng thái đã yêu cầu (xuất kho)
-  const [plannedMats, setPlannedMats] = useState([]);
+  // Bảng NVL trống → gợi ý sẵn 1 dòng NVL mặc định (app_settings.default_material_product_id, vd hạt nguyên sinh).
+  // Chỉ là gợi ý: đổi / xóa / thêm dòng bình thường. Bảng đã có NVL (từ đơn hàng / đã lưu) thì không đụng.
+  const defaultMatRows = () => {
+    const id = lookups.default_material_product_id;
+    return id ? [{ _k: 1, material_id: id, ratio: "", qty: "", unit: productById(id)?.unit || "", note: "", on_hand: null }] : [];
+  };
+  const [plannedMats, setPlannedMats] = useState(() => (editId || copyId ? [] : defaultMatRows()));
   const [matsIssued, setMatsIssued] = useState(false);
   const [slip, setSlip] = useState(null); // phiếu xuất kho mới nhất {id, slip_code, status}
-  const [pmSeq, setPmSeq] = useState(1);
+  const [pmSeq, setPmSeq] = useState(2); // 2: chừa _k = 1 cho dòng NVL gợi ý mặc định
   const [pmBusy, setPmBusy] = useState(false);
   const nvlOptions = (lookups.products || []).filter((p) => p.product_type === 'Nguyên vật liệu')
     .map((p) => ({ value: p.id, label: `${p.product_name}${p.product_code ? ` (${p.product_code})` : ''}` }));
@@ -169,6 +217,8 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
 
   const [editing, setEditing] = useState(!editId); // tạo mới = sửa ngay; mở sẵn = xem
   const [meta, setMeta] = useState(null); // dữ liệu lệnh đã nạp (mã lệnh, SP, đơn...) cho tem QR
+  // LSX tạo từ dòng đơn hàng → SP / KH / SL cần SX / Đơn vị kế thừa, chỉ hiển thị (không sửa ở LSX)
+  const fromOrder = !!meta?.sales_order_item_id;
   // M40: khoá nút Lưu trong lúc đang gửi (chống bấm 2 lần). Ref chặn ngay lập tức — state chỉ cập nhật
   // sau lần render, 2 cú bấm sát nhau vẫn lọt nếu chỉ dựa vào state.
   const [saving, setSaving] = useState(false);
@@ -198,16 +248,19 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
       setFinishing(names.map((name) => ({ name, checked: saved.get(name) || false })));
       production.getTasks(editId).then((rows) => {
         if (rows && rows.length) {
-          setTasks(rows.map((t, i) => ({
+          const hasCut = rows.some((t) => t.stage === "Cắt");
+          setTasks(withAutoOutputs(rows.map((t, i) => ({
             _k: i + 1, id: t.id, task_code: t.task_code, stage: t.stage, quantity: t.quantity, actual_qty: t.actual_qty ?? "", scrap_qty: t.scrap_qty ?? "",
             machine_id: t.machine_id || "", shift: t.shift || "",
             planned_date: t.planned_date?.slice(0, 10) || "", planned_end_date: t.planned_end_date?.slice(0, 10) || "",
             assigned_team: t.assigned_team || "", assigned_worker: t.assigned_worker || "", assigned_worker_id: t.assigned_worker_id || "", status: t.status,
             output_product_id: t.output_product_id || "",
-          })));
+            // Trống hoặc trùng giá trị mặc định → coi là tự động; khác → người dùng đã chọn tay, giữ nguyên
+            _auto: !t.output_product_id || t.output_product_id === computeOutput(t.stage, d.product_id, hasCut),
+          })), d.product_id));
           setTaskSeq(rows.length + 1);
         } else {
-          // Mặc định: chưa có phân công → tự dựng theo quy trình công nghệ, SL = SL lệnh
+          // Mặc định: chưa có phân công → tự dựng công đoạn theo loại SP, SL = SL lệnh
           // Kế thừa ca/đội/công nhân/máy đã phân bổ ở màn Kế hoạch (lưu ở cấp lệnh)
           genFromProcess(d.product_id, d.quantity, {
             silent: true,
@@ -237,15 +290,19 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
           setPlannedMats(rows);
           setPmSeq(rows.length + 1);
         } else {
-          setPlannedMats([]);
-          setPmSeq(1);
+          setPlannedMats([]); // dòng NVL gợi ý chỉ thêm khi bấm Sửa (xem effect bên dưới), không hiện ở chế độ xem
+          setPmSeq(2);
         }
       }).catch(() => {});
     }).catch((e) => toast.error("Lỗi tải lệnh sản xuất: " + e.message));
   }, [editId]); // eslint-disable-line
   useEffect(() => { loadData(); }, [loadData]);
+  // Đang Sửa mà bảng NVL trống (và chưa xuất kho NVL) → gợi ý sẵn dòng NVL mặc định
+  useEffect(() => {
+    if (editing && !matsIssued) setPlannedMats((a) => (a.length ? a : defaultMatRows()));
+  }, [editing, matsIssued]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Sao chép từ lệnh nguồn → lệnh mới (không copy phân công; sẽ tự dựng theo quy trình khi mở sửa)
+  // Sao chép từ lệnh nguồn → lệnh mới (không copy phân công; sẽ tự dựng theo loại SP khi mở sửa)
   useEffect(() => {
     if (editId || !copyId) return;
     production.get(copyId).then((d) => {
@@ -268,12 +325,13 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
               const p = (lookups.products || []).find((pp) => pp.id === r.material_id);
               return { _k: i + 1, material_id: r.material_id, ratio: r.ratio ?? '', qty: '', unit: p?.unit || '', note: '', on_hand: null };
             });
-        setPlannedMats(rows); setPmSeq(rows.length + 1);
+        const finalRows = rows.length ? rows : defaultMatRows();
+        setPlannedMats(finalRows); setPmSeq(finalRows.length + 1);
       }).catch(() => {});
     }).catch((e) => toast.error("Lỗi tải lệnh nguồn: " + e.message));
   }, [copyId, editId]); // eslint-disable-line
 
-  // auto đổ đơn vị theo sản phẩm + tự dựng phân công theo quy trình (khi tạo mới)
+  // auto đổ đơn vị theo sản phẩm + tự dựng phân công theo loại SP (khi tạo mới)
   const onProduct = (id) => {
     const p = lookups.products.find((x) => x.id === id);
     setF((s) => ({ ...s, product_id: id, unit: p?.unit || s.unit }));
@@ -302,25 +360,23 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
     if (over.length) {
       return toast.error(`Số lượng thực tế cộng dồn của công đoạn ${over.map(([stg, s]) => `${stg} (${fmt(s)})`).join(", ")} vượt quá 150% Số lượng cần sản xuất (${fmt(f.quantity)} → tối đa ${fmt(capQty)}). Vui lòng xem xét lại số lượng thực tế.`);
     }
-    // Ràng buộc 3: khi CHỦ ĐỘNG chọn "Hoàn thành" → tất cả công đoạn phải có đủ máy, ca, đội, công nhân, SL thực tế
-    // Không áp khi đang lưu bổ sung thông tin vào lệnh đã ở trạng thái Hoàn thành (để không chặn việc điền thiếu)
+    // Ràng buộc 3: khi CHỦ ĐỘNG chọn "Hoàn thành" → tất cả công đoạn phải có đủ máy, công nhân, SL thực tế
+    // (bỏ yêu cầu ca, đội — 2 cột đã ẩn). Không áp khi đang lưu bổ sung thông tin vào lệnh đã Hoàn thành.
     const isSettingCompletion = f.status === 'Hoàn thành' && f.status !== meta?.status;
     if (isSettingCompletion && tasks.length > 0) {
       const missing = tasks.filter((t) => t.stage && (
-        !t.machine_id || !t.shift || !t.assigned_team || !t.assigned_worker_id ||
+        !t.machine_id || !t.assigned_worker_id ||
         (t.actual_qty === '' || t.actual_qty == null || Number(t.actual_qty) <= 0)
       ));
       if (missing.length > 0) {
         const details = missing.map((t) => {
           const lacks = [];
           if (!t.machine_id) lacks.push('máy');
-          if (!t.shift) lacks.push('ca');
-          if (!t.assigned_team) lacks.push('đội');
           if (!t.assigned_worker_id) lacks.push('công nhân');
           if (!t.actual_qty || Number(t.actual_qty) <= 0) lacks.push('SL thực tế');
           return `${t.stage} (thiếu: ${lacks.join(', ')})`;
         }).join('; ');
-        return toast.error(`Không thể xác nhận Hoàn thành — các công đoạn sau chưa đủ thông tin: ${details}. Vui lòng gán đủ máy, ca, đội, công nhân và nhập sản lượng thực tế.`);
+        return toast.error(`Không thể xác nhận Hoàn thành — các công đoạn sau chưa đủ thông tin: ${details}. Vui lòng gán đủ máy, công nhân và nhập sản lượng thực tế.`);
       }
     }
     // Tỷ lệ (%) ở bảng NVL gộp → đồng bộ về mix_ratio (cấp lệnh); Số KG lưu riêng ở savePlannedMaterials.
@@ -439,27 +495,45 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
 
       <fieldset disabled={!editing} className="space-y-5">
       <Section title="Thông tin sản xuất cơ bản">
+        {/* LSX tạo từ dòng đơn hàng: Sản phẩm / Khách hàng / SL cần SX / Đơn vị KẾ THỪA từ đơn → chỉ hiển thị.
+            Sửa ở LSX sẽ lệch ngược lại đơn hàng (backend cũng chặn). LSX tạo tay (không gắn đơn) vẫn nhập bình thường. */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-4">
           {!fhid("product_id") && <Field label="Sản phẩm" required>
-            <SearchSelect
-              value={f.product_id}
-              onChange={onProduct}
-              options={lookups.products.map((p) => ({ value: p.id, label: `${p.product_code} · ${p.product_name}` }))}
-              placeholder="-- Chọn sản phẩm --"
-              disabled={fdis("product_id")}
-            />
+            {fromOrder ? (
+              <ReadOnly>{(() => { const p = productById(f.product_id); return p ? `${p.product_code} · ${p.product_name}` : "—"; })()}</ReadOnly>
+            ) : (
+              <SearchSelect
+                value={f.product_id}
+                onChange={onProduct}
+                options={lookups.products.map((p) => ({ value: p.id, label: `${p.product_code} · ${p.product_name}` }))}
+                placeholder="-- Chọn sản phẩm --"
+                disabled={fdis("product_id")}
+              />
+            )}
           </Field>}
           {!fhid("customer_id") && <Field label="Khách hàng">
-            <select className={inputCls} disabled={fdis("customer_id")} value={f.customer_id} onChange={(e) => set("customer_id", e.target.value)}>
-              <option value="">-- Không / Khách lẻ --</option>
-              {lookups.customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
+            {fromOrder ? (
+              <ReadOnly>{lookups.customers.find((c) => c.id === f.customer_id)?.name || "— Khách lẻ —"}</ReadOnly>
+            ) : (
+              <select className={inputCls} disabled={fdis("customer_id")} value={f.customer_id} onChange={(e) => set("customer_id", e.target.value)}>
+                <option value="">-- Không / Khách lẻ --</option>
+                {lookups.customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            )}
           </Field>}
           {!fhid("quantity") && <Field label="Số lượng cần sản xuất" required>
-            <input type="number" min="0" className={inputCls} disabled={fdis("quantity")} value={f.quantity} onChange={(e) => onQuantity(e.target.value)} />
+            {fromOrder ? (
+              <ReadOnly>{fmt(f.quantity)}</ReadOnly>
+            ) : (
+              <input type="number" min="0" className={inputCls} disabled={fdis("quantity")} value={f.quantity} onChange={(e) => onQuantity(e.target.value)} />
+            )}
           </Field>}
           <Field label="Đơn vị">
-            <UnitSelect value={f.unit} onChange={(v) => set("unit", v)} />
+            {fromOrder ? (
+              <ReadOnly>{f.unit || productById(f.product_id)?.unit || "—"}</ReadOnly>
+            ) : (
+              <UnitSelect value={f.unit} onChange={(v) => set("unit", v)} />
+            )}
           </Field>
           <Field label="Ngày giao (deadline)">
             <input type="date" className={inputCls} value={f.due_date} onChange={(e) => set("due_date", e.target.value)} />
@@ -696,22 +770,23 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
           )}>
           <fieldset disabled={fdis("tasks")}>
           <div className="overflow-x-auto">
-            <table className="w-full text-sm whitespace-nowrap">
+            {/* Bảng gọn trên 1 màn hình: độ rộng CỐ ĐỊNH từng cột (table-fixed, tổng ~980px, vừa cả laptop 1366px; màn hẹp hơn
+                vẫn cuộn ngang). Nội dung dài trong ô chọn tự cắt bớt, rê chuột / mở ra để xem đủ. */}
+            <table className="w-full table-fixed text-sm whitespace-nowrap">
               <thead className="text-slate-400 text-xs uppercase">
                 <tr>
-                  <th className="text-left py-2 font-medium min-w-[110px]">Công đoạn</th>
-                  <th className="text-left py-2 font-medium min-w-[110px]">Sản lượng</th>
-                  <th className="text-left py-2 font-medium min-w-[200px]">Sản phẩm đầu ra</th>
-                  <th className="text-left py-2 font-medium min-w-[180px]">Máy</th>
-                  <th className="text-left py-2 font-medium min-w-[100px]">Ca</th>
-                  <th className="text-left py-2 font-medium min-w-[140px]">Từ ngày</th>
-                  <th className="text-left py-2 font-medium min-w-[140px]">Đến ngày</th>
-                  <th className="text-left py-2 font-medium min-w-[130px]">Đội</th>
-                  <th className="text-left py-2 font-medium min-w-[160px]">Công nhân</th>
-                  <th className="text-left py-2 font-medium min-w-[100px]">Thực tế</th>
-                  <th className="text-left py-2 font-medium min-w-[150px]">Trạng thái</th>
-                  <th className="text-center py-2 font-medium min-w-[120px]">Hoàn thành</th>
-                  <th className="w-10" />
+                  <th className="text-left py-2 pr-2 font-medium w-[84px]">Công đoạn</th>
+                  <th className="text-left py-2 pr-2 font-medium w-[80px]">Sản lượng</th>
+                  <th className="text-left py-2 pr-2 font-medium w-[144px]">Sản phẩm đầu ra</th>
+                  <th className="text-left py-2 pr-2 font-medium w-[132px]">Máy</th>
+                  {/* Cột Ca và Đến ngày chỉ ẨN (chủ dự án yêu cầu) — dữ liệu shift / planned_end_date
+                      vẫn giữ nguyên trong dòng và được lưu lại như cũ, không bị xóa hay ghi đè. */}
+                  <th className="text-left py-2 pr-2 font-medium w-[120px]">Ngày</th>
+                  <th className="text-left py-2 pr-2 font-medium w-[132px]">Công nhân</th>
+                  <th className="text-left py-2 pr-2 font-medium w-[76px]">Thực tế</th>
+                  <th className="text-left py-2 pr-2 font-medium w-[110px]">Trạng thái</th>
+                  <th className="text-center py-2 pr-2 font-medium w-[76px]">Hoàn thành</th>
+                  <th className="w-7" />
                 </tr>
               </thead>
               <tbody>
@@ -743,7 +818,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
                           </td>
                           {/* SẢN LƯỢNG (kế hoạch): tổng cho phép các lần — trung tính, không ràng buộc */}
                           <td className="py-2 pr-2 font-medium text-slate-500 cursor-pointer" onClick={() => toggleStage(stg)} title="Tổng sản lượng cho phép của các lần (kế hoạch)">Σ KH {fmt(sumQty)}</td>
-                          <td colSpan={7} className="cursor-pointer py-2 pr-2" onClick={() => toggleStage(stg)}>
+                          <td colSpan={4} className="cursor-pointer py-2 pr-2" onClick={() => toggleStage(stg)}>
                             {stg === "Cắt" && rollAvail && (
                               <span className="inline-flex items-center gap-1.5 text-xs font-medium text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-full px-2.5 py-0.5">
                                 🧵 Tồn cuộn khả dụng: {fmt(rollAvail.total_kg)} kg ({rollAvail.spec_label})
@@ -763,38 +838,43 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
                           const dis = rowLocked; // khóa mọi ô nhập
                           return (
                           <tr key={t._k} className={`border-b border-slate-100${rowLocked ? " bg-emerald-50/40" : ""}`}>
-                            <td className="py-1.5 pr-2 pl-8">{rowLocked && <Lock size={13} className="text-emerald-600 inline" />}</td>
-                            <td className="py-1.5 pr-2"><input disabled={dis} type="number" min="0" className={`${inputCls}${qtyOver ? " !border-rose-400 !ring-2 !ring-rose-200" : ""}`} value={t.quantity} onChange={(e) => upTask(t._k, "quantity", e.target.value)} title={qtyOver ? `Sản lượng 1 lần vượt 150% SL cần SX (tối đa ${fmt(capStage)})` : undefined} /></td>
+                            <td className="py-1.5 pr-2 pl-6">{rowLocked && <Lock size={13} className="text-emerald-600 inline" />}</td>
+                            <td className="py-1.5 pr-2"><input disabled={dis} type="number" min="0" className={`${cellCls} no-spin${qtyOver ? " !border-rose-400 !ring-2 !ring-rose-200" : ""}`} value={t.quantity} onChange={(e) => upTask(t._k, "quantity", e.target.value)} title={qtyOver ? `Sản lượng 1 lần vượt 150% SL cần SX (tối đa ${fmt(capStage)})` : undefined} /></td>
                             <td className="py-1.5 pr-2">
-                              <select disabled={dis} className={inputCls} value={t.output_product_id || ""} onChange={(e) => upTask(t._k, "output_product_id", e.target.value)}
-                                title={stg === "Thổi" ? "Cuộn tạo ra (nhập kho BTP)" : "Bao bì thành phẩm (nhập kho TP)"}>
-                                <option value="">{stg === "Thổi" ? "-- Cuộn mặc định --" : "-- Bao bì (SP lệnh) --"}</option>
-                                {(lookups.products || []).filter((p) => p.product_type !== "Nguyên vật liệu").map((p) => (
-                                  <option key={p.id} value={p.id}>{p.product_code} · {p.product_name}</option>
-                                ))}
-                              </select>
+                              {(() => {
+                                // Ô trống chỉ còn ở dòng đã Hoàn thành từ trước khi có tính năng này → hiện SP mặc định thật
+                                const defP = productById(computeOutput(stg, f.product_id, tasks.some((x) => x.stage === "Cắt")));
+                                return (
+                                  <select disabled={dis} className={cellCls} value={t.output_product_id || ""} onChange={(e) => upTask(t._k, "output_product_id", e.target.value)}
+                                    title={stg === "Thổi" ? "Cuộn tạo ra (nhập kho BTP) — chỉ liệt kê SP loại Bán thành phẩm" : "Bao bì thành phẩm (nhập kho TP) — chỉ liệt kê SP loại Thành phẩm"}>
+                                    <option value="">{defP ? `${defP.product_code} · ${defP.product_name} (mặc định)` : "-- Chọn sản phẩm --"}</option>
+                                    {outputOptions(stg, t.output_product_id).map((p) => (
+                                      <option key={p.id} value={p.id}>{p.product_code} · {p.product_name}</option>
+                                    ))}
+                                  </select>
+                                );
+                              })()}
                             </td>
-                            <td className="py-1.5 pr-2"><select disabled={dis} className={inputCls} value={t.machine_id} onChange={(e) => upTask(t._k, "machine_id", e.target.value)}><option value="">-- Chọn máy --</option>{machinesForStage.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</select></td>
-                            <td className="py-1.5 pr-2"><select disabled={dis} className={inputCls} value={t.shift} onChange={(e) => upTask(t._k, "shift", e.target.value)}><option value="">--</option>{(lookups.shifts || []).map((c) => <option key={c}>{c}</option>)}</select></td>
-                            <td className="py-1.5 pr-2"><input disabled={dis} type="date" className={inputCls} value={t.planned_date} onChange={(e) => upTask(t._k, "planned_date", e.target.value)} /></td>
-                            <td className="py-1.5 pr-2"><input disabled={dis} type="date" className={inputCls} value={t.planned_end_date} onChange={(e) => upTask(t._k, "planned_end_date", e.target.value)} /></td>
+                            <td className="py-1.5 pr-2"><select disabled={dis} className={cellCls} value={t.machine_id} onChange={(e) => upTask(t._k, "machine_id", e.target.value)}><option value="">-- Chọn máy --</option>{machinesForStage.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</select></td>
+                            <td className="py-1.5 pr-2"><input disabled={dis} type="date" className={cellCls} value={t.planned_date} onChange={(e) => upTask(t._k, "planned_date", e.target.value)} /></td>
+                            {/* Cột Đội đã ẨN (dữ liệu assigned_team vẫn giữ). Công nhân: người của nhà máy theo
+                                công đoạn xếp trên, người khác xếp dưới — không chặn ai. */}
                             <td className="py-1.5 pr-2">
-                              <select disabled={dis} className={inputCls} value={t.assigned_team} onChange={(e) => setTaskTeam(t._k, e.target.value)}>
-                                <option value="">-- Đội --</option>
-                                {teams.map((tm) => <option key={tm}>{tm}</option>)}
-                              </select>
-                            </td>
-                            <td className="py-1.5 pr-2">
-                              <select disabled={dis} className={inputCls} value={t.assigned_worker_id || ""} onChange={(e) => setTaskWorker(t._k, e.target.value)}>
+                              <select disabled={dis} className={cellCls} value={t.assigned_worker_id || ""} onChange={(e) => setTaskWorker(t._k, e.target.value)}>
                                 <option value="">-- Công nhân --</option>
-                                {workersOf(t.assigned_team).map((e) => <option key={e.id} value={e.id}>{e.employee_code ? `${e.employee_code} · ` : ""}{e.name}</option>)}
+                                {[[factory, emps.filter((e) => e.factory === factory)], ["Khác", emps.filter((e) => e.factory !== factory)]]
+                                  .filter(([, list]) => list.length).map(([label, list]) => (
+                                    <optgroup key={label} label={label}>
+                                      {list.map((e) => <option key={e.id} value={e.id}>{e.employee_code ? `${e.employee_code} · ` : ""}{e.name}</option>)}
+                                    </optgroup>
+                                  ))}
                               </select>
                             </td>
-                            <td className="py-1.5 pr-2"><input disabled={dis} type="number" min="0" className={inputCls} value={t.actual_qty} onChange={(e) => upTask(t._k, "actual_qty", e.target.value)} placeholder="SL thực" /></td>
+                            <td className="py-1.5 pr-2"><input disabled={dis} type="number" min="0" className={cellCls + " no-spin"} value={t.actual_qty} onChange={(e) => upTask(t._k, "actual_qty", e.target.value)} placeholder="SL thực" /></td>
                             <td className="py-1.5 pr-2">
                               {rowLocked
                                 ? <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">Hoàn thành</span>
-                                : <select disabled={dis} className={inputCls} value={t.status === 'Hoàn thành' ? 'Chờ' : t.status} onChange={(e) => upTask(t._k, "status", e.target.value)}><option>Chờ</option><option>Đang sản xuất</option><option>Dừng sản xuất</option><option>Đã hủy</option></select>}
+                                : <select disabled={dis} className={cellCls} value={t.status === 'Hoàn thành' ? 'Chờ' : t.status} onChange={(e) => upTask(t._k, "status", e.target.value)}><option>Chờ</option><option>Đang sản xuất</option><option>Dừng sản xuất</option><option>Đã hủy</option></select>}
                             </td>
                             <td className="py-1.5 pr-2 text-center">
                               {rowLocked
@@ -818,7 +898,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
                     );
                   });
                 })()}
-                {!tasks.length && <tr><td colSpan={13} className="py-4 text-center text-slate-400 text-sm">Chưa có phân công. Bấm "＋ Thổi" hoặc "＋ Cắt" để thêm lần làm.</td></tr>}
+                {!tasks.length && <tr><td colSpan={10} className="py-4 text-center text-slate-400 text-sm">Chưa có phân công. Bấm "＋ Thổi" hoặc "＋ Cắt" để thêm lần làm.</td></tr>}
               </tbody>
             </table>
           </div>

@@ -176,6 +176,8 @@ export const scrap = {
   save: (data) => http(`/scrap/records`, body("POST", data)),
   stats: (worker_name, end_date) => http(`/scrap/statistics?worker_name=${encodeURIComponent(worker_name)}&end_date=${end_date}`).then(r => r),
   dailyDetails: (worker_name, date) => http(`/scrap/daily-details?worker_name=${encodeURIComponent(worker_name)}&date=${date}`).then(r => r),
+  // Tổng hợp phế theo khoảng ngày (nguồn: Quản lý phế, gộp theo ngày) — dùng cho báo cáo Sản lượng
+  summary: (from, to) => http(`/scrap/summary?from=${from}&to=${to}`).then(r => r.data ?? r),
 };
 
 export const recycling = {

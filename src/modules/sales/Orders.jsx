@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { Link } from "react-router-dom";
 import { RotateCcw, Plus, Trash2, Pencil, ArrowLeft, Save, FileText, Printer, Copy, Upload, CheckCircle, XCircle, AlertCircle, CalendarClock } from "lucide-react";
-import { resource, salesOrders as salesOrdersApi, planning, processes } from "../../mesApi.js";
+import { resource, salesOrders as salesOrdersApi, planning } from "../../mesApi.js";
+import { DEFAULT_STAGES, stageFactory } from "../../productionDefaults.js";
 import { usePerm } from "../../perm.jsx";
 import {  inputCls, fmt, fmtDate, fmtDateTime, statusClass, dueTone , toast } from "../../ui.js";
 import { PageHeader, ListHeader, Section, usePager, DataTable, UnitSelect, DateInput, Logo, SearchSelect } from '../../components.jsx';
@@ -64,7 +65,7 @@ function SpecFields({ specs, onChange, disabled }) {
         return (
           <label key={spec.name}>{lbl}
             <div className="flex gap-1.5">
-              <input type="number" className={cls + " flex-1 min-w-0"} disabled={disabled} value={num} placeholder="0"
+              <input type="number" step="any" className={cls + " flex-1 min-w-0 no-spin"} disabled={disabled} value={num} placeholder="0"
                 onChange={(e) => setV(spec.name, e.target.value ? `${e.target.value} ${cu}` : "")} />
               <select className={selectCls} disabled={disabled} value={cu}
                 onChange={(e) => setV(spec.name, num ? `${num} ${e.target.value}` : "")}>
@@ -135,8 +136,6 @@ function LsxLinks({ orders, onOpenProductionOrder }) {
 }
 
 /* ---- Modal phân công nhanh từ chi tiết đơn hàng ---- */
-const mapStageName = (s) => (/c[ắa]t/i.test(`${s.name || ''} ${s.workshop || ''} ${s.machine_name || ''}`) ? 'Cắt' : 'Thổi');
-const stageFactory = (stage) => (stage === 'Cắt' ? 'Nhà máy cắt' : 'Nhà máy thổi');
 
 function QuickAllocateModal({ orderId, orderItems, lookups, onClose, onDone }) {
   const [loading, setLoading] = useState(true);
@@ -201,21 +200,13 @@ function QuickAllocateModal({ orderId, orderItems, lookups, onClose, onDone }) {
                     }));
                     if (!cancel) { setStages(rows); stagesLoaded = true; }
                   }
-                } catch { /* fallback về process template */ }
+                } catch { /* fallback về công đoạn theo loại SP */ }
               }
-              // Nếu chưa có từ LSX → load từ process template
+              // Chưa có từ LSX → công đoạn mặc định Thổi + Cắt (không dùng Quy trình công nghệ).
               if (!stagesLoaded) {
-                try {
-                  const list = await processes.list({ product_id: productId });
-                  if (list.length) {
-                    const proc = await processes.get(list[0].id);
-                    const rows = (proc.steps || []).map((s, i) => {
-                      const stage = mapStageName(s);
-                      return { _k: i, name: s.name || stage, stage, machine_id: (s.machine_ids?.[0]) || s.machine_id || '', shift: '', assigned_team: s.workshop || stageFactory(stage), assigned_worker: '' };
-                    });
-                    if (!cancel) setStages(rows);
-                  }
-                } catch { /* bỏ qua nếu chưa có quy trình */ }
+                const rows = DEFAULT_STAGES.map((stage, i) => (
+                  { _k: i, name: stage, stage, machine_id: '', shift: '', assigned_team: stageFactory(stage), assigned_worker: '' }));
+                if (!cancel) setStages(rows);
               }
             }
           }
@@ -398,6 +389,10 @@ function OrderForm({ lookups, editId, copyId, onBack, onSaved, onPrint, onCreate
     if (x._k !== k) return x;
     const nx = { ...x, [fld]: v };
     if (fld === "product_id") { const p = lookups.products.find((pp) => pp.id === v); if (p) nx.unit = p.unit || x.unit || ""; }
+    // Chọn "Hàng pha" mà bảng NVL đang trống → điền sẵn dòng 1 = NVL mặc định (app_settings, vd hạt nguyên sinh).
+    // Chỉ là gợi ý: người dùng đổi/xóa/thêm dòng bình thường. Bảng đã có dữ liệu thì không đụng.
+    if (fld === "material_type" && v === "pha" && !(x.mix_ratio || []).length && lookups.default_material_product_id)
+      nx.mix_ratio = [{ material_id: lookups.default_material_product_id, ratio: "" }];
     // Hàng cuộn: tổng khối lượng = số lượng + khối lượng lõi (lõi trống tính = 0)
     if (fld === "quantity" || fld === "core_weight") {
       const q = Number(nx.quantity);

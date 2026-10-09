@@ -300,3 +300,31 @@ exports.getAllRecords = async (req, res) => {
     res.status(500).json({ message: 'Lỗi khi lấy danh sách phiếu ghi nhận' });
   }
 };
+
+// GET /api/scrap/summary?from=&to= — TỔNG HỢP PHẾ THEO NGÀY trong khoảng ngày.
+// Phế KHÔNG ghi theo lệnh sản xuất (xem thiết kế §9): nguồn duy nhất là module Quản lý phế
+// (daily_scrap_records + daily_scrap_items, gộp theo ngày). Dùng cho báo cáo Sản lượng sản xuất.
+exports.getSummary = async (req, res) => {
+  try {
+    const to = req.query.to || new Date().toISOString().slice(0, 10);
+    const from = req.query.from || to;
+    const { rows } = await db.query(`
+      SELECT dsr.record_date::text AS date,
+             COALESCE(SUM(dsi.scrap_qty), 0)::numeric    AS scrap_qty,
+             COALESCE(SUM(dsi.finished_qty), 0)::numeric AS finished_qty
+      FROM daily_scrap_records dsr
+      JOIN daily_scrap_items dsi ON dsi.record_id = dsr.id
+      WHERE dsr.record_date BETWEEN $1::date AND $2::date
+      GROUP BY dsr.record_date
+      ORDER BY dsr.record_date`, [from, to]);
+    const by_day = rows.map((r) => ({
+      date: r.date, scrap_qty: Number(r.scrap_qty) || 0, finished_qty: Number(r.finished_qty) || 0,
+    }));
+    res.json({ data: {
+      from, to,
+      total_scrap: by_day.reduce((s, r) => s + r.scrap_qty, 0),
+      total_finished: by_day.reduce((s, r) => s + r.finished_qty, 0),
+      by_day,
+    } });
+  } catch (err) { console.error(err); res.status(500).json({ message: 'Lỗi khi tổng hợp phế theo ngày' }); }
+};

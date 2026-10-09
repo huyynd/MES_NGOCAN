@@ -23,8 +23,10 @@ exports.nextCode = async (req, res) => {
     const cfg = CODE_MAP[req.params.entity];
     if (!cfg) return res.status(400).json({ message: 'Entity không hợp lệ' });
     const [table, col, prefix, width] = cfg;
+    // Chỉ đếm mã đúng mẫu <tiền tố><số> (bỏ qua mã lạ/mã test); bigint để không tràn — khớp trigger gen_code_trg
     const { rows } = await db.query(
-      `SELECT COALESCE(MAX(NULLIF(regexp_replace(${col}, '[^0-9]', '', 'g'), '')::int), 0) + 1 AS n FROM ${table}`);
+      `SELECT COALESCE(MAX(substr(${col}, length($1) + 1)::bigint), 0) + 1 AS n FROM ${table}
+       WHERE left(${col}, length($1)) = $1 AND substr(${col}, length($1) + 1) ~ '^[0-9]{1,18}$'`, [prefix]);
     res.json({ code: prefix + String(rows[0].n).padStart(width, '0') });
   } catch (err) { console.error(err); res.status(500).json({ message: 'Lỗi khi lấy mã kế tiếp' }); }
 };
@@ -60,6 +62,13 @@ exports.all = async (_req, res) => {
       WHERE p.is_deleted = FALSE AND a->>'value' <> ''`);
     const byName = (n) => attrs.rows.filter(r => r.name === n).map(r => r.value);
 
+    // Mã cuộn mặc định (app_settings.roll_product_id) — để màn Lệnh SX điền sẵn "Sản phẩm đầu ra"
+    // của dòng Thổi ngay cả khi tạo lệnh mới (trước đây chỉ có ở getById của lệnh đã lưu).
+    // + NVL mặc định (app_settings.default_material_product_id) — dòng đầu bảng NVL ở Đơn hàng / LSX.
+    const settings = (await db.query(
+      `SELECT key, value FROM app_settings WHERE key IN ('roll_product_id', 'default_material_product_id')`)).rows;
+    const setting = (k) => { const v = settings.find((s) => s.key === k)?.value; return v == null ? null : String(v); };
+
     res.json({
       products: products.rows,
       customers: customers.rows,
@@ -75,6 +84,8 @@ exports.all = async (_req, res) => {
       sizes: byName('Kích thước'),
       thicknesses: byName('Độ dày'),
       finishingOptions: ['Đục lỗ', 'Xí đáy', 'In ấn', 'Ghép màng', 'Hàn đáy', 'Bo góc'],
+      default_roll_product_id: setting('roll_product_id'),
+      default_material_product_id: setting('default_material_product_id'),
     });
   } catch (err) { console.error(err); res.status(500).json({ message: 'Lỗi khi lấy dữ liệu lookup' }); }
 };

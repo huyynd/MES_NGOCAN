@@ -2341,3 +2341,41 @@ CREATE TABLE IF NOT EXISTS public.production_roll_usage (
 );
 CREATE INDEX IF NOT EXISTS idx_roll_usage_task ON public.production_roll_usage (production_order_id, task_code);
 CREATE INDEX IF NOT EXISTS idx_roll_usage_lot  ON public.production_roll_usage (lot_code);
+
+-- 11) NVL MẶC ĐỊNH điền sẵn dòng đầu bảng NVL (Đơn hàng: khi chọn Hàng pha; LSX: bảng NVL cần cung cấp).
+--     Chỉ là gợi ý, người dùng sửa/xóa/thêm bình thường. Theo chủ dự án: hạt nhựa nguyên sinh SP00003.
+--     Chỉ seed nếu chưa có — đổi mã khác thì sửa trực tiếp giá trị trong app_settings, không cần sửa code.
+INSERT INTO public.app_settings (key, value)
+SELECT 'default_material_product_id', to_jsonb(id::text) FROM public.products
+WHERE product_code = 'SP00003' AND is_deleted = FALSE
+LIMIT 1
+ON CONFLICT (key) DO NOTHING;
+
+-- 12) Sinh mã tự động: CHỈ đếm mã đúng mẫu <tiền tố><số> (vd DH00021), bỏ qua mã lạ / mã test
+--     (vd 'SO-TEST-1791372234109' trước đây làm phần số vượt kiểu int → KHÔNG tạo được đơn mới).
+--     Dùng bigint để không tràn. Đồng bộ với lookupController.nextCode.
+CREATE OR REPLACE FUNCTION public.gen_code_trg() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  prefix  text := TG_ARGV[0];
+  width   int  := TG_ARGV[1]::int;
+  colname text := TG_ARGV[2];
+  cur     text;
+  nextn   bigint;
+  rec     jsonb;
+BEGIN
+  rec := to_jsonb(NEW);
+  cur := rec->>colname;
+  IF cur IS NULL OR cur = '' THEN
+    EXECUTE format(
+      'SELECT COALESCE(MAX(substr(%I, length($1) + 1)::bigint), 0) + 1 FROM %I
+        WHERE left(%I, length($1)) = $1 AND substr(%I, length($1) + 1) ~ ''^[0-9]{1,18}$''',
+      colname, TG_TABLE_NAME, colname, colname
+    ) INTO nextn USING prefix;
+    rec := jsonb_set(rec, ARRAY[colname], to_jsonb(prefix || lpad(nextn::text, width, '0')));
+    NEW := jsonb_populate_record(NEW, rec);
+  END IF;
+  RETURN NEW;
+END
+$$;

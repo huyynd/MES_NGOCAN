@@ -1,14 +1,19 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Activity, Download, RefreshCcw, TrendingUp, Package, CheckCircle2, AlertTriangle,
   X, User, Users, CalendarDays, Factory, ShoppingCart, Tag, ClipboardList, Layers,
   ChevronRight, AlertCircle,
 } from "lucide-react";
-import { ListHeader, Section, DataTable } from "../../components.jsx";
-import { production } from "../../mesApi.js";
+import { ListHeader, Section, DataTable, SearchSelect } from "../../components.jsx";
+import { production, scrap as scrapApi } from "../../mesApi.js";
 import { fmt, fmtDate, statusClass, toast } from "../../ui.js";
 import * as XLSX from "xlsx";
 import { usePerm } from "../../perm.jsx";
+
+// Giá trị riêng cho mục "Chưa phân đội" trong bộ lọc đội (không trùng tên đội thật nào)
+const NO_TEAM = "__no_team__";
+// Báo cáo sản lượng chỉ xét sản phẩm đầu ra — bộ lọc không liệt kê NVL / phế liệu
+const OUTPUT_TYPES = new Set(["Thành phẩm", "Bán thành phẩm"]);
 
 const today = () => new Date().toISOString().slice(0, 10);
 const monthStart = () => new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
@@ -66,7 +71,7 @@ function OrderDetailDrawer({ order, onClose }) {
 
   const actual   = Number(order.produced_qty) || 0;
   const planned  = Number(order.quantity) || 0;
-  const scrap    = Number(order.scrap_qty)  || 0;
+  const remain   = planned - actual; // >0: còn phải SX; <0: vượt mức
   const pct      = planned > 0 ? Math.round(actual / planned * 100) : 0;
   const pctColor = pct >= 100 ? "text-emerald-600" : pct >= 80 ? "text-amber-600" : "text-rose-600";
   const barColor = pct >= 100 ? "bg-emerald-500" : pct >= 80 ? "bg-amber-400" : "bg-rose-400";
@@ -124,13 +129,17 @@ function OrderDetailDrawer({ order, onClose }) {
               <span>Thực tế: <span className="font-semibold text-slate-700">{fmt(actual)} {order.unit}</span></span>
               <span>Kế hoạch: <span className="font-semibold text-slate-700">{fmt(planned)} {order.unit}</span></span>
             </div>
-            {scrap > 0 && (
-              <div className="mt-2 text-xs flex items-center gap-1 text-rose-500">
-                <AlertCircle size={12} />
-                Phế phẩm: <span className="font-semibold">{fmt(scrap)} {order.unit}</span>
-                &nbsp;({(scrap / (actual + scrap) * 100).toFixed(1)}%)
-              </div>
-            )}
+            <div className="mt-2 text-xs flex items-center gap-1">
+              {remain > 0 ? (
+                <span className="text-amber-600 flex items-center gap-1">
+                  <AlertCircle size={12} /> Còn lại: <span className="font-semibold">{fmt(remain)} {order.unit}</span>
+                </span>
+              ) : (
+                <span className="text-emerald-600 font-medium">
+                  ✓ Đã đủ kế hoạch{remain < 0 ? ` (vượt +${fmt(-remain)} ${order.unit})` : ""}
+                </span>
+              )}
+            </div>
           </div>
 
           {/* Thông tin cơ bản */}
@@ -165,7 +174,7 @@ function OrderDetailDrawer({ order, onClose }) {
             ) : (
               <div className="divide-y divide-slate-100">
                 {tasks.map((t, i) => {
-                  const tActual  = Number(t.actual_qty) ?? Number(t.quantity) ?? 0;
+                  const tActual  = (t.actual_qty != null && t.actual_qty !== "") ? Number(t.actual_qty) : (Number(t.quantity) || 0);
                   const tPlanned = Number(t.quantity) || 0;
                   const tPct     = tPlanned > 0 ? Math.round(tActual / tPlanned * 100) : 0;
                   const tColor   = tPct >= 100 ? "text-emerald-600" : tPct >= 80 ? "text-amber-600" : "text-rose-600";
@@ -186,7 +195,9 @@ function OrderDetailDrawer({ order, onClose }) {
                       <div className="flex items-center gap-4 text-xs text-slate-500 flex-wrap">
                         <span>KH: <b className="text-slate-700">{fmt(tPlanned)}</b></span>
                         <span>TT: <b className={tColor}>{fmt(tActual)} ({tPct}%)</b></span>
-                        {t.scrap_qty > 0 && <span className="text-rose-500">Phế: {fmt(t.scrap_qty)}</span>}
+                        {tPlanned - tActual > 0
+                          ? <span className="text-amber-600">Còn: <b>{fmt(tPlanned - tActual)}</b></span>
+                          : tActual > tPlanned && <span className="text-emerald-600">Vượt: <b>+{fmt(tActual - tPlanned)}</b></span>}
                         {t.planned_date && <span className="flex items-center gap-1"><CalendarDays size={11} />{fmtDate(t.planned_date)}</span>}
                         {t.assigned_team && <span className="flex items-center gap-1"><Users size={11} />{t.assigned_team}</span>}
                         {t.assigned_worker && <span className="flex items-center gap-1"><User size={11} />{t.assigned_worker}</span>}
@@ -238,6 +249,8 @@ export default function OutputReport({ lookups }) {
   const [productFilter, setProductFilter] = useState("");
   const [teamFilter, setTeamFilter]   = useState("");
   const [selected, setSelected]       = useState(null); // order được chọn để xem chi tiết
+  // Phế KHÔNG ghi theo lệnh — lấy từ module Quản lý phế, gộp theo ngày trong khoảng lọc.
+  const [scrapSum, setScrapSum]       = useState({ total_scrap: 0, total_finished: 0, by_day: [] });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -253,24 +266,67 @@ export default function OutputReport({ lookups }) {
 
   useEffect(() => { load(); }, [load]);
 
+  // Nạp tổng phế theo khoảng ngày đang lọc (nguồn: Quản lý phế)
+  useEffect(() => {
+    if (!from || !to) return;
+    let alive = true;
+    scrapApi.summary(from, to)
+      .then((d) => { if (alive) setScrapSum(d || { total_scrap: 0, total_finished: 0, by_day: [] }); })
+      .catch(() => { if (alive) setScrapSum({ total_scrap: 0, total_finished: 0, by_day: [] }); });
+    return () => { alive = false; };
+  }, [from, to]);
+
+  // Một lệnh có thể gắn nhiều đội ("Nhà máy cắt, Nhà máy thổi") → tách thành danh sách
+  const teamsOf = (r) => String(r.assigned_team_display || r.assigned_team || "")
+    .split(",").map(s => s.trim()).filter(Boolean);
+
+  // Danh sách chọn lấy từ chính dữ liệu đang có → không bao giờ chọn ra kết quả rỗng.
+  // Chỉ Thành phẩm / Bán thành phẩm (bỏ NVL, phế liệu) vì báo cáo sản lượng chỉ quan tâm đầu ra.
+  const productOptions = useMemo(() => {
+    const m = new Map();
+    rows.forEach(r => {
+      if (!r.product_code || m.has(r.product_code)) return;
+      if (!OUTPUT_TYPES.has(r.product_type)) return;
+      m.set(r.product_code, r.product_name || "");
+    });
+    return [...m].map(([code, name]) => ({ value: code, label: `${code} · ${name}` }))
+      .sort((a, b) => a.value.localeCompare(b.value, "vi"));
+  }, [rows]);
+
+  const teamOptions = useMemo(() => {
+    const s = new Set();
+    rows.forEach(r => teamsOf(r).forEach(t => s.add(t)));
+    return [...s].sort((a, b) => a.localeCompare(b, "vi"));
+  }, [rows]);
+
+  const hasNoTeam = useMemo(() => rows.some(r => teamsOf(r).length === 0), [rows]);
+
   // Filter
   const filtered = rows.filter(r => {
     const date = (r.start_date || r.planned_date_display || r.planned_date || r.created_at || "").slice(0, 10);
     const inRange = (!from || date >= from) && (!to || date <= to);
-    const matchP  = !productFilter || (r.product_name || "").toLowerCase().includes(productFilter.toLowerCase())
-                                   || (r.product_code || "").toLowerCase().includes(productFilter.toLowerCase());
-    const matchT  = !teamFilter || (r.assigned_team_display || r.assigned_team || "").toLowerCase().includes(teamFilter.toLowerCase());
+    const matchP  = !productFilter || r.product_code === productFilter;
+    const teams   = teamsOf(r);
+    const matchT  = !teamFilter || (teamFilter === NO_TEAM ? teams.length === 0 : teams.includes(teamFilter));
     return inRange && matchP && matchT;
   });
+
+  const hasFilter = !!(productFilter || teamFilter);
 
   // KPI
   const totalPlanned = filtered.reduce((s, r) => s + (Number(r.quantity) || 0), 0);
   const totalActual  = filtered.reduce((s, r) => s + (Number(r.produced_qty) || 0), 0);
-  const totalScrap   = filtered.reduce((s, r) => s + (Number(r.scrap_qty)  || 0), 0);
+  // Phế lấy từ Quản lý phế (gộp theo ngày trong khoảng lọc), KHÔNG lấy theo lệnh sản xuất.
+  const totalScrap    = Number(scrapSum.total_scrap) || 0;
+  const scrapFinished = Number(scrapSum.total_finished) || 0;
   const doneCount    = filtered.filter(r => r.status === "Hoàn thành").length;
+  const runningCount = filtered.filter(r => r.status === "Đang sản xuất").length;
   const achieveRate  = totalPlanned > 0 ? Math.round((totalActual / totalPlanned) * 100) : 0;
-  const scrapRate    = (totalActual + totalScrap) > 0
-    ? ((totalScrap / (totalActual + totalScrap)) * 100).toFixed(1) : "0.0";
+  const scrapRate    = (scrapFinished + totalScrap) > 0
+    ? ((totalScrap / (scrapFinished + totalScrap)) * 100).toFixed(1) : "0.0";
+  // Còn phải sản xuất (gộp toàn bộ lệnh đang lọc) và phần vượt mức
+  const totalRemaining = Math.max(0, totalPlanned - totalActual);
+  const totalOver      = Math.max(0, totalActual - totalPlanned);
 
   const columns = [
     {
@@ -300,9 +356,10 @@ export default function OutputReport({ lookups }) {
     {
       key: "actual_qty", label: "Thực tế", align: "right",
       render: (r) => {
-        const actual = Number(r.produced_qty) || 0;
-        const pct    = r.quantity > 0 ? Math.round(actual / r.quantity * 100) : 0;
-        const color  = pct >= 100 ? "text-emerald-600" : pct >= 80 ? "text-amber-600" : "text-rose-600";
+        const actual  = Number(r.produced_qty) || 0;
+        const planned = Number(r.quantity) || 0;
+        const pct     = planned > 0 ? Math.round(actual / planned * 100) : 0;
+        const color   = pct >= 100 ? "text-emerald-600" : pct >= 80 ? "text-amber-600" : "text-rose-600";
         return (
           <span className={`font-bold ${color}`}>
             {fmt(actual)}
@@ -312,10 +369,17 @@ export default function OutputReport({ lookups }) {
       },
     },
     {
-      key: "scrap_qty", label: "Phế phẩm", align: "right",
-      render: (r) => r.scrap_qty > 0
-        ? <span className="text-rose-500 font-medium">{fmt(r.scrap_qty)}</span>
-        : <span className="text-slate-300">—</span>,
+      key: "remaining_qty", label: "Còn lại", align: "right",
+      render: (r) => {
+        const actual  = Number(r.produced_qty) || 0;
+        const planned = Number(r.quantity) || 0;
+        const remain  = planned - actual;
+        if (remain > 0) return <span className="text-amber-600 font-medium">{fmt(remain)} <span className="text-xs text-slate-400">{r.unit}</span></span>;
+        // Đủ hoặc vượt mức → xanh lá
+        return remain < 0
+          ? <span className="text-emerald-600 font-medium" title="Sản xuất vượt kế hoạch">+{fmt(-remain)} <span className="text-xs font-normal">vượt</span></span>
+          : <span className="text-emerald-600 font-medium">0</span>;
+      },
     },
     {
       key: "status", label: "Trạng thái", filter: "select", options: ["Chờ duyệt", "Đã lên kế hoạch", "Chờ nguyên vật liệu", "Đang sản xuất", "Hoàn thành", "Đã hủy"],
@@ -328,20 +392,26 @@ export default function OutputReport({ lookups }) {
   ];
 
   const exportExcel = () => {
-    const exportData = filtered.map(r => ({
-      "Mã lệnh SX":   r.order_code,
-      "Mã SP":         r.product_code,
-      "Tên sản phẩm": r.product_name,
-      "Khách hàng":   r.customer_name || "",
-      "Đơn hàng bán": r.sales_order_code || "",
-      "Ngày kế hoạch": fmtDate(r.planned_date_display || r.planned_date) || "",
-      "SL kế hoạch":  Number(r.quantity) || 0,
-      "SL thực tế":   Number(r.produced_qty) || 0,
-      "Tỷ lệ (%)":    r.quantity > 0 ? Math.round((Number(r.produced_qty) || 0) / r.quantity * 100) : 0,
-      "Phế phẩm":     Number(r.scrap_qty) || 0,
-      "Trạng thái":   r.status,
-      "Đội SX":       r.assigned_team_display || r.assigned_team || "",
-    }));
+    const exportData = filtered.map(r => {
+      const planned = Number(r.quantity) || 0;
+      const actual  = Number(r.produced_qty) || 0;
+      const remain  = planned - actual;
+      return {
+        "Mã lệnh SX":   r.order_code,
+        "Mã SP":         r.product_code,
+        "Tên sản phẩm": r.product_name,
+        "Khách hàng":   r.customer_name || "",
+        "Đơn hàng bán": r.sales_order_code || "",
+        "Ngày kế hoạch": fmtDate(r.planned_date_display || r.planned_date) || "",
+        "SL kế hoạch":  planned,
+        "SL thực tế":   actual,
+        "SL còn lại":   remain > 0 ? remain : 0,
+        "Vượt mức":     remain < 0 ? -remain : 0,
+        "Tỷ lệ (%)":    planned > 0 ? Math.round(actual / planned * 100) : 0,
+        "Trạng thái":   r.status,
+        "Đội SX":       r.assigned_team_display || r.assigned_team || "",
+      };
+    });
     const ws  = XLSX.utils.json_to_sheet(exportData);
     const wb  = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Sản lượng");
@@ -385,24 +455,71 @@ export default function OutputReport({ lookups }) {
               value={to} onChange={e => setTo(e.target.value)} />
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1">Tìm sản phẩm</label>
-            <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40"
-              placeholder="Mã / tên sản phẩm…" value={productFilter} onChange={e => setProductFilter(e.target.value)} />
+            <label className="block text-xs font-medium text-slate-500 mb-1">Sản phẩm (TP / BTP)</label>
+            <SearchSelect
+              value={productFilter}
+              onChange={setProductFilter}
+              options={[{ value: "", label: `Tất cả sản phẩm (${productOptions.length})` }, ...productOptions]}
+              placeholder={`Tất cả sản phẩm (${productOptions.length})`}
+            />
           </div>
           <div>
             <label className="block text-xs font-medium text-slate-500 mb-1">Đội sản xuất</label>
-            <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40"
-              placeholder="Tên đội…" value={teamFilter} onChange={e => setTeamFilter(e.target.value)} />
+            <SearchSelect
+              value={teamFilter}
+              onChange={setTeamFilter}
+              options={[
+                { value: "", label: `Tất cả đội (${teamOptions.length})` },
+                ...teamOptions.map(t => ({ value: t, label: t })),
+                ...(hasNoTeam ? [{ value: NO_TEAM, label: "— Chưa phân đội —" }] : []),
+              ]}
+              placeholder={`Tất cả đội (${teamOptions.length})`}
+            />
           </div>
+        </div>
+
+        {/* Tóm tắt kết quả lọc + xóa nhanh */}
+        <div className="flex items-center gap-2 flex-wrap mt-3 pt-3 border-t border-slate-100 text-xs">
+          <span className="text-slate-500">
+            Kết quả: <b className="text-slate-700">{filtered.length}</b> / {rows.length} lệnh SX
+          </span>
+          {productFilter && (
+            <span className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 rounded-full px-2 py-0.5">
+              {productFilter}
+              <button onClick={() => setProductFilter("")} className="hover:text-blue-900" title="Bỏ lọc sản phẩm">
+                <X size={11} />
+              </button>
+            </span>
+          )}
+          {teamFilter && (
+            <span className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 rounded-full px-2 py-0.5">
+              {teamFilter === NO_TEAM ? "Chưa phân đội" : teamFilter}
+              <button onClick={() => setTeamFilter("")} className="hover:text-blue-900" title="Bỏ lọc đội">
+                <X size={11} />
+              </button>
+            </span>
+          )}
+          {hasFilter && (
+            <button onClick={() => { setProductFilter(""); setTeamFilter(""); }}
+              className="text-slate-500 hover:text-slate-700 underline underline-offset-2">
+              Xóa bộ lọc
+            </button>
+          )}
         </div>
       </Section>
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
         <KpiCard label="SL kế hoạch" value={fmt(totalPlanned)} sub={`${filtered.length} lệnh SX`}        icon={Package}      color="blue"  />
         <KpiCard label="SL thực tế"  value={fmt(totalActual)}  sub={`Đạt ${achieveRate}% kế hoạch`}       icon={TrendingUp}   color="green" />
+        <KpiCard label="Còn lại"     value={fmt(totalRemaining)}
+          sub={totalOver > 0 ? `Vượt mức +${fmt(totalOver)}` : "Còn phải sản xuất"}
+          icon={ClipboardList} color={totalRemaining === 0 ? "green" : "amber"} />
+        <KpiCard label="Đang SX"     value={runningCount}       sub={`/ ${filtered.length} lệnh`}          icon={Activity}     color="blue"  />
         <KpiCard label="Hoàn thành"  value={doneCount}          sub={`/ ${filtered.length} lệnh`}          icon={CheckCircle2} color="green" />
-        <KpiCard label="Phế phẩm"    value={fmt(totalScrap)}    sub={`Tỷ lệ ${scrapRate}%`}                icon={AlertTriangle} color={Number(scrapRate) > 5 ? "rose" : "amber"} />
+        <KpiCard label="Phế phẩm"    value={fmt(totalScrap)}
+          sub={`Tỷ lệ ${scrapRate}% · từ Quản lý phế (${scrapSum.by_day?.length || 0} ngày)`}
+          icon={AlertTriangle} color={Number(scrapRate) > 5 ? "rose" : "amber"} />
       </div>
 
       {/* Table */}

@@ -53,7 +53,7 @@ function SpecFields({ specs, onChange, disabled, cls = inputCls }) {
         return (
           <label key={spec.name}>{lbl}
             <div className="flex gap-1.5">
-              <input type="number" className={baseCls + " flex-1 min-w-0"} disabled={disabled} value={num} placeholder="0"
+              <input type="number" step="any" className={baseCls + " flex-1 min-w-0 no-spin"} disabled={disabled} value={num} placeholder="0"
                 onChange={(e) => setV(spec.name, e.target.value ? `${e.target.value} ${cu}` : "")} />
               <select className={selectCls} disabled={disabled} value={cu}
                 onChange={(e) => setV(spec.name, num ? `${num} ${e.target.value}` : "")}>

@@ -1,16 +1,16 @@
 import React, { useState, useRef, useEffect } from "react";
-import { Search, Save, CheckCircle2 } from "lucide-react";
+import { Search, CheckCircle2, Info } from "lucide-react";
 import { ListHeader } from "../../components.jsx";
 import { production } from "../../mesApi.js";
 import {  inputCls, fmt, fmtDate, statusClass , toast } from "../../ui.js";
 
 const TASK_RE = /(LSX\d+-\d+)/i;
-const STATUSES = ["Chờ", "Đang sản xuất", "Hoàn thành", "Đã hủy"];
 
+// CHỈ TRA CỨU (chỉ đọc). Việc ghi SL thực / Hoàn thành chỉ làm ở màn Chi tiết lệnh sản xuất
+// (thiết kế §8c) — backend cũng đã chặn updateTask ghi actual_qty / chuyển Hoàn thành.
 export default function QrScanModule() {
   const [input, setInput] = useState("");
   const [task, setTask] = useState(null);
-  const [form, setForm] = useState({ status: "", actual_qty: "", scrap_qty: "" });
   const [log, setLog] = useState([]);
   const inputRef = useRef(null);
 
@@ -23,25 +23,13 @@ export default function QrScanModule() {
     try {
       const t = await production.taskByCode(code);
       setTask(t);
-      setForm({ status: t.status || "Đang sản xuất", actual_qty: t.actual_qty ?? "", scrap_qty: t.scrap_qty ?? "" });
+      setLog((l) => [{ code: t.task_code, status: t.status, time: new Date().toLocaleTimeString("vi-VN") }, ...l].slice(0, 12));
     } catch (e) { setTask(null); toast.error(e.message); inputRef.current?.focus(); }
   };
 
-  const save = async () => {
-    if (!task) return;
-    try {
-      const r = await production.updateTask(task.id, form);
-      setLog((l) => [{ code: task.task_code, status: form.status, prod: r.produced, time: new Date().toLocaleTimeString("vi-VN") }, ...l].slice(0, 12));
-      setTask(null); setForm({ status: "", actual_qty: "", scrap_qty: "" });
-      inputRef.current?.focus();
-    } catch (e) { toast.error("Lỗi cập nhật: " + e.message); }
-  };
-
-  const F = ({ label, children }) => (<div><label className="block text-sm font-medium text-slate-600 mb-1.5">{label}</label>{children}</div>);
-
   return (
     <div className="space-y-5">
-      <ListHeader title="Tra cứu mã truy xuất (Cập nhật sản xuất)" />
+      <ListHeader title="Tra cứu mã truy xuất" />
 
       <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-3">
         <div className="flex gap-2">
@@ -71,16 +59,18 @@ export default function QrScanModule() {
               <div><span className="text-slate-400">SL kế hoạch:</span> <b>{fmt(task.quantity)} {task.unit}</b></div>
               <div><span className="text-slate-400">Ngày SX:</span> {fmtDate(task.planned_date)}</div>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2 border-t border-slate-100">
-              <F label="Trạng thái">
-                <select className={inputCls} value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>{STATUSES.map((s) => <option key={s}>{s}</option>)}</select>
-              </F>
-              <F label="Sản lượng thực"><input type="number" min="0" className={inputCls} value={form.actual_qty} onChange={(e) => setForm({ ...form, actual_qty: e.target.value })} placeholder={`mặc định ${fmt(task.quantity)}`} /></F>
-              <F label="Phế phẩm"><input type="number" min="0" className={inputCls} value={form.scrap_qty} onChange={(e) => setForm({ ...form, scrap_qty: e.target.value })} /></F>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-2 text-sm pt-2 border-t border-slate-100">
+              <div><span className="text-slate-400">SL thực tế:</span> <b>{task.actual_qty != null && task.actual_qty !== "" ? fmt(task.actual_qty) : "—"} {task.unit}</b></div>
+              <div><span className="text-slate-400">Đội:</span> {task.assigned_team || "—"}</div>
+              <div><span className="text-slate-400">Công nhân:</span> {task.assigned_worker || "—"}</div>
             </div>
-            <div className="flex justify-end gap-2">
-              <button onClick={() => setTask(null)} className="btn-ghost">Bỏ qua</button>
-              <button onClick={save} className="btn-primary"><Save size={16} /> Cập nhật lô</button>
+            <div className="flex items-start gap-2 rounded-lg bg-slate-50 border border-slate-200 px-3 py-2 text-xs text-slate-500">
+              <Info size={14} className="shrink-0 mt-0.5" />
+              Màn này chỉ để <b className="mx-1">tra cứu</b>. Ghi sản lượng thực và Hoàn thành công đoạn thực hiện ở
+              <b className="mx-1">Chi tiết lệnh sản xuất</b>.
+            </div>
+            <div className="flex justify-end">
+              <button onClick={() => setTask(null)} className="btn-ghost">Đóng</button>
             </div>
           </div>
         </div>

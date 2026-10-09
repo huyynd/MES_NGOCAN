@@ -35,6 +35,7 @@ router.get('/scrap/records', scrap.getRecords);
 router.get('/scrap/all-records', scrap.getAllRecords);
 router.post('/scrap/records', requirePerm('production:edit'), scrap.saveRecords);
 router.get('/scrap/statistics', scrap.getStats);
+router.get('/scrap/summary', scrap.getSummary);
 router.get('/scrap/daily-details', scrap.getDailyDetails);
 
 module.exports = router;
