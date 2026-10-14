@@ -1,5 +1,5 @@
 const db = require('../../core/db');
-const { applyStock } = require('../../core/lib/stock');
+const { applyStock, stockErrorResponse } = require('../../core/lib/stock');
 
 // GET /api/scrap/workers — lấy toàn bộ nhân viên đang hoạt động
 exports.getWorkers = async (req, res) => {
@@ -151,7 +151,7 @@ exports.saveRecords = async (req, res) => {
     res.json({ message: 'Đã lưu ghi nhận phế phẩm chung', recordId });
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error(err);
+    console.error(err); if (stockErrorResponse(res, err)) return;
     res.status(500).json({ message: err.message || 'Lỗi khi lưu dữ liệu phế phẩm' });
   } finally {
     client.release();

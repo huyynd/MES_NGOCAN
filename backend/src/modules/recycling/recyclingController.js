@@ -1,5 +1,5 @@
 const db = require('../../core/db');
-const { applyStock } = require('../../core/lib/stock');
+const { applyStock, stockErrorResponse } = require('../../core/lib/stock');
 
 // L63: SL PE nhận về được vượt SL phế đã cân tối đa 10% (sai số cân 2 đầu / độ ẩm).
 // Vượt quá → gần như chắc nhập nhầm số, chặn để không thổi phồng tồn PE và báo cáo hao hụt.
@@ -146,7 +146,7 @@ exports.weigh = async (req, res) => {
     res.json(ticket);
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error(err);
+    console.error(err); if (stockErrorResponse(res, err)) return;
     res.status(500).json({ message: 'Lỗi khi ghi nhận cân' });
   } finally {
     client.release();
@@ -206,7 +206,7 @@ exports.receiveRolls = async (req, res) => {
     res.json({ success: true, total_received });
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error(err);
+    console.error(err); if (stockErrorResponse(res, err)) return;
     res.status(500).json({ message: 'Lỗi khi ghi nhận cuộn PE' });
   } finally {
     client.release();
@@ -286,7 +286,7 @@ exports.complete = async (req, res) => {
     res.json({ success: true, loss_qty });
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error(err);
+    console.error(err); if (stockErrorResponse(res, err)) return;
     res.status(500).json({ message: 'Lỗi khi hoàn thành phiếu' });
   } finally {
     client.release();

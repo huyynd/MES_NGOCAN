@@ -2379,3 +2379,50 @@ BEGIN
   RETURN NEW;
 END
 $$;
+-- 13) LỊCH SỬ THANH TOÁN của phiếu giao hàng: mỗi lần khách trả = 1 dòng (ngày, số tiền, hình thức, người thu).
+--     delivery_notes.paid_amount = Σ các lần thu CHƯA hủy (tính lại ở backend, không nhập tay nữa).
+--     Thu nhầm → HỦY lần thu (giữ dấu vết, có lý do), không xóa.
+CREATE TABLE IF NOT EXISTS public.delivery_payments (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  delivery_note_id uuid NOT NULL REFERENCES public.delivery_notes(id),
+  pay_date date NOT NULL DEFAULT CURRENT_DATE,
+  amount numeric(16,2) NOT NULL CHECK (amount > 0),
+  method varchar(30) NOT NULL DEFAULT 'Tiền mặt',   -- Tiền mặt | Chuyển khoản | Số dư đầu kỳ (chuyển dữ liệu cũ)
+  note text,
+  created_by uuid,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  is_cancelled boolean NOT NULL DEFAULT false,
+  cancelled_by uuid,
+  cancelled_at timestamptz,
+  cancel_reason text
+);
+CREATE INDEX IF NOT EXISTS idx_delivery_payments_note ON public.delivery_payments (delivery_note_id);
+--     Phiếu cũ đã có số đã trả → chuyển thành 1 lần thu "Số dư đầu kỳ" (chỉ làm 1 lần: phiếu chưa có lần thu nào)
+INSERT INTO public.delivery_payments (delivery_note_id, pay_date, amount, method, note)
+SELECT d.id, COALESCE(d.delivery_date, d.created_at::date), d.paid_amount, 'Số dư đầu kỳ',
+       'Chuyển từ số tiền đã trả trước khi có lịch sử thanh toán'
+FROM public.delivery_notes d
+WHERE d.paid_amount > 0 AND d.is_deleted = FALSE
+  AND NOT EXISTS (SELECT 1 FROM public.delivery_payments p WHERE p.delivery_note_id = d.id);
+
+-- 14) TỒN KHO KHÔNG ÂM + SỔ CÁI CÓ DẤU (RC1 / RC3)
+--     a) Sổ cái: cột delta CÓ DẤU (+ nhập / − xuất). quantity giữ trị tuyệt đối như cũ (tương thích).
+--        Trước đây "Điều chỉnh" chỉ lưu trị tuyệt đối → không biết tăng hay giảm → không đối soát được.
+--        Dữ liệu cũ: chỉ điền được cho Nhập/Xuất; "Điều chỉnh" cũ để NULL (không suy được chiều).
+ALTER TABLE public.inventory_transactions ADD COLUMN IF NOT EXISTS delta numeric(14,2);
+UPDATE public.inventory_transactions SET delta = quantity  WHERE delta IS NULL AND trx_type = 'Nhập';
+UPDATE public.inventory_transactions SET delta = -quantity WHERE delta IS NULL AND trx_type = 'Xuất';
+--     b) Lưới an toàn cuối ở CSDL: tồn không được âm. Chỉ bật khi KHÔNG còn dòng âm
+--        (còn thì báo NOTICE, bỏ qua — xử lý số âm trước rồi chạy lại migrate).
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'inventory_stock_quantity_nonneg') THEN
+    IF EXISTS (SELECT 1 FROM public.inventory_stock WHERE quantity < 0) THEN
+      RAISE NOTICE 'BỎ QUA CHECK quantity >= 0: còn % dòng tồn âm — xử lý trước rồi chạy lại migrate.',
+        (SELECT COUNT(*) FROM public.inventory_stock WHERE quantity < 0);
+    ELSE
+      ALTER TABLE public.inventory_stock ADD CONSTRAINT inventory_stock_quantity_nonneg CHECK (quantity >= 0);
+    END IF;
+  END IF;
+END $$;
+

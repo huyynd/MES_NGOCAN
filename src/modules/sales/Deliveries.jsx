@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { RotateCcw, Plus, Trash2, Pencil, ArrowLeft, Save, Printer, FileText, Truck } from "lucide-react";
-import { deliveries as api, resource, deliverableOrders, inventory } from "../../mesApi.js";
+import { RotateCcw, Plus, Trash2, Pencil, ArrowLeft, Save, Printer, FileText, Truck, Wallet, X } from "lucide-react";
+import { deliveries as api, resource, inventory } from "../../mesApi.js";
 
 const ordersApi = resource("sales-orders");
 import { usePerm } from "../../perm.jsx";
@@ -10,15 +10,18 @@ import { PageHeader, Section, ListHeader, DataTable, Logo, UnitSelect, SearchSel
 
 // Bảng chuyển trạng thái (khớp backend). "Giao hàng" chỉ đặt qua nút Giao hàng (trừ tồn).
 // Bản nháp chỉ được Hủy; sau khi đã giao không cho Hủy (chưa có luồng hoàn kho).
+// "Đã thanh toán 1 phần" / "Đã thanh toán" tự nhảy theo các lần thu ở mục Thanh toán — không chọn tay.
 const DN_TRANSITIONS = {
   "Bản nháp":             ["Đã hủy"],
-  "Giao hàng":            ["Đã xuất hóa đơn", "Chờ thanh toán", "Đã thanh toán 1 phần", "Đã thanh toán"],
-  "Đã xuất hóa đơn":      ["Chờ thanh toán", "Đã thanh toán 1 phần", "Đã thanh toán"],
-  "Chờ thanh toán":       ["Đã xuất hóa đơn", "Đã thanh toán 1 phần", "Đã thanh toán"],
-  "Đã thanh toán 1 phần": ["Chờ thanh toán", "Đã thanh toán"],
+  "Giao hàng":            ["Đã xuất hóa đơn", "Chờ thanh toán"],
+  "Đã xuất hóa đơn":      ["Chờ thanh toán"],
+  "Chờ thanh toán":       ["Đã xuất hóa đơn"],
+  "Đã thanh toán 1 phần": [],
   "Đã thanh toán":        [],
   "Đã hủy":               [],
 };
+const PAYABLE_STATUSES = ["Giao hàng", "Đã xuất hóa đơn", "Chờ thanh toán", "Đã thanh toán 1 phần", "Đã thanh toán"];
+
 const today = () => new Date().toISOString().slice(0, 10);
 
 // Thông tin đơn vị bán hàng (in trên phiếu xuất kho)
@@ -37,23 +40,123 @@ const Field = ({ label, required, children }) => (
   </div>
 );
 
-/* ---- Form phiếu giao hàng & thanh toán ---- */
+/* ---- Hộp "Thanh toán" (mở từ nút Thanh toán ở đầu phiếu): ghi nhận 1 lần thu + xem / hủy các lần thu trước ----
+ * Đã trả = Σ lần thu chưa hủy; trạng thái phiếu tự nhảy; chặn trả vượt công nợ — tất cả tính ở backend.
+ */
+function PaymentModal({ noteId, noteCode, payments, total, paid, canEdit, onChanged, onClose }) {
+  const debt = Math.max(0, (Number(total) || 0) - (Number(paid) || 0));
+  const [p, setP] = useState({ pay_date: today(), amount: debt ? String(debt) : "", method: "Tiền mặt", note: "" });
+  const [busy, setBusy] = useState(false);
+  const add = async () => {
+    const amt = Number(p.amount);
+    if (!(amt > 0)) return toast.error("Nhập số tiền lớn hơn 0");
+    if (amt > debt + 1e-6) return toast.error(`Số tiền vượt công nợ còn lại ${fmt(debt)} đ`);
+    setBusy(true);
+    try { await api.addPayment(noteId, { ...p, amount: amt }); toast.success("Đã ghi nhận thanh toán"); onChanged(); onClose(); }
+    catch (e) { toast.error(e.message); }
+    finally { setBusy(false); }
+  };
+  const cancel = async (pm) => {
+    const reason = prompt(`Hủy lần thu ${fmt(pm.amount)} đ ngày ${fmtDate(pm.pay_date)}?\nNhập lý do hủy:`);
+    if (reason === null) return;
+    if (!reason.trim()) return toast.error("Cần nhập lý do hủy");
+    try { await api.cancelPayment(pm.id, reason.trim()); toast.success("Đã hủy lần thu"); onChanged(); }
+    catch (e) { toast.error(e.message); }
+  };
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200">
+          <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Wallet size={20} className="text-blue-600" /> Thanh toán phiếu {noteCode}</h3>
+          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-700"><X size={20} /></button>
+        </div>
+
+        <div className="grid grid-cols-3 gap-3 px-5 py-4 text-sm">
+          <div className="rounded-lg bg-slate-50 px-3 py-2"><div className="text-slate-500">Tổng tiền</div><div className="font-bold text-slate-800">{fmt(Number(total) || 0)} đ</div></div>
+          <div className="rounded-lg bg-slate-50 px-3 py-2"><div className="text-slate-500">Đã trả</div><div className="font-bold text-emerald-700">{fmt(Number(paid) || 0)} đ</div></div>
+          <div className="rounded-lg bg-slate-50 px-3 py-2"><div className="text-slate-500">Còn nợ</div><div className={"font-bold " + (debt > 0 ? "text-rose-600" : "text-emerald-600")}>{fmt(debt)} đ</div></div>
+        </div>
+
+        {canEdit && debt > 0 ? (
+          <div className="px-5 pb-4 grid grid-cols-2 gap-x-4 gap-y-3">
+            <Field label="Ngày thanh toán"><input type="date" className={inputCls} value={p.pay_date} onChange={(e) => setP({ ...p, pay_date: e.target.value })} /></Field>
+            <Field label="Số tiền (đ)"><input type="number" min="0" className={inputCls + " text-right no-spin font-semibold"} value={p.amount} onChange={(e) => setP({ ...p, amount: e.target.value })} placeholder="0" autoFocus /></Field>
+            <Field label="Hình thức">
+              <select className={inputCls} value={p.method} onChange={(e) => setP({ ...p, method: e.target.value })}>
+                <option>Tiền mặt</option><option>Chuyển khoản</option>
+              </select>
+            </Field>
+            <Field label="Ghi chú"><input className={inputCls} value={p.note} onChange={(e) => setP({ ...p, note: e.target.value })} placeholder="vd: CK Vietcombank" /></Field>
+            <div className="col-span-2 flex justify-end gap-2 pt-1">
+              <button type="button" onClick={onClose} className="btn-ghost">Đóng</button>
+              <button type="button" onClick={add} disabled={busy} className="btn-primary"><Save size={16} /> Ghi nhận</button>
+            </div>
+          </div>
+        ) : (
+          <div className="px-5 pb-4 text-sm text-slate-500">
+            {debt <= 0 ? "Phiếu đã thanh toán đủ." : "Bạn chỉ có quyền xem thanh toán."}
+          </div>
+        )}
+
+        {payments.length > 0 && (
+          <div className="border-t border-slate-200 px-5 py-3">
+            <div className="text-xs font-semibold text-slate-400 uppercase mb-2">Các lần đã thu</div>
+            <div className="divide-y divide-slate-100 text-sm">
+              {payments.map((pm) => (
+                <div key={pm.id} className={"flex items-start gap-3 py-1.5 " + (pm.is_cancelled ? "text-slate-400" : "")}>
+                  <span className="w-24 shrink-0">{fmtDate(pm.pay_date)}</span>
+                  <span className={"w-28 shrink-0 text-right font-semibold " + (pm.is_cancelled ? "line-through" : "text-emerald-700")}>{fmt(pm.amount)} đ</span>
+                  <span className="w-28 shrink-0">{pm.method}</span>
+                  <span className="flex-1 min-w-0">
+                    {pm.note || ""}{(pm.created_by_name || pm.method === "Số dư đầu kỳ") && <span className="text-slate-400"> · {pm.created_by_name || "Hệ thống"}</span>}
+                    {pm.is_cancelled && <div className="text-xs text-rose-500">Đã hủy{pm.cancelled_by_name ? ` bởi ${pm.cancelled_by_name}` : ""}: {pm.cancel_reason}</div>}
+                  </span>
+                  {canEdit && !pm.is_cancelled && <button type="button" onClick={() => cancel(pm)} className="text-xs text-slate-400 hover:text-rose-600 shrink-0">Hủy</button>}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---- Form phiếu giao hàng & thanh toán ----
+ * MỘT bảng "Dòng hàng", chọn đơn NGAY TRÊN TỪNG DÒNG:
+ *  - Dòng có chọn đơn: cột Sản phẩm chỉ liệt kê SP của đơn đó đã SX (ghi nhận ở LSX), chưa giao hết, còn tồn kho
+ *    (API /deliveries/deliverable). Nhiều dòng thuộc nhiều đơn của cùng 1 khách → giao chung 1 phiếu.
+ *  - Dòng "không theo đơn": chọn SP tự do trong kho NVL/BTP/TP (bán hạt nhựa, cuộn...).
+ */
+const NO_ORDER = ""; // giá trị cột Đơn hàng = "không theo đơn"
+
 function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrint }) {
   const { can, fpermSecret } = usePerm();
   const moneyPerm = fpermSecret("deliveries", "amounts");
   const showMoney = moneyPerm !== "hidden";
   const moneyEdit = moneyPerm === "edit";
   const [editing, setEditing] = useState(!editId);
-  const [f, setF] = useState({ sales_order_id: "", customer_id: "", delivery_date: today(), status: "Bản nháp", note: "", paid_amount: "" });
-  const [items, setItems] = useState([]);
+  const [f, setF] = useState({ customer_id: "", delivery_date: today(), status: "Bản nháp", note: "", paid_amount: "" });
+  // dòng phiếu: theo đơn (có sales_order_item_id) hoặc tự do. Phiếu mới → có sẵn 1 dòng trống (đỡ bấm "Thêm dòng")
+  const [rows, setRows] = useState(() => (editId || initialOrderId ? [] : [
+    { _k: 1, sales_order_id: "", sales_order_item_id: "", product_id: "", product_name: "", specs: {}, unit: "", unit_price: "", quantity: "" },
+  ]));
   const [seq, setSeq] = useState(2);
-  const [orderList, setOrderList] = useState([]); // đơn GIAO ĐƯỢC của khách đã chọn
-  const [stock, setStock] = useState([]);         // tồn kho để bán lẻ (không theo đơn)
+  const [cands, setCands] = useState([]);         // đơn giao được của khách: [{sales_order_id, order_code, status, lines:[...]}]
+  const [savedItems, setSavedItems] = useState([]); // dòng đã lưu (chế độ xem)
+  const [noteTotal, setNoteTotal] = useState(null);  // tổng tiền ĐÃ LƯU của phiếu (dùng khi chỉ xem)
+  const [payments, setPayments] = useState([]);      // lịch sử thanh toán
+  const [canEditAmt, setCanEditAmt] = useState(false); // quyền ghi nhận / hủy thanh toán (backend trả về)
+  const [payOpen, setPayOpen] = useState(false);       // hộp Thanh toán
+  const [noteCode, setNoteCode] = useState("");
+  const [stock, setStock] = useState([]);         // tồn kho cho dòng không theo đơn
   const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
 
-  const manual = !f.sales_order_id;               // bán hàng tồn kho (không gắn đơn)
+  const isDraft = f.status === "Bản nháp";
+  const picking = editing && isDraft; // đang chọn / sửa dòng hàng
+
   useEffect(() => { inventory.list().then(setStock).catch(() => {}); }, []);
-  // Gộp tồn theo sản phẩm (cả NVL/BTP/TP, bỏ Phế liệu) cho picker + hiển thị tồn
+  // Gộp tồn theo sản phẩm (cả NVL/BTP/TP, bỏ Phế liệu) cho dòng không theo đơn
   const stockByProduct = React.useMemo(() => {
     const m = new Map();
     stock.filter((s) => ["NVL", "BTP", "TP"].includes(s.warehouse_type) && Number(s.quantity) > 0).forEach((s) => {
@@ -63,99 +166,179 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
     });
     return m;
   }, [stock]);
-  const stockOptions = [...stockByProduct.values()].map((s) => ({ value: s.product_id, label: `${s.product_name} · tồn ${fmt(s.qty)} ${s.unit || ""} (${[...s.wh].join("/")})` }));
-  const addStockRow = (pid) => {
-    if (!pid) return;
-    if (items.some((x) => x.product_id === pid)) { toast.error("Sản phẩm đã có trong phiếu"); return; }
-    const s = stockByProduct.get(pid); if (!s) return;
-    setItems((a) => [...a, { _k: seq, product_id: pid, product_name: s.product_name, unit: s.unit, specs: {}, unit_price: "", quantity: "" }]);
-    setSeq((n) => n + 1);
+
+  // Tra nhanh dòng đơn giao được theo sales_order_item_id
+  const lineById = React.useMemo(() => {
+    const m = new Map();
+    cands.forEach((o) => o.lines.forEach((l) => m.set(l.sales_order_item_id, { ...l, sales_order_id: o.sales_order_id, order_code: o.order_code })));
+    return m;
+  }, [cands]);
+
+  const newRow = (k, extra = {}) => ({ _k: k, sales_order_id: NO_ORDER, sales_order_item_id: "", product_id: "", product_name: "", specs: {}, unit: "", unit_price: "", quantity: "", ...extra });
+  const rowFromLine = (k, l) => newRow(k, {
+    sales_order_id: l.sales_order_id, sales_order_item_id: l.sales_order_item_id, product_id: l.product_id,
+    product_name: l.product_name, specs: l.specs || {}, unit: l.unit || "", unit_price: l.unit_price ?? "", quantity: l.suggested || "",
+  });
+
+  // Nạp đơn giao được của khách → trả về danh sách (để dựng dòng sẵn khi mở từ đơn hàng)
+  const [candLoading, setCandLoading] = useState(false);
+  const loadCands = async (cid) => {
+    if (!cid) { setCands([]); return []; }
+    setCandLoading(true);
+    try { const list = (await api.deliverable(cid, editId)) || []; setCands(list); return list; }
+    catch (e) { toast.error("Lỗi tải hàng giao được: " + e.message); return []; }
+    finally { setCandLoading(false); }
   };
 
   const load = useCallback(() => {
     if (!editId) return;
     api.get(editId).then(async (d) => {
-      setF({ sales_order_id: d.sales_order_id || "", customer_id: d.customer_id, delivery_date: d.delivery_date?.slice(0, 10) || today(), status: d.status, note: d.note || "", paid_amount: d.paid_amount ?? "" });
-      if (d.customer_id) deliverableOrders(d.customer_id).then(setOrderList).catch(() => {});
-      // Làm giàu dòng từ đơn (SL đặt/đã SX/đã giao) rồi gộp SL giao đã lưu
-      const emap = {};
-      if (d.sales_order_id) { try { const od = await api.fromOrder(d.sales_order_id); (od.items || []).forEach((x) => { emap[x.sales_order_item_id] = x; }); } catch { /* ignore */ } }
-      setItems((d.items || []).map((it, i) => {
-        const e = emap[it.sales_order_item_id] || {};
-        return { _k: i + 1, sales_order_item_id: it.sales_order_item_id || "", product_id: it.product_id || "", product_name: it.product_name || e.product_name || "", specs: it.specs || e.specs || {}, unit: it.unit || e.unit || "", unit_price: it.unit_price ?? e.unit_price ?? "", quantity: it.quantity, ordered: e.ordered ?? "", produced: e.produced ?? "", delivered: e.delivered ?? "" };
-      }));
-      setSeq((d.items?.length || 0) + 1);
-    }).catch((e) => toast.error("Lỗi tải phiếu: " + e.message));
-  }, [editId]);
-  useEffect(() => { load(); }, [load]);
-  // Mở từ chi tiết đơn hàng → tự nạp sẵn (nạp cả danh sách đơn của khách)
-  useEffect(() => { if (!editId && initialOrderId) onPickOrder(initialOrderId); }, [initialOrderId]); // eslint-disable-line
-
-  // B1: chọn Khách hàng → nạp danh sách đơn GIAO ĐƯỢC, reset đơn + dòng hàng
-  const onCustomer = async (cid) => {
-    setF((s) => ({ ...s, customer_id: cid, sales_order_id: "" }));
-    setItems([]); setOrderList([]);
-    if (!cid) return;
-    try { setOrderList(await deliverableOrders(cid)); } catch (e) { toast.error("Lỗi tải đơn của khách: " + e.message); }
-  };
-
-  // B2+B3: chọn Đơn → đổ dòng hàng kèm SL đặt/đã SX/đã giao/còn lại; SL giao mặc định = còn lại
-  const onPickOrder = async (orderId) => {
-    set("sales_order_id", orderId);
-    if (!orderId) { setItems([]); return; }
-    try {
-      const d = await api.fromOrder(orderId);
-      if (!orderList.length && d.customer_id) deliverableOrders(d.customer_id).then(setOrderList).catch(() => {});
-      setF((s) => ({ ...s, sales_order_id: d.sales_order_id, customer_id: d.customer_id || s.customer_id }));
-      setItems((d.items || []).map((it, i) => ({
-        _k: i + 1, sales_order_item_id: it.sales_order_item_id, product_id: it.product_id || "", product_name: it.product_name || "",
-        specs: it.specs || {}, unit: it.unit || "", unit_price: it.unit_price || "",
-        ordered: it.ordered, produced: it.produced, delivered: it.delivered,
-        quantity: Number(it.remaining) > 0 ? it.remaining : "",   // SL giao mặc định = còn lại
+      setF({ customer_id: d.customer_id, delivery_date: d.delivery_date?.slice(0, 10) || today(), status: d.status, note: d.note || "", paid_amount: d.paid_amount ?? "" });
+      const its = d.items || [];
+      setSavedItems(its);
+      setNoteTotal(d.total_amount ?? null);
+      setPayments(d.payments || []);
+      setCanEditAmt(!!d.can_edit_amounts);
+      setNoteCode(d.note_code || "");
+      setRows(its.map((it, i) => newRow(i + 1, {
+        sales_order_id: it.sales_order_id || NO_ORDER, sales_order_item_id: it.sales_order_item_id || "",
+        product_id: it.product_id || "", product_name: it.product_name || "", specs: it.specs || {}, unit: it.unit || "",
+        unit_price: it.unit_price ?? "", quantity: it.quantity, order_code: it.sales_order_code || "",
       })));
-      setSeq((d.items?.length || 0) + 1);
-    } catch (e) { toast.error("Lỗi nạp đơn hàng: " + e.message); }
+      setSeq(its.length + 1);
+      if (d.status === "Bản nháp" && d.customer_id) await loadCands(d.customer_id);
+    }).catch((e) => toast.error("Lỗi tải phiếu: " + e.message));
+  }, [editId]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [load]);
+
+  // Mở từ chi tiết đơn hàng → chọn sẵn khách + dựng sẵn các dòng giao được của đơn đó
+  useEffect(() => {
+    if (editId || !initialOrderId) return;
+    api.fromOrder(initialOrderId).then(async (d) => {
+      setF((s) => ({ ...s, customer_id: d.customer_id }));
+      const list = await loadCands(d.customer_id);
+      const o = list.find((x) => x.sales_order_id === d.sales_order_id);
+      const lines = (o?.lines || []).filter((l) => l.suggested > 0);
+      setRows(lines.map((l, i) => rowFromLine(i + 1, { ...l, sales_order_id: o.sales_order_id })));
+      setSeq(lines.length + 1);
+      if (!lines.length) toast("Đơn này chưa có hàng đã sản xuất còn tồn kho để giao.");
+    }).catch((e) => toast.error("Lỗi nạp đơn hàng: " + e.message));
+  }, [initialOrderId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Đổi khách: bỏ các dòng theo đơn của khách cũ, giữ dòng không theo đơn; hết dòng thì chừa sẵn 1 dòng trống
+  const onCustomer = (cid) => {
+    setF((s) => ({ ...s, customer_id: cid }));
+    setRows((a) => {
+      const keep = a.filter((r) => !r.sales_order_item_id && r.sales_order_id === NO_ORDER);
+      return keep.length ? keep : [newRow(seq)];
+    });
+    setSeq((n) => n + 1);
+    loadCands(cid);
   };
 
-  const rmItem = (k) => setItems((a) => a.filter((x) => x._k !== k));
-  const upItem = (k, fld, v) => setItems((a) => a.map((x) => (x._k === k ? { ...x, [fld]: v } : x)));
+  const addRow = () => { setRows((a) => [...a, newRow(seq)]); setSeq((n) => n + 1); };
+  const rmRow = (k) => setRows((a) => a.filter((r) => r._k !== k));
+  const upRow = (k, patch) => setRows((a) => a.map((r) => (r._k === k ? { ...r, ...patch } : r)));
+  const usedItemIds = new Set(rows.map((r) => r.sales_order_item_id).filter(Boolean));
 
-  const total = items.reduce((s, it) => s + (Number(it.quantity) || 0) * (Number(it.unit_price) || 0), 0);
+  // Chọn đơn cho dòng: xóa SP đang chọn; đơn chỉ còn 1 SP chưa dùng → chọn luôn
+  const onRowOrder = (r, orderId) => {
+    if (orderId === r.sales_order_id) return;
+    if (!orderId) { upRow(r._k, newRow(r._k)); return; }
+    const o = cands.find((x) => x.sales_order_id === orderId);
+    const free = (o?.lines || []).filter((l) => !usedItemIds.has(l.sales_order_item_id));
+    upRow(r._k, free.length === 1 ? rowFromLine(r._k, { ...free[0], sales_order_id: orderId }) : newRow(r._k, { sales_order_id: orderId }));
+  };
+  // Chọn sản phẩm: dòng theo đơn → value = sales_order_item_id; dòng tự do → value = product_id
+  const onRowProduct = (r, v) => {
+    if (r.sales_order_id) {
+      const l = lineById.get(v); if (!l) return;
+      upRow(r._k, rowFromLine(r._k, l));
+    } else {
+      if (rows.some((x) => x._k !== r._k && !x.sales_order_item_id && x.product_id === v)) { toast.error("Sản phẩm đã có ở dòng khác"); return; }
+      const s = stockByProduct.get(v); if (!s) return;
+      upRow(r._k, { product_id: v, product_name: s.product_name, unit: s.unit || "", specs: {}, sales_order_item_id: "" });
+    }
+  };
+
+  const orderOptions = [{ value: NO_ORDER, label: "— Không theo đơn —" }, ...cands.map((o) => ({ value: o.sales_order_id, label: `${o.order_code} · ${o.status}` }))];
+  const productOptions = (r) => {
+    if (!r.sales_order_id) return [...stockByProduct.values()].map((s) => ({ value: s.product_id, label: `${s.product_name} · tồn ${fmt(s.qty)} ${s.unit || ""} (${[...s.wh].join("/")})` }));
+    const o = cands.find((x) => x.sales_order_id === r.sales_order_id);
+    return (o?.lines || []).filter((l) => l.sales_order_item_id === r.sales_order_item_id || !usedItemIds.has(l.sales_order_item_id))
+      .map((l) => ({ value: l.sales_order_item_id, label: `${l.product_name}${specShort(l.specs) ? ` · ${specShort(l.specs)}` : ""}` }));
+  };
+  // Số liệu tham chiếu của dòng: theo đơn → từ API giao được; tự do → tồn kho theo SP
+  const infoOf = (r) => {
+    if (r.sales_order_item_id) return lineById.get(r.sales_order_item_id) || null;
+    const s = stockByProduct.get(r.product_id);
+    return s ? { stock: s.qty, free: true } : null;
+  };
+
+  const validRows = rows.filter((r) => r.product_id && Number(r.quantity) > 0);
+  // Tổng hợp theo SP + thông số so với tồn kho (nhiều dòng / nhiều đơn dùng chung tồn)
+  const stockSummary = (() => {
+    const m = new Map();
+    validRows.forEach((r) => {
+      const inf = infoOf(r); if (!inf) return;
+      const key = r.sales_order_item_id ? `${r.product_id}|${inf.spec_key}` : `${r.product_id}|*`;
+      const cur = m.get(key) || { name: r.product_name, specs: r.sales_order_item_id ? r.specs : {}, unit: r.unit, stock: inf.stock, qty: 0 };
+      cur.qty += Number(r.quantity) || 0; m.set(key, cur);
+    });
+    return [...m.values()];
+  })();
+  const shortList = stockSummary.filter((x) => x.qty > x.stock + 1e-6);
+
+  const amountOf = (r) => (Number(r.quantity) || 0) * (Number(r.unit_price) || 0);
+  // Đang sửa → tính từ dòng; chỉ xem → tổng đã lưu của phiếu (khớp danh sách, bản in)
+  const total = !editing && noteTotal != null ? Number(noteTotal) || 0 : rows.reduce((s, r) => s + amountOf(r), 0);
   const debt = total - (Number(f.paid_amount) || 0);
 
   const save = async () => {
     if (!f.customer_id) return toast.error("Chọn khách hàng");
-    const valid = items.filter((it) => (it.product_id || it.product_name) && Number(it.quantity) > 0);
-    if (!valid.length) return toast.error("Cần ít nhất 1 dòng có SL giao > 0");
-    // Cảnh báo (không chặn) nếu giao DƯ so với số còn lại — chỉ khi gắn đơn hàng
-    if (f.sales_order_id) {
-      const over = valid.filter((it) => Number(it.quantity) > (Number(it.ordered) || 0) - (Number(it.delivered) || 0) + 1e-6);
-      if (over.length && !confirm(`Có ${over.length} dòng giao DƯ so với số còn lại của đơn (${over.map((x) => `${x.product_name}: giao ${fmt(Number(x.quantity))} / còn ${fmt((Number(x.ordered) || 0) - (Number(x.delivered) || 0))}`).join("; ")}).\nSản xuất dư là bình thường — vẫn cho giao. Tiếp tục lưu?`)) return;
+    let payloadItems;
+    if (isDraft) {
+      if (!validRows.length) return toast.error("Cần ít nhất 1 dòng có sản phẩm và SL giao > 0");
+      // Cảnh báo (không chặn) khi giao DƯ so với còn phải giao của đơn — sản xuất dư là bình thường
+      const over = validRows.filter((r) => { const l = r.sales_order_item_id && lineById.get(r.sales_order_item_id); return l && Number(r.quantity) > l.remaining + 1e-6; });
+      if (over.length && !confirm(`Có ${over.length} dòng giao DƯ so với số còn phải giao (${over.map((r) => { const l = lineById.get(r.sales_order_item_id); return `${l.order_code} · ${r.product_name}: giao ${fmt(Number(r.quantity))} / còn ${fmt(l.remaining)}`; }).join("; ")}).\nVẫn cho giao. Tiếp tục lưu?`)) return;
+      if (shortList.length && !confirm(`Tổng SL giao vượt tồn kho: ${shortList.map((x) => `${x.name}: giao ${fmt(x.qty)} / tồn ${fmt(x.stock)}`).join("; ")}.\nVẫn lưu nháp được, nhưng bấm Giao hàng sẽ bị chặn nếu chưa đủ tồn. Tiếp tục?`)) return;
+      payloadItems = validRows.map((r) => ({
+        sales_order_item_id: r.sales_order_item_id || null, product_id: r.product_id, product_name: r.product_name,
+        specs: r.specs || {}, unit: r.unit, unit_price: r.unit_price, quantity: r.quantity,
+      }));
     }
+    // Phiếu đã rời Bản nháp: chỉ lưu thông tin phiếu (trạng thái, ghi chú, đã trả) — dòng hàng đã chốt
+    const body = { ...f, ...(payloadItems ? { items: payloadItems } : {}) };
     try {
       if (editId) {
-        await api.update(editId, { ...f, items: valid });
+        await api.update(editId, body);
         toast.success("Đã lưu thành công");
         setEditing(false); load(); // ở lại màn chi tiết
       } else {
-        await api.create({ ...f, items: valid });
+        await api.create(body);
         toast.success("Đã lưu thành công"); onSaved(); // tạo mới → về list
       }
     } catch (e) { toast.error("Lỗi lưu phiếu: " + e.message); }
   };
   const del = async () => { if (!confirm("Xóa phiếu này?")) return; try { await api.remove(editId); toast.success("Đã xóa thành công"); onSaved(); } catch (e) { toast.error("Lỗi xóa: " + e.message); } };
   const ship = async () => {
-    if (!confirm("Xác nhận GIAO HÀNG cho khách?\nHệ thống sẽ tạo phiếu xuất kho (Giao hàng cho khách) và TRỪ TỒN Kho Thành phẩm theo số lượng giao.")) return;
+    if (!confirm("Xác nhận GIAO HÀNG cho khách?\nHệ thống sẽ tạo phiếu xuất kho (Giao hàng cho khách) và TRỪ TỒN theo số lượng giao (dòng theo đơn ưu tiên lô do chính LSX của đơn làm ra).")) return;
     try { const r = await api.ship(editId); toast.success(r?.message || "Đã giao hàng"); load(); }
     catch (e) { toast.error("Không giao được: " + e.message); }
   };
 
+  const numCls = inputCls + " text-right no-spin";
+  const dash = <span className="text-slate-300">—</span>;
   return (
     <div className="space-y-5">
       <PageHeader title={!editId ? "Tạo phiếu giao hàng" : editing ? "Sửa phiếu giao hàng" : "Chi tiết phiếu giao hàng"} onBack={onBack}
         actions={editId && !editing ? (<>
-          {f.status === "Bản nháp" && can("deliveries", "approve") &&
+          {isDraft && can("deliveries", "approve") &&
             <button onClick={ship} className="btn-primary"><Truck size={16} /> Giao hàng</button>}
+          {/* Thanh toán: phiếu đã giao, người có quyền xem tiền (ghi nhận cần quyền ghi tiền — kiểm trong hộp + backend) */}
+          {showMoney && PAYABLE_STATUSES.includes(f.status) &&
+            <button onClick={() => setPayOpen(true)} className="btn-primary"><Wallet size={16} /> Thanh toán</button>}
           <button onClick={() => onPrint?.(editId)} className="btn-ghost"><Printer size={16} /> In phiếu</button>
           {can("deliveries", "edit") && <button onClick={() => setEditing(true)} className="btn-ghost"><Pencil size={16} /> Sửa</button>}
           {can("deliveries", "delete") && <button onClick={del} className="btn-ghost" style={{ color: "#e11d48" }}><Trash2 size={16} /> Xóa</button>}
@@ -171,17 +354,9 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
               <SearchSelect
                 value={f.customer_id}
                 onChange={onCustomer}
+                disabled={!isDraft}
                 options={lookups.customers.map((c) => ({ value: c.id, label: c.name }))}
                 placeholder="-- Chọn khách hàng --"
-              />
-            </Field>
-            <Field label="Đơn hàng (tùy chọn)">
-              <SearchSelect
-                value={f.sales_order_id}
-                onChange={onPickOrder}
-                disabled={!f.customer_id}
-                options={[{ value: "", label: "— Không theo đơn (bán hàng tồn kho) —" }, ...orderList.map((o) => ({ value: o.id, label: `${o.order_code} · ${o.status} · còn ${fmt(o.remaining_total)}` }))]}
-                placeholder={!f.customer_id ? "Chọn khách hàng trước" : (orderList.length ? "-- Chọn đơn hàng --" : "Không theo đơn — chọn hàng trong kho bên dưới")}
               />
             </Field>
             <Field label="Trạng thái">
@@ -192,11 +367,12 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
             </Field>
             <Field label="Ngày giao"><input type="date" className={inputCls} value={f.delivery_date} onChange={(e) => set("delivery_date", e.target.value)} /></Field>
             <Field label="Ghi chú"><input className={inputCls} value={f.note} onChange={(e) => set("note", e.target.value)} /></Field>
-            {showMoney && <Field label="Tổng tiền 1 đơn">
+            {showMoney && <Field label="Tổng tiền phiếu">
               <div className={inputCls + " bg-slate-50 font-semibold text-slate-800"}>{fmt(total)} đ</div>
             </Field>}
             {showMoney && <Field label="Số tiền đã trả">
-              <input type="number" min="0" className={inputCls} disabled={!moneyEdit} value={f.paid_amount} placeholder="0" onChange={(e) => set("paid_amount", e.target.value)} />
+              {/* = tổng các lần thu ở mục "Thanh toán" bên dưới — không nhập tay */}
+              <div className={inputCls + " bg-slate-50 font-semibold text-emerald-700"}>{fmt(Number(f.paid_amount) || 0)} đ</div>
             </Field>}
             {showMoney && <Field label="Công nợ (còn lại)">
               <div className={inputCls + " bg-slate-50 font-bold " + (debt > 0 ? "text-rose-600" : "text-emerald-600")}>{fmt(debt)} đ</div>
@@ -204,121 +380,128 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
           </div>
         </Section>
 
-        <Section title={manual ? "Dòng hàng (bán tồn kho — không theo đơn)" : "Dòng hàng (theo đơn)"} bodyClass="p-0">
-         {manual ? (
+        <Section title="Dòng hàng" bodyClass="p-0">
+          {picking ? (
           <>
+          <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-slate-50 text-slate-500 text-xs uppercase">
               <tr>
-                <th className="text-left px-4 py-2.5">Sản phẩm</th>
-                <th className="text-left px-3 py-2.5 w-28" title="Kho đang có tồn">Kho</th>
-                <th className="text-right px-3 py-2.5 w-28" title="Tồn kho hiện có">Tồn kho</th>
-                <th className="text-right px-3 py-2.5 w-28 bg-blue-50/60 text-blue-700" title="SL giao ở phiếu này">SL giao</th>
-                <th className="text-left px-3 py-2.5 w-16">ĐVT</th>
-                {showMoney && <th className="text-right px-4 py-2.5 w-28">Đơn giá</th>}
-                {showMoney && <th className="text-right px-4 py-2.5 w-32">Thành tiền</th>}
+                <th className="text-left px-3 py-2.5 w-44">Đơn hàng</th>
+                <th className="text-left px-3 py-2.5 min-w-[220px]">Sản phẩm · thông số</th>
+                <th className="text-right px-2 py-2.5 w-20" title="SL khách đặt">Đặt</th>
+                <th className="text-right px-2 py-2.5 w-20" title="Đã giao ở các phiếu đã giao">Đã giao</th>
+                <th className="text-right px-2 py-2.5 w-24" title="Đã nhập kho từ LSX − đã giao">SX chưa giao</th>
+                <th className="text-right px-2 py-2.5 w-20" title="Tồn kho (NVL/BTP/TP)">Tồn kho</th>
+                <th className="text-right px-2 py-2.5 w-28 text-blue-700">SL giao</th>
+                <th className="text-left px-2 py-2.5 w-14">ĐVT</th>
+                {showMoney && <th className="text-right px-2 py-2.5 w-28">Đơn giá</th>}
+                {showMoney && <th className="text-right px-3 py-2.5 w-28">Thành tiền</th>}
                 <th className="w-10" />
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {items.map((it) => {
-                const s = stockByProduct.get(it.product_id);
-                const onHand = s ? s.qty : 0, giao = Number(it.quantity) || 0;
-                const over = giao > onHand + 1e-6;
-                const amount = giao * (Number(it.unit_price) || 0);
+              {rows.map((r) => {
+                const inf = infoOf(r);
+                const ord = !!r.sales_order_id;
+                const giao = Number(r.quantity) || 0;
+                const overOrder = ord && inf && !inf.free && giao > inf.remaining + 1e-6;
+                const overStock = inf && giao > inf.stock + 1e-6;
+                const lost = ord && r.sales_order_item_id && !inf; // dòng đã lưu, nay không còn đủ điều kiện giao
                 return (
-                  <tr key={it._k}>
-                    <td className="px-4 py-1.5 font-medium text-slate-800">{it.product_name || "—"}</td>
-                    <td className="px-3 py-1.5 text-slate-500">{s ? [...s.wh].join("/") : "—"}</td>
-                    <td className="px-3 py-1.5 text-right text-slate-600">{fmt(onHand)}</td>
-                    <td className="px-3 py-1.5 bg-blue-50/40">
-                      <input type="number" min="0" className={inputCls + " text-right font-semibold text-blue-700" + (over ? " !border-amber-400 !ring-2 !ring-amber-200" : "")}
-                        value={it.quantity ?? ""} onChange={(e) => upItem(it._k, "quantity", e.target.value)}
-                        title={over ? `Giao ${fmt(giao)} vượt tồn ${fmt(onHand)} — không đủ tồn sẽ không giao được` : undefined} />
+                  <tr key={r._k}>
+                    <td className="px-3 py-1.5">
+                      <SearchSelect value={r.sales_order_id} onChange={(v) => onRowOrder(r, v)} disabled={!f.customer_id}
+                        options={lost && !cands.some((o) => o.sales_order_id === r.sales_order_id) ? [...orderOptions, { value: r.sales_order_id, label: r.order_code || "Đơn cũ" }] : orderOptions}
+                        placeholder={f.customer_id ? "— Không theo đơn —" : "Chọn khách trước"} />
                     </td>
-                    <td className="px-3 py-1.5 text-slate-500">{it.unit || "—"}</td>
-                    {showMoney && <td className="px-4 py-1.5"><input type="number" min="0" className={inputCls + " text-right"} disabled={!moneyEdit} value={it.unit_price} onChange={(e) => upItem(it._k, "unit_price", e.target.value)} /></td>}
-                    {showMoney && <td className="px-4 py-1.5 text-right font-semibold text-slate-800">{fmt(amount)}</td>}
-                    <td className="px-2 py-1.5 text-center">{editing && <button type="button" onClick={() => rmItem(it._k)} className="text-slate-400 hover:text-rose-600"><Trash2 size={15} /></button>}</td>
+                    <td className="px-3 py-1.5">
+                      {lost ? (
+                        <div className="text-slate-700">{r.product_name}{specShort(r.specs) ? <span className="text-slate-400"> · {specShort(r.specs)}</span> : null}
+                          <div className="text-xs text-amber-600">Không còn đủ điều kiện giao (hết tồn / đã giao đủ) — xóa dòng hoặc giữ nguyên</div></div>
+                      ) : (
+                        <SearchSelect value={ord ? r.sales_order_item_id : r.product_id} onChange={(v) => onRowProduct(r, v)}
+                          options={productOptions(r)} placeholder={ord ? "-- SP của đơn (đã SX, còn tồn) --" : "-- Chọn SP trong kho (NVL/BTP/TP) --"} />
+                      )}
+                      {inf?.in_draft > 0 && <div className="text-xs text-amber-600 mt-0.5">{fmt(inf.in_draft)} đang ở phiếu nháp khác</div>}
+                    </td>
+                    <td className="px-2 py-1.5 text-right text-slate-600">{ord && inf && !inf.free ? fmt(inf.ordered) : dash}</td>
+                    <td className="px-2 py-1.5 text-right text-slate-600">{ord && inf && !inf.free ? fmt(inf.delivered) : dash}</td>
+                    <td className="px-2 py-1.5 text-right text-slate-600">{ord && inf && !inf.free ? fmt(inf.produced_left) : dash}</td>
+                    <td className={"px-2 py-1.5 text-right " + (overStock ? "text-rose-600 font-semibold" : "text-slate-600")}>{inf ? fmt(inf.stock) : dash}</td>
+                    <td className="px-2 py-1.5">
+                      <input type="number" min="0" className={numCls + " font-semibold text-blue-700" + (overOrder || overStock ? " !border-amber-400 !ring-2 !ring-amber-200" : "")}
+                        value={r.quantity ?? ""} onChange={(e) => upRow(r._k, { quantity: e.target.value })} disabled={!r.product_id}
+                        title={overStock ? `Giao ${fmt(giao)} vượt tồn ${fmt(inf.stock)} — không đủ tồn sẽ không giao được` : overOrder ? `Giao dư ${fmt(giao - inf.remaining)} so với còn phải giao — vẫn cho giao` : inf?.suggested != null ? `Gợi ý ${fmt(inf.suggested)}` : undefined} />
+                    </td>
+                    <td className="px-2 py-1.5 text-slate-500">{r.unit || "—"}</td>
+                    {showMoney && <td className="px-2 py-1.5"><input type="number" min="0" className={numCls} disabled={!moneyEdit || !r.product_id} value={r.unit_price ?? ""} onChange={(e) => upRow(r._k, { unit_price: e.target.value })} /></td>}
+                    {showMoney && <td className="px-3 py-1.5 text-right font-semibold text-slate-800">{r.product_id ? fmt(amountOf(r)) : "—"}</td>}
+                    <td className="px-2 py-1.5 text-center"><button type="button" onClick={() => rmRow(r._k)} className="text-slate-400 hover:text-rose-600" title="Xóa dòng"><Trash2 size={15} /></button></td>
                   </tr>
                 );
               })}
-              {!items.length && <tr><td colSpan={showMoney ? 8 : 6} className="px-4 py-8 text-center text-slate-400">Chọn sản phẩm trong kho bên dưới để thêm dòng giao.</td></tr>}
+              {!rows.length && <tr><td colSpan={showMoney ? 11 : 9} className="px-4 py-8 text-center text-slate-400">
+                {f.customer_id ? (candLoading ? "Đang tải đơn hàng của khách…" : cands.length ?"Bấm “Thêm dòng”, chọn đơn hàng rồi chọn sản phẩm (hoặc để “Không theo đơn” để bán hàng tồn kho)." : "Khách này chưa có hàng đã sản xuất chờ giao — bấm “Thêm dòng” để bán hàng tồn kho (không theo đơn).") : "Chọn khách hàng rồi bấm “Thêm dòng”."}
+              </td></tr>}
             </tbody>
-            {showMoney && !!items.length && (
-              <tfoot>
-                <tr className="border-t-2 border-slate-200 bg-slate-50/60 font-bold text-slate-800">
-                  <td colSpan={6} className="px-4 py-3 text-right">TỔNG TIỀN</td>
-                  <td className="px-4 py-3 text-right text-blue-700 text-base">{fmt(total)} đ</td>
-                  <td />
-                </tr>
-              </tfoot>
-            )}
           </table>
-          {editing && (
-            <div className="p-3 border-t border-slate-100 bg-slate-50/40 flex items-center gap-2">
-              <span className="text-sm text-slate-500 shrink-0">Thêm sản phẩm từ kho:</span>
-              <div className="w-96 max-w-full"><SearchSelect value="" onChange={addStockRow} options={stockOptions} placeholder="-- Chọn sản phẩm trong kho (NVL/BTP/TP) --" /></div>
-            </div>
-          )}
+          </div>
+          <div className="p-3 border-t border-slate-100 bg-slate-50/40 flex flex-wrap items-start justify-between gap-3">
+            <button type="button" onClick={addRow} disabled={!f.customer_id} className="btn-ghost text-blue-600 border-blue-200 hover:bg-blue-50"><Plus size={16} /> Thêm dòng</button>
+            {stockSummary.length > 0 && (
+              <div className="text-xs space-y-0.5 text-right">
+                {stockSummary.map((x, i) => {
+                  const lack = x.qty - x.stock;
+                  return (
+                    <div key={i}>
+                      <span className="text-slate-500">{x.name}{specShort(x.specs) ? ` · ${specShort(x.specs)}` : ""}: </span>
+                      <span className={lack > 1e-6 ? "text-rose-600 font-semibold" : "text-emerald-600 font-semibold"}>
+                        giao {fmt(x.qty)} / tồn {fmt(x.stock)} {x.unit || ""}{lack > 1e-6 ? ` · thiếu ${fmt(lack)}` : ""}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
           </>
-         ) : (
+          ) : (
           <table className="w-full text-sm">
             <thead className="bg-slate-50 text-slate-500 text-xs uppercase">
               <tr>
+                <th className="text-left px-4 py-2.5 w-36">Đơn hàng</th>
                 <th className="text-left px-4 py-2.5">Sản phẩm</th>
                 <th className="text-left px-4 py-2.5">Thông số</th>
-                <th className="text-right px-3 py-2.5 w-24" title="SL khách đặt mua">SL đặt</th>
-                <th className="text-right px-3 py-2.5 w-24" title="SL đã nhập kho thành phẩm">SL đã SX</th>
-                <th className="text-right px-3 py-2.5 w-24" title="SL đã giao các phiếu trước">SL đã giao</th>
-                <th className="text-right px-3 py-2.5 w-28 bg-blue-50/60 text-blue-700" title="SL giao ở phiếu này">SL giao</th>
-                <th className="text-right px-3 py-2.5 w-24" title="Còn lại sau khi giao">SL còn lại</th>
+                <th className="text-right px-3 py-2.5 w-28">SL giao</th>
                 <th className="text-left px-3 py-2.5 w-16">ĐVT</th>
                 {showMoney && <th className="text-right px-4 py-2.5 w-28">Đơn giá</th>}
                 {showMoney && <th className="text-right px-4 py-2.5 w-32">Thành tiền</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {items.map((it) => {
-                const ordered = Number(it.ordered) || 0, delivered = Number(it.delivered) || 0, giao = Number(it.quantity) || 0;
-                const conLai = ordered - delivered - giao;      // còn lại sau khi giao phiếu này
-                const over = giao > (ordered - delivered) + 1e-6; // giao dư hơn còn lại
-                const amount = giao * (Number(it.unit_price) || 0);
-                return (
-                  <tr key={it._k}>
-                    <td className="px-4 py-1.5 font-medium text-slate-800">{it.product_name || "—"}</td>
-                    <td className="px-4 py-1.5 text-slate-500">{specShort(it.specs) || "—"}</td>
-                    <td className="px-3 py-1.5 text-right text-slate-600">{fmt(ordered)}</td>
-                    <td className="px-3 py-1.5 text-right text-slate-600">{fmt(it.produced)}</td>
-                    <td className="px-3 py-1.5 text-right text-slate-600">{fmt(delivered)}</td>
-                    <td className="px-3 py-1.5 bg-blue-50/40">
-                      <input type="number" min="0" className={inputCls + " text-right font-semibold text-blue-700" + (over ? " !border-amber-400 !ring-2 !ring-amber-200" : "")}
-                        value={it.quantity ?? ""} onChange={(e) => upItem(it._k, "quantity", e.target.value)}
-                        title={over ? `Giao dư ${fmt(giao - (ordered - delivered))} so với còn lại — vẫn cho giao` : undefined} />
-                    </td>
-                    <td className={"px-3 py-1.5 text-right font-medium " + (conLai < -1e-6 ? "text-amber-600" : conLai < 1e-6 ? "text-emerald-600" : "text-slate-700")}>
-                      {fmt(conLai)}{conLai < -1e-6 ? " (dư)" : ""}
-                    </td>
-                    <td className="px-3 py-1.5 text-slate-500">{it.unit || "—"}</td>
-                    {showMoney && <td className="px-4 py-1.5"><input type="number" min="0" className={inputCls + " text-right"} disabled={!moneyEdit} value={it.unit_price} onChange={(e) => upItem(it._k, "unit_price", e.target.value)} /></td>}
-                    {showMoney && <td className="px-4 py-1.5 text-right font-semibold text-slate-800">{fmt(amount)}</td>}
-                  </tr>
-                );
-              })}
-              {!items.length && <tr><td colSpan={showMoney ? 10 : 8} className="px-4 py-8 text-center text-slate-400">Chọn Khách hàng rồi chọn Đơn hàng để nạp dòng giao.</td></tr>}
-            </tbody>
-            {showMoney && !!items.length && (
-              <tfoot>
-                <tr className="border-t-2 border-slate-200 bg-slate-50/60 font-bold text-slate-800">
-                  <td colSpan={9} className="px-4 py-3 text-right">TỔNG TIỀN</td>
-                  <td className="px-4 py-3 text-right text-blue-700 text-base">{fmt(total)} đ</td>
+              {savedItems.map((it) => (
+                <tr key={it.id}>
+                  <td className="px-4 py-1.5 font-medium text-blue-700">{it.sales_order_code || <span className="text-slate-400 font-normal">Không theo đơn</span>}</td>
+                  <td className="px-4 py-1.5 font-medium text-slate-800">{it.product_name || "—"}</td>
+                  <td className="px-4 py-1.5 text-slate-500">{specShort(it.specs) || "—"}</td>
+                  <td className="px-3 py-1.5 text-right font-semibold">{fmt(it.actual_quantity ?? it.quantity)}</td>
+                  <td className="px-3 py-1.5 text-slate-500">{it.unit || "—"}</td>
+                  {showMoney && <td className="px-4 py-1.5 text-right">{fmt(it.unit_price)}</td>}
+                  {showMoney && <td className="px-4 py-1.5 text-right font-semibold text-slate-800">{fmt(it.amount)}</td>}
                 </tr>
-              </tfoot>
-            )}
+              ))}
+              {!savedItems.length && <tr><td colSpan={showMoney ? 7 : 5} className="px-4 py-8 text-center text-slate-400">Phiếu chưa có dòng hàng.</td></tr>}
+            </tbody>
           </table>
-         )}
+          )}
         </Section>
       </fieldset>
+
+      {payOpen && (
+        <PaymentModal noteId={editId} noteCode={noteCode} payments={payments} total={noteTotal} paid={f.paid_amount}
+          canEdit={canEditAmt} onChanged={load} onClose={() => setPayOpen(false)} />
+      )}
     </div>
   );
 }
@@ -375,6 +558,7 @@ function DeliveryVoucher({ id, onBack }) {
           <div><b>Tên đơn vị:</b> {d.customer_name || ""}</div>
           <div><b>Địa chỉ:</b> {d.customer_address || ""}</div>
           <div><b>Số điện thoại:</b> {d.customer_phone || ""}</div>
+          {d.sales_order_code && <div><b>Theo đơn hàng:</b> {d.sales_order_code}</div>}
         </div>
 
         {/* Bảng hàng */}
@@ -399,7 +583,7 @@ function DeliveryVoucher({ id, onBack }) {
                 <td className={td + " text-right"}>{it ? (it.actual_quantity !== null && it.actual_quantity !== undefined && it.actual_quantity !== "" ? fmt(it.actual_quantity) : fmt(it.quantity)) : ""}</td>
                 {showMoney && <td className={td + " text-right"}>{it ? fmt(it.unit_price) : ""}</td>}
                 {showMoney && <td className={td + " text-right"}>{it ? fmt(it.amount) : ""}</td>}
-                <td className={td}>{it ? (it.note || "") : ""}</td>
+                <td className={td}>{it ? (it.note || it.sales_order_code || "") : ""}</td>
               </tr>
             ))}
             <tr className="font-bold bg-blue-50">

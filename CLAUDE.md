@@ -28,9 +28,9 @@ Backend và frontend chia **cùng 7 nhóm nghiệp vụ**:
 
 - **Backend module:** `backend/src/modules/<nhóm>/` gồm `*.route.js` + `*Controller.js`.
 - **Backend core:** `backend/src/core/db.js`, `genericCrud.js`, và `core/lib/`:
-  - `stock.js` — `applyStock(client, {product_id, location_id, delta, unit, specs, spec_key, lot_code, clampZero, trx_type, ref_code, note})`: **hàm duy nhất** để thay đổi tồn kho + ghi `inventory_transactions`. Luôn mutate tồn qua đây, đừng UPDATE trực tiếp.
+  - `stock.js` — `applyStock(client, {product_id, location_id, delta, unit, specs, spec_key, lot_code, trx_type, ref_code, note})`: **hàm duy nhất** để thay đổi tồn kho + ghi `inventory_transactions` (kèm cột `delta` CÓ DẤU để đối soát). Luôn mutate tồn qua đây, đừng UPDATE trực tiếp. Trừ tồn là 1 câu UPDATE có điều kiện (khóa dòng + kiểm đủ + trừ cùng lúc) — thiếu thì ném `StockShortageError`; trong `catch` của controller gọi `if (stockErrorResponse(res, err)) return;` để trả 400. `clampZero` đã bỏ (bị bỏ qua). CSDL có `CHECK (quantity >= 0)` làm lưới an toàn.
+  - `money.js` — `canViewAmounts(req, app)` / `canEditAmounts(req, app)`: cổng phân quyền xem / ghi tiền; `moneyNoteFilter(alias)`: điều kiện chuẩn "phiếu giao tính tiền".
   - `specs.js` — `buildSpecKey(specs)` = `SPEC_NAMES.map(n => s[n]||'').join('|')`. Specs rỗng → `'||||'` (5 trường, 4 dấu `|`), **KHÔNG phải** `''`. SPEC_NAMES = ['Số lớp','Chiều dài','Chiều ngang (Rộng)','Độ dày','Màu sắc'].
-  - `money.js` — `canViewAmounts(req, app)`: cổng phân quyền xem tiền.
   - `units.js`, `deleteGuard.js`, `bomSync.js`.
 - **Frontend module:** `src/modules/<nhóm>/`. Dùng chung component ở `src/components.jsx`.
 

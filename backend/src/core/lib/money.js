@@ -11,9 +11,19 @@ function canViewAmounts(req, app = 'deliveries') {
   return v === 'ALLOW' || v === true || v?.status === 'ALLOW' || f === 'edit' || f === 'view';
 }
 
+// Quyền GHI tiền (ghi nhận / hủy thanh toán): admin, hoặc quyền view_amounts của app (frontend coi là "edit"),
+// hoặc trường amounts = 'edit'. Trường amounts = 'view' chỉ được xem.
+function canEditAmounts(req, app = 'deliveries') {
+  if (req.user?.is_admin) return true;
+  const p = req.user?.permissions?.[app];
+  const v = p?.view_amounts, f = p?.fields?.amounts;
+  if (f === 'view') return false;
+  return v === 'ALLOW' || v === true || v?.status === 'ALLOW' || f === 'edit';
+}
+
 // Điều kiện SQL CHUẨN cho "phiếu giao tính vào tiền/công nợ":
 // loại phiếu Bản nháp (chưa phát sinh) và Đã hủy. Dùng alias bảng delivery_notes (vd 'd' hoặc 'dn').
 const moneyNoteFilter = (alias = 'd') =>
   `${alias}.is_deleted = FALSE AND ${alias}.status NOT IN ('Bản nháp','Đã hủy')`;
 
-module.exports = { canViewAmounts, moneyNoteFilter };
+module.exports = { canViewAmounts, canEditAmounts, moneyNoteFilter };

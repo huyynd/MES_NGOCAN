@@ -49,13 +49,14 @@ function SpecFields({ specs, onChange, disabled, cls = inputCls }) {
           );
         }
         const { num, unit } = splitNU(get(spec.name)); const cu = unit || spec.units[0];
-        const selectCls = baseCls.replace(/\bw-full\b/g, "").replace(/\bpx-3\b/g, "px-2").trim() + " shrink-0 w-20";
+        // Bỏ "w-full" của inputCls: trong flex nó ép ô số co lại chỉ còn mũi tên tăng/giảm
+        const clsFlex = baseCls.replace(/\bw-full\s*/g, "");
         return (
           <label key={spec.name}>{lbl}
             <div className="flex gap-1.5">
-              <input type="number" step="any" className={baseCls + " flex-1 min-w-0 no-spin"} disabled={disabled} value={num} placeholder="0"
+              <input type="number" step="any" className={clsFlex + " flex-1 min-w-0 no-spin"} disabled={disabled} value={num} placeholder="0"
                 onChange={(e) => setV(spec.name, e.target.value ? `${e.target.value} ${cu}` : "")} />
-              <select className={selectCls} disabled={disabled} value={cu}
+              <select className={clsFlex + " w-[4.5rem] shrink-0 px-2"} disabled={disabled} value={cu}
                 onChange={(e) => setV(spec.name, num ? `${num} ${e.target.value}` : "")}>
                 {spec.units.map((u) => <option key={u}>{u}</option>)}
               </select>

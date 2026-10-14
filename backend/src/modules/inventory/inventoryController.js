@@ -3,7 +3,7 @@ const db = require('../../core/db');
 const { buildSpecKey, legacyAttrs, specsFromBody } = require('../../core/lib/specs');
 const { upUnit } = require('../../core/lib/units');
 const { getDataScope } = require('../../core/dataScope');
-const { applyStock } = require('../../core/lib/stock');
+const { applyStock, stockErrorResponse } = require('../../core/lib/stock');
 
 // GET /api/inventory/tree — tồn kho (trả về dữ liệu phẳng để frontend tự nhóm)
 exports.tree = async (req, res) => {
@@ -143,15 +143,22 @@ exports.addStockLine = async (req, res) => {
       [b.product_id, loc, specKey, lot]);
     await client.query('COMMIT');
     res.status(201).json(rows[0]);
-  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi thêm dòng tồn' }); }
+  } catch (err) { await client.query('ROLLBACK'); console.error(err); if (stockErrorResponse(res, err)) return; res.status(500).json({ message: err.detail || 'Lỗi khi thêm dòng tồn' }); }
   finally { client.release(); }
 };
 
-// DELETE /api/inventory/stock/:id — xóa 1 dòng tồn
+// DELETE /api/inventory/stock/:id — xóa 1 dòng tồn ĐÃ HẾT HÀNG (quantity = 0).
+// Dòng còn hàng KHÔNG được xóa thẳng: tồn sẽ biến mất mà sổ cái không ghi → lệch sổ cái (RC3).
+// Muốn bỏ hàng thì xuất / điều chỉnh về 0 (có ghi sổ) rồi mới xóa dòng.
 exports.deleteStockLine = async (req, res) => {
   try {
-    const { rowCount } = await db.query(`DELETE FROM inventory_stock WHERE id = $1`, [req.params.id]);
-    if (!rowCount) return res.status(404).json({ message: 'Không tìm thấy dòng tồn' });
+    const cur = (await db.query(`SELECT quantity FROM inventory_stock WHERE id = $1`, [req.params.id])).rows[0];
+    if (!cur) return res.status(404).json({ message: 'Không tìm thấy dòng tồn' });
+    if (Number(cur.quantity) !== 0) {
+      return res.status(400).json({ message: `Dòng tồn còn ${Number(cur.quantity).toLocaleString('vi-VN')} — không xóa thẳng được (sổ cái sẽ lệch). Hãy xuất hoặc điều chỉnh về 0 trước rồi mới xóa.` });
+    }
+    const { rowCount } = await db.query(`DELETE FROM inventory_stock WHERE id = $1 AND quantity = 0`, [req.params.id]);
+    if (!rowCount) return res.status(409).json({ message: 'Dòng tồn vừa thay đổi — vui lòng tải lại.' });
     res.json({ message: 'Đã xóa dòng tồn' });
   } catch (err) { console.error(err); res.status(500).json({ message: 'Lỗi khi xóa dòng tồn' }); }
 };
@@ -260,7 +267,7 @@ exports.adjust = async (req, res) => {
     res.status(201).json({ message: 'Đã cập nhật tồn kho' });
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi điều chỉnh tồn kho' });
+    console.error(err); if (stockErrorResponse(res, err)) return; res.status(500).json({ message: err.detail || 'Lỗi khi điều chỉnh tồn kho' });
   } finally { client.release(); }
 };
 
@@ -421,7 +428,7 @@ exports.confirmOutboundSlip = async (req, res) => {
     }
     await client.query('COMMIT');
     res.json({ message: `Đã xác nhận xuất kho phiếu ${s.slip_code} (${lines.length} dòng).`, count: lines.length });
-  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi xác nhận xuất kho' }); }
+  } catch (err) { await client.query('ROLLBACK'); console.error(err); if (stockErrorResponse(res, err)) return; res.status(500).json({ message: err.detail || 'Lỗi khi xác nhận xuất kho' }); }
   finally { client.release(); }
 };
 
@@ -509,7 +516,7 @@ exports.transfer = async (req, res) => {
     res.status(201).json({ message: `Đã chuyển ${qty} ${unit} từ ${fromLabel} → ${toLabel}` });
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error(err);
+    console.error(err); if (stockErrorResponse(res, err)) return;
     res.status(500).json({ message: err.detail || 'Lỗi khi chuyển kho' });
   } finally { client.release(); }
 };

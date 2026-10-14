@@ -4,7 +4,7 @@ const { buildSpecKey, legacyAttrs, specsFromBody, cleanSpecs } = require('../../
 const { upUnit } = require('../../core/lib/units');
 const { guardDelete } = require('../../core/lib/deleteGuard');
 const { getDataScope } = require('../../core/dataScope');
-const { applyStock } = require('../../core/lib/stock');
+const { applyStock, stockErrorResponse } = require('../../core/lib/stock');
 
 // Công đoạn cuối của 1 lệnh: 'Cắt' nếu có task Cắt, ngược lại 'Thổi'
 const FINAL_STAGE = `(CASE WHEN EXISTS (SELECT 1 FROM production_tasks tf WHERE tf.production_order_id = po.id AND tf.stage = 'Cắt') THEN 'Cắt' ELSE 'Thổi' END)`;
@@ -1027,7 +1027,7 @@ exports.saveTasks = async (req, res) => {
     await client.query('COMMIT');
     res.json({ message: 'Đã lưu phân công', count: tasks.length });
   } catch (err) {
-    await client.query('ROLLBACK'); console.error(err);
+    await client.query('ROLLBACK'); console.error(err); if (stockErrorResponse(res, err)) return;
     res.status(500).json({ message: err.detail || err.message || 'Lỗi khi lưu phân công' });
   } finally { client.release(); }
 };
@@ -1108,7 +1108,7 @@ exports.completeTasks = async (req, res) => {
     await client.query('COMMIT');
     res.json({ message: `Đã hoàn thành ${codes.length} dòng`, ...result });
   } catch (err) {
-    await client.query('ROLLBACK'); console.error(err);
+    await client.query('ROLLBACK'); console.error(err); if (stockErrorResponse(res, err)) return;
     res.status(400).json({ message: err.detail || err.message || 'Lỗi khi hoàn thành phân công' });
   } finally { client.release(); }
 };
@@ -1186,7 +1186,7 @@ exports.reopenTask = async (req, res) => {
     await client.query('COMMIT');
     res.json({ message: 'Đã hủy hoàn thành dòng và hoàn kho.' });
   } catch (err) {
-    await client.query('ROLLBACK'); console.error(err);
+    await client.query('ROLLBACK'); console.error(err); if (stockErrorResponse(res, err)) return;
     res.status(400).json({ message: err.detail || err.message || 'Lỗi khi hủy hoàn thành' });
   } finally { client.release(); }
 };
