@@ -8,7 +8,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   PieChart, Pie, Cell, LineChart, Line, ComposedChart
 } from 'recharts';
-import { fmt, fmtDate, statusClass } from '../../ui.js';
+import { fmt, fmtDate, statusClass, ymd } from '../../ui.js';
 
 const COLORS = ['#10b981', '#ef4444', '#f59e0b', '#3b82f6'];
 
@@ -315,7 +315,7 @@ function toDateStr(d) {
   if (!d) return '';
   const dt = new Date(d);
   if (isNaN(dt)) return '';
-  return dt.toISOString().slice(0, 10);
+  return ymd(dt); // giờ VN (toISOString là UTC → lệch 1 ngày)
 }
 
 function formatDateVN(d) {

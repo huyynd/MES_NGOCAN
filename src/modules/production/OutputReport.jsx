@@ -6,8 +6,12 @@ import {
 } from "lucide-react";
 import { ListHeader, Section, DataTable, SearchSelect } from "../../components.jsx";
 import { production, scrap as scrapApi } from "../../mesApi.js";
-import { fmt, fmtDate, statusClass, toast } from "../../ui.js";
+import { fmt, fmtDate, statusClass, toast, todayYmd, monthStartYmd } from "../../ui.js";
 import * as XLSX from "xlsx";
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+  PieChart, Pie, Cell, LineChart, Line,
+} from "recharts";
 import { usePerm } from "../../perm.jsx";
 
 // Giá trị riêng cho mục "Chưa phân đội" trong bộ lọc đội (không trùng tên đội thật nào)
@@ -15,25 +19,172 @@ const NO_TEAM = "__no_team__";
 // Báo cáo sản lượng chỉ xét sản phẩm đầu ra — bộ lọc không liệt kê NVL / phế liệu
 const OUTPUT_TYPES = new Set(["Thành phẩm", "Bán thành phẩm"]);
 
-const today = () => new Date().toISOString().slice(0, 10);
-const monthStart = () => new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
+// Ngày theo giờ VN (toISOString là giờ UTC → lệch 1 ngày trước 7h sáng / "từ ngày" ra cuối tháng trước)
+const today = todayYmd;
+const monthStart = monthStartYmd;
 
-/* ─── KPI card ─── */
-function KpiCard({ label, value, sub, icon: Icon, color = "blue" }) {
+// Màu & nhãn ngắn theo trạng thái lệnh — dùng chung cho cả 3 biểu đồ
+const STATUS_COLORS = {
+  "Chờ duyệt": "#94a3b8",
+  "Đã lên kế hoạch": "#3b82f6",
+  "Chờ nguyên vật liệu": "#a855f7",
+  "Đang sản xuất": "#f59e0b",
+  "Hoàn thành": "#10b981",
+  "Đã hủy": "#ef4444",
+};
+const STATUS_SHORT = {
+  "Chờ duyệt": "Chờ duyệt", "Đã lên kế hoạch": "KH", "Chờ nguyên vật liệu": "Chờ NVL",
+  "Đang sản xuất": "Đang SX", "Hoàn thành": "HT", "Đã hủy": "Hủy",
+};
+const STATUS_ORDER = Object.keys(STATUS_COLORS);
+// Quá hạn = đã qua hạn chót mà chưa Hoàn thành / Đã hủy
+const OVERDUE = "__overdue__";
+const isOverdue = (r) => {
+  const due = (r.due_date || "").slice(0, 10);
+  return !!due && due < today() && !["Hoàn thành", "Đã hủy"].includes(r.status);
+};
+const orderDate = (r) => (r.start_date || r.planned_date_display || r.planned_date || r.created_at || "").slice(0, 10);
+
+/* ─── KPI card: nhãn + icon nhỏ một hàng, số lớn, chú thích 1 dòng; bấm để lọc bảng chi tiết ─── */
+function KpiCard({ label, value, sub, icon: Icon, color = "blue", onClick, active }) {
   const colors = {
-    blue:  { bg: "bg-blue-50",    icon: "text-blue-500",    val: "text-blue-700"    },
-    green: { bg: "bg-emerald-50", icon: "text-emerald-500", val: "text-emerald-700" },
-    amber: { bg: "bg-amber-50",   icon: "text-amber-500",   val: "text-amber-700"   },
-    rose:  { bg: "bg-rose-50",    icon: "text-rose-500",    val: "text-rose-700"    },
+    blue:  { bg: "bg-blue-50",    icon: "text-blue-500",    val: "text-blue-700",    bar: "bg-blue-500",    ring: "ring-blue-500 border-blue-300"       },
+    green: { bg: "bg-emerald-50", icon: "text-emerald-500", val: "text-emerald-700", bar: "bg-emerald-500", ring: "ring-emerald-500 border-emerald-300" },
+    amber: { bg: "bg-amber-50",   icon: "text-amber-500",   val: "text-amber-700",   bar: "bg-amber-500",   ring: "ring-amber-500 border-amber-300"     },
+    rose:  { bg: "bg-rose-50",    icon: "text-rose-500",    val: "text-rose-700",    bar: "bg-rose-500",    ring: "ring-rose-500 border-rose-300"       },
   };
   const c = colors[color] || colors.blue;
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-5 flex items-start gap-4">
-      <div className={`${c.bg} rounded-lg p-3 shrink-0`}><Icon size={22} className={c.icon} /></div>
-      <div className="min-w-0">
-        <div className="text-sm text-slate-500 font-medium mb-0.5">{label}</div>
-        <div className={`text-2xl font-bold ${c.val}`}>{value}</div>
-        {sub && <div className="text-xs text-slate-400 mt-1">{sub}</div>}
+    <button type="button" onClick={onClick} title="Bấm để xem danh sách chi tiết"
+      className={`relative overflow-hidden rounded-xl border bg-white px-4 pt-4 pb-3.5 text-left transition-all hover:shadow-md hover:-translate-y-0.5
+        ${active ? `ring-2 shadow-md ${c.ring}` : "border-slate-200"}`}>
+      <div className={`absolute left-0 top-0 h-full w-1 ${c.bar}`} />
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap truncate">{label}</span>
+        <span className={`${c.bg} rounded-md p-1.5 shrink-0`}><Icon size={15} className={c.icon} /></span>
+      </div>
+      <div className={`mt-2 text-2xl font-bold leading-tight tabular-nums ${c.val}`}>{value}</div>
+      {sub && <div className="mt-1 text-xs text-slate-400 truncate" title={sub}>{sub}</div>}
+    </button>
+  );
+}
+
+/* ─── 3 biểu đồ: SL theo trạng thái · KH vs hoàn thành · trạng thái lệnh (bấm để lọc bảng) ─── */
+function OutputCharts({ rows, onPick }) {
+  const { byStatus, trend, donut, total } = useMemo(() => {
+    const st = new Map();
+    const day = new Map();
+    rows.forEach(r => {
+      const plan = Number(r.quantity) || 0;
+      const done = Number(r.produced_qty) || 0;
+      const s = st.get(r.status) || { name: r.status, plan: 0, count: 0 };
+      s.plan += plan; s.count += 1;
+      st.set(r.status, s);
+      const d = orderDate(r);
+      if (d) {
+        const x = day.get(d) || { d, plan: 0, done: 0 };
+        x.plan += plan; x.done += done;
+        day.set(d, x);
+      }
+    });
+    const rank = (n) => { const i = STATUS_ORDER.indexOf(n); return i < 0 ? 99 : i; };
+    const statuses = [...st.values()].sort((a, b) => rank(a.name) - rank(b.name));
+    return {
+      byStatus: statuses.map(s => ({ name: s.name, "Sản lượng": s.plan })),
+      donut: statuses.map(s => ({ name: s.name, value: s.count })),
+      total: rows.length,
+      trend: [...day.values()].sort((a, b) => a.d.localeCompare(b.d)).map(x => ({
+        d: x.d,
+        date: `${x.d.slice(8, 10)}/${x.d.slice(5, 7)}`,
+        "Kế hoạch": x.plan,
+        "Hoàn thành": x.done,
+      })),
+    };
+  }, [rows]);
+
+  const colorOf = (n) => STATUS_COLORS[n] || "#94a3b8";
+  const num = (v) => Number(v).toLocaleString("vi-VN");
+  const card = "bg-white rounded-xl border border-slate-200 p-4";
+  const empty = <div className="h-52 flex items-center justify-center text-sm text-slate-400">Chưa có dữ liệu</div>;
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div className={card}>
+        <h3 className="text-sm font-semibold text-slate-700 mb-3">Sản lượng kế hoạch theo trạng thái</h3>
+        {byStatus.length === 0 ? empty : (
+          <div className="h-52">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={byStatus} barSize={32} margin={{ top: 4, right: 8, left: -10, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                <XAxis dataKey="name" tick={{ fontSize: 10 }} interval={0} tickFormatter={s => STATUS_SHORT[s] || s} />
+                <YAxis tick={{ fontSize: 10 }} tickFormatter={num} />
+                <Tooltip formatter={(v) => [num(v), "Sản lượng KH"]} />
+                <Bar dataKey="Sản lượng" radius={[4, 4, 0, 0]} cursor="pointer"
+                  onClick={(e) => e?.name && onPick({ key: "status", value: e.name })}>
+                  {byStatus.map((e, i) => <Cell key={i} fill={colorOf(e.name)} />)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </div>
+
+      <div className={card}>
+        <h3 className="text-sm font-semibold text-slate-700 mb-3">Sản lượng kế hoạch vs hoàn thành</h3>
+        {trend.length === 0 ? empty : (
+          <div className="h-52">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={trend} margin={{ top: 4, right: 8, left: -10, bottom: 0 }} style={{ cursor: "pointer" }}
+                // recharts 3: onClick cấp biểu đồ KHÔNG còn activePayload — chỉ có activeIndex / activeLabel
+                onClick={(s) => {
+                  const i = Number(s?.activeIndex ?? s?.activeTooltipIndex);
+                  const d = (Number.isInteger(i) ? trend[i]?.d : null) ?? trend.find((t) => t.date === s?.activeLabel)?.d;
+                  if (d) onPick({ key: "date", value: d });
+                }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                <XAxis dataKey="date" tick={{ fontSize: 10 }} />
+                <YAxis tick={{ fontSize: 10 }} tickFormatter={num} />
+                <Tooltip formatter={(v, n) => [num(v), n]} />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                <Line type="monotone" dataKey="Kế hoạch" stroke="#93c5fd" strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 5 }} />
+                <Line type="monotone" dataKey="Hoàn thành" stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 5 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </div>
+
+      <div className={card}>
+        <h3 className="text-sm font-semibold text-slate-700 mb-3">Trạng thái lệnh</h3>
+        {donut.length === 0 ? empty : (
+          <div className="flex items-center gap-3 h-52">
+            <div className="flex-1 h-full relative">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={donut} cx="50%" cy="50%" innerRadius={55} outerRadius={78} paddingAngle={2} dataKey="value" cursor="pointer"
+                    onClick={(e) => e?.name && onPick({ key: "status", value: e.name })}>
+                    {donut.map((e, i) => <Cell key={i} fill={colorOf(e.name)} />)}
+                  </Pie>
+                  <Tooltip formatter={(v, n) => [`${v} lệnh`, n]} />
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                <span className="text-2xl font-bold text-slate-800 leading-none">{total}</span>
+                <span className="text-xs text-slate-400 mt-1">Tổng</span>
+              </div>
+            </div>
+            <div className="space-y-1.5 text-xs min-w-[130px]">
+              {donut.map((d, i) => (
+                <div key={i} className="flex items-center gap-1.5 cursor-pointer hover:bg-slate-50 rounded px-1 -mx-1" title={d.name}
+                  onClick={() => onPick({ key: "status", value: d.name })}>
+                  <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: colorOf(d.name) }} />
+                  <span className="text-slate-600 truncate">{STATUS_SHORT[d.name] || d.name}</span>
+                  <span className="ml-auto text-slate-500 font-medium">{d.value} ({Math.round(d.value / total * 100)}%)</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -248,6 +399,10 @@ export default function OutputReport({ lookups }) {
   const [to, setTo]                   = useState(today());
   const [productFilter, setProductFilter] = useState("");
   const [teamFilter, setTeamFilter]   = useState("");
+  const [statusFilter, setStatusFilter] = useState(""); // "" | tên trạng thái | OVERDUE
+  const [showCustomer, setShowCustomer] = useState(false);
+  // Góc nhìn của bảng chi tiết: { key: all|actual|remain|running|done|overdue|scrap } hoặc { key: status|date, value }
+  const [view, setView] = useState({ key: "all" });
   const [selected, setSelected]       = useState(null); // order được chọn để xem chi tiết
   // Phế KHÔNG ghi theo lệnh — lấy từ module Quản lý phế, gộp theo ngày trong khoảng lọc.
   const [scrapSum, setScrapSum]       = useState({ total_scrap: 0, total_finished: 0, by_day: [] });
@@ -303,15 +458,17 @@ export default function OutputReport({ lookups }) {
 
   // Filter
   const filtered = rows.filter(r => {
-    const date = (r.start_date || r.planned_date_display || r.planned_date || r.created_at || "").slice(0, 10);
+    const date = orderDate(r);
     const inRange = (!from || date >= from) && (!to || date <= to);
     const matchP  = !productFilter || r.product_code === productFilter;
     const teams   = teamsOf(r);
     const matchT  = !teamFilter || (teamFilter === NO_TEAM ? teams.length === 0 : teams.includes(teamFilter));
-    return inRange && matchP && matchT;
+    const matchS  = !statusFilter || (statusFilter === OVERDUE ? isOverdue(r) : r.status === statusFilter);
+    return inRange && matchP && matchT && matchS;
   });
 
-  const hasFilter = !!(productFilter || teamFilter);
+  const hasFilter = !!(productFilter || teamFilter || statusFilter);
+  const overdueCount = filtered.filter(isOverdue).length;
 
   // KPI
   const totalPlanned = filtered.reduce((s, r) => s + (Number(r.quantity) || 0), 0);
@@ -327,6 +484,38 @@ export default function OutputReport({ lookups }) {
   // Còn phải sản xuất (gộp toàn bộ lệnh đang lọc) và phần vượt mức
   const totalRemaining = Math.max(0, totalPlanned - totalActual);
   const totalOver      = Math.max(0, totalActual - totalPlanned);
+
+  // ── Danh sách chi tiết theo "góc nhìn" người dùng bấm (thẻ KPI / biểu đồ) ──
+  const VIEWS = {
+    all:     { label: "Tất cả lệnh",                     test: () => true },
+    actual:  { label: "Lệnh đã có sản lượng thực tế",     test: r => (Number(r.produced_qty) || 0) > 0 },
+    remain:  { label: "Lệnh còn phải sản xuất",           test: r => (Number(r.quantity) || 0) > (Number(r.produced_qty) || 0) && r.status !== "Đã hủy" },
+    running: { label: "Lệnh đang sản xuất",               test: r => r.status === "Đang sản xuất" },
+    done:    { label: "Lệnh hoàn thành",                  test: r => r.status === "Hoàn thành" },
+    overdue: { label: "Lệnh quá hạn",                     test: isOverdue },
+    scrap:   { label: "Phế phẩm theo ngày (Quản lý phế)", test: () => false },
+  };
+  const viewLabel = view.key === "status" ? `Trạng thái: ${view.value}`
+    : view.key === "date" ? `Ngày ${fmtDate(view.value)}`
+    : VIEWS[view.key].label;
+  const viewRows = filtered.filter(r =>
+    view.key === "status" ? r.status === view.value
+    : view.key === "date" ? orderDate(r) === view.value
+    : VIEWS[view.key].test(r));
+  const scrapRows = (scrapSum.by_day || []).map(d => ({
+    ...d, rate: (d.scrap_qty + d.finished_qty) > 0 ? d.scrap_qty / (d.scrap_qty + d.finished_qty) * 100 : 0,
+  }));
+  const isScrap = view.key === "scrap";
+  // Bấm lại thẻ đang chọn → quay về "Tất cả"
+  const pick = (v) => setView(cur => (cur.key === v.key && cur.value === v.value) ? { key: "all" } : v);
+  const cardProps = (key) => ({ onClick: () => pick({ key }), active: view.key === key });
+
+  const scrapColumns = [
+    { key: "date", label: "Ngày", render: (r) => fmtDate(r.date) },
+    { key: "finished_qty", label: "SL thành phẩm", align: "right", render: (r) => fmt(r.finished_qty) },
+    { key: "scrap_qty", label: "SL phế", align: "right", render: (r) => <span className="font-semibold text-rose-600">{fmt(r.scrap_qty)}</span> },
+    { key: "rate", label: "Tỷ lệ phế", align: "right", render: (r) => `${r.rate.toFixed(1)}%` },
+  ];
 
   const columns = [
     {
@@ -345,9 +534,19 @@ export default function OutputReport({ lookups }) {
       key: "product_code", label: "Mã SP", filter: "text", tdClass: "text-slate-600",
       render: (r) => <span>{r.product_code}<span className="block text-xs text-slate-400">{r.product_name}</span></span>,
     },
+    ...(showCustomer ? [{
+      key: "customer_name", label: "Khách hàng", filter: "text", tdClass: "text-slate-600",
+      render: (r) => r.customer_name || "—",
+    }] : []),
     {
       key: "planned_date", label: "Ngày KH", filter: "date", tdClass: "text-slate-500",
       render: (r) => fmtDate(r.planned_date_display || r.planned_date) || "—",
+    },
+    {
+      key: "due_date", label: "Hạn chót", filter: "date",
+      render: (r) => isOverdue(r)
+        ? <span className="text-rose-600 font-semibold" title="Đã quá hạn chót">{fmtDate(r.due_date)}</span>
+        : <span className="text-slate-500">{fmtDate(r.due_date) || "—"}</span>,
     },
     {
       key: "quantity", label: "KH", align: "right",
@@ -382,7 +581,7 @@ export default function OutputReport({ lookups }) {
       },
     },
     {
-      key: "status", label: "Trạng thái", filter: "select", options: ["Chờ duyệt", "Đã lên kế hoạch", "Chờ nguyên vật liệu", "Đang sản xuất", "Hoàn thành", "Đã hủy"],
+      key: "status", label: "Trạng thái", // lọc trạng thái ở thanh Bộ lọc phía trên
       render: (r) => <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${statusClass(r.status)}`}>{r.status}</span>,
     },
     {
@@ -391,8 +590,14 @@ export default function OutputReport({ lookups }) {
     },
   ];
 
+  // Xuất đúng danh sách đang hiển thị ở "Chi tiết sản lượng" (theo thẻ / biểu đồ đã bấm)
   const exportExcel = () => {
-    const exportData = filtered.map(r => {
+    const exportData = isScrap ? scrapRows.map(d => ({
+      "Ngày":          fmtDate(d.date),
+      "SL thành phẩm": d.finished_qty,
+      "SL phế":        d.scrap_qty,
+      "Tỷ lệ phế (%)": Number(d.rate.toFixed(1)),
+    })) : viewRows.map(r => {
       const planned = Number(r.quantity) || 0;
       const actual  = Number(r.produced_qty) || 0;
       const remain  = planned - actual;
@@ -403,6 +608,8 @@ export default function OutputReport({ lookups }) {
         "Khách hàng":   r.customer_name || "",
         "Đơn hàng bán": r.sales_order_code || "",
         "Ngày kế hoạch": fmtDate(r.planned_date_display || r.planned_date) || "",
+        "Hạn chót":     fmtDate(r.due_date) || "",
+        "Quá hạn":      isOverdue(r) ? "Có" : "",
         "SL kế hoạch":  planned,
         "SL thực tế":   actual,
         "SL còn lại":   remain > 0 ? remain : 0,
@@ -412,14 +619,19 @@ export default function OutputReport({ lookups }) {
         "Đội SX":       r.assigned_team_display || r.assigned_team || "",
       };
     });
-    const ws  = XLSX.utils.json_to_sheet(exportData);
+    if (!exportData.length) { toast.error("Danh sách đang trống, không có gì để xuất"); return; }
+    // Dòng đầu ghi rõ đang xuất danh sách nào, khoảng ngày nào
+    const ws  = XLSX.utils.aoa_to_sheet([[`${viewLabel} · ${fmtDate(from)} – ${fmtDate(to)}`], []]);
+    XLSX.utils.sheet_add_json(ws, exportData, { origin: "A3" });
     const wb  = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Sản lượng");
+    XLSX.utils.book_append_sheet(wb, ws, isScrap ? "Phế phẩm" : "Sản lượng");
+    const slug = { all: "tat-ca", actual: "thuc-te", remain: "con-lai", running: "dang-sx", done: "hoan-thanh",
+                   overdue: "qua-han", scrap: "phe-pham", status: "trang-thai", date: `ngay-${view.value}` }[view.key];
     const wbout = XLSX.write(wb, { bookType: "xlsx", type: "array" });
     const blob  = new Blob([wbout], { type: "application/octet-stream" });
     const url   = URL.createObjectURL(blob);
     const a     = document.createElement("a");
-    a.href = url; a.download = `san-luong-${from}-${to}.xlsx`;
+    a.href = url; a.download = `san-luong-${slug}-${from}-${to}.xlsx`;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
@@ -443,7 +655,7 @@ export default function OutputReport({ lookups }) {
 
       {/* Filters */}
       <Section title="Bộ lọc báo cáo" defaultOpen={true}>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           <div>
             <label className="block text-xs font-medium text-slate-500 mb-1">Từ ngày</label>
             <input type="date" className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40"
@@ -476,6 +688,19 @@ export default function OutputReport({ lookups }) {
               placeholder={`Tất cả đội (${teamOptions.length})`}
             />
           </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1">Trạng thái</label>
+            <SearchSelect
+              value={statusFilter}
+              onChange={setStatusFilter}
+              options={[
+                { value: "", label: "Tất cả trạng thái" },
+                ...STATUS_ORDER.map(s => ({ value: s, label: s })),
+                { value: OVERDUE, label: "⚠ Quá hạn" },
+              ]}
+              placeholder="Tất cả trạng thái"
+            />
+          </div>
         </div>
 
         {/* Tóm tắt kết quả lọc + xóa nhanh */}
@@ -499,8 +724,16 @@ export default function OutputReport({ lookups }) {
               </button>
             </span>
           )}
+          {statusFilter && (
+            <span className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 rounded-full px-2 py-0.5">
+              {statusFilter === OVERDUE ? "Quá hạn" : statusFilter}
+              <button onClick={() => setStatusFilter("")} className="hover:text-blue-900" title="Bỏ lọc trạng thái">
+                <X size={11} />
+              </button>
+            </span>
+          )}
           {hasFilter && (
-            <button onClick={() => { setProductFilter(""); setTeamFilter(""); }}
+            <button onClick={() => { setProductFilter(""); setTeamFilter(""); setStatusFilter(""); }}
               className="text-slate-500 hover:text-slate-700 underline underline-offset-2">
               Xóa bộ lọc
             </button>
@@ -509,32 +742,76 @@ export default function OutputReport({ lookups }) {
       </Section>
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-        <KpiCard label="SL kế hoạch" value={fmt(totalPlanned)} sub={`${filtered.length} lệnh SX`}        icon={Package}      color="blue"  />
-        <KpiCard label="SL thực tế"  value={fmt(totalActual)}  sub={`Đạt ${achieveRate}% kế hoạch`}       icon={TrendingUp}   color="green" />
+      {/* 7 thẻ / 1 hàng chỉ từ 2xl (1536px): ở 1280px mỗi thẻ ~122px → 6/7 nhãn bị cắt. Dưới 2xl: 4 thẻ / hàng */}
+      <div className="grid grid-cols-2 md:grid-cols-4 2xl:grid-cols-7 gap-4">
+        <KpiCard label="SL kế hoạch" value={fmt(totalPlanned)} sub={`${filtered.length} lệnh SX`}        icon={Package}      color="blue"  {...cardProps("all")} />
+        <KpiCard label="SL thực tế"  value={fmt(totalActual)}  sub={`Đạt ${achieveRate}% kế hoạch`}       icon={TrendingUp}   color="green" {...cardProps("actual")} />
         <KpiCard label="Còn lại"     value={fmt(totalRemaining)}
           sub={totalOver > 0 ? `Vượt mức +${fmt(totalOver)}` : "Còn phải sản xuất"}
-          icon={ClipboardList} color={totalRemaining === 0 ? "green" : "amber"} />
-        <KpiCard label="Đang SX"     value={runningCount}       sub={`/ ${filtered.length} lệnh`}          icon={Activity}     color="blue"  />
-        <KpiCard label="Hoàn thành"  value={doneCount}          sub={`/ ${filtered.length} lệnh`}          icon={CheckCircle2} color="green" />
+          icon={ClipboardList} color={totalRemaining === 0 ? "green" : "amber"} {...cardProps("remain")} />
+        <KpiCard label="Đang SX"     value={runningCount}       sub={`/ ${filtered.length} lệnh`}          icon={Activity}     color="blue"  {...cardProps("running")} />
+        <KpiCard label="Hoàn thành"  value={doneCount}          sub={`/ ${filtered.length} lệnh`}          icon={CheckCircle2} color="green" {...cardProps("done")} />
+        <KpiCard label="Quá hạn"     value={overdueCount}
+          sub={filtered.length > 0 ? `${Math.round(overdueCount / filtered.length * 100)}% số lệnh` : "Trễ hạn chót"}
+          icon={AlertCircle} color={overdueCount > 0 ? "rose" : "green"} {...cardProps("overdue")} />
         <KpiCard label="Phế phẩm"    value={fmt(totalScrap)}
-          sub={`Tỷ lệ ${scrapRate}% · từ Quản lý phế (${scrapSum.by_day?.length || 0} ngày)`}
-          icon={AlertTriangle} color={Number(scrapRate) > 5 ? "rose" : "amber"} />
+          sub={`Tỷ lệ phế ${scrapRate}%`}
+          icon={AlertTriangle} color={Number(scrapRate) > 5 ? "rose" : "amber"} {...cardProps("scrap")} />
       </div>
 
-      {/* Table */}
-      <Section 
-        title="Chi tiết sản lượng" 
-        actions={<span className="text-sm text-slate-500">{filtered.length} lệnh sản xuất</span>}
+      <OutputCharts rows={filtered} onPick={pick} />
+
+      {/* Table — nội dung đổi theo thẻ / biểu đồ đã bấm */}
+      <Section
+        title={
+          <span className="flex items-center gap-2">
+            Chi tiết sản lượng
+            <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 text-blue-700 px-2.5 py-0.5 text-xs font-medium">
+              {viewLabel}
+              {view.key !== "all" && (
+                <span role="button" title="Xem tất cả lệnh" className="hover:text-blue-900"
+                  onClick={(e) => { e.stopPropagation(); setView({ key: "all" }); }}>
+                  <X size={12} />
+                </span>
+              )}
+            </span>
+          </span>
+        }
+        action={
+          <div className="flex items-center gap-4 text-sm text-slate-500">
+            {!isScrap && (
+              <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                <input type="checkbox" checked={showCustomer} onChange={e => setShowCustomer(e.target.checked)} />
+                Hiện cột Khách hàng
+              </label>
+            )}
+            <span>{isScrap ? `${scrapRows.length} ngày` : `${viewRows.length} lệnh sản xuất`}</span>
+            <button onClick={exportExcel} className="btn-ghost flex items-center gap-1.5 !py-1.5">
+              <Download size={14} /> Xuất Excel
+            </button>
+          </div>
+        }
         bodyClass="p-4"
       >
+        {isScrap ? (
           <DataTable
+            key="scrap"
+            dense
+            columns={scrapColumns}
+            rows={scrapRows}
+            rowKey={(r) => r.date}
+            emptyText="Không có phiếu ghi phế trong khoảng thời gian này"
+          />
+        ) : (
+          <DataTable
+            key="orders"
             dense
             columns={columns}
-            rows={filtered}
+            rows={viewRows}
             rowKey={(r) => r.id}
-            emptyText={loading ? "Đang tải dữ liệu..." : "Không có dữ liệu trong khoảng thời gian này"}
+            emptyText={loading ? "Đang tải dữ liệu..." : "Không có lệnh nào trong mục này"}
           />
+        )}
       </Section>
 
       {/* Detail drawer */}

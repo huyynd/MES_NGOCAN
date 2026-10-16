@@ -2426,3 +2426,63 @@ BEGIN
   END IF;
 END $$;
 
+-- 15) PHIẾU THANH TOÁN — khách trả 1 cục, KHÔNG theo từng phiếu giao.
+--     Mỗi phiếu thanh toán được tự PHÂN BỔ vào các phiếu giao còn nợ của khách, CŨ NHẤT TRƯỚC (FIFO).
+--     Mỗi phần phân bổ = 1 dòng delivery_payments có receipt_id → paid_amount + trạng thái phiếu giao tính như cũ.
+--     Trả dư → phần chưa phân bổ là TIỀN TRẢ TRƯỚC, tự trừ vào phiếu giao mới khi giao hàng.
+--     Hủy phiếu thanh toán → hủy mọi phần phân bổ của nó (giữ dấu vết), rồi phân bổ lại cho khách.
+CREATE TABLE IF NOT EXISTS public.payment_receipts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  receipt_code varchar(20),
+  customer_id uuid NOT NULL REFERENCES public.customers(id),
+  pay_date date NOT NULL DEFAULT CURRENT_DATE,     -- ngày thanh toán
+  invoice_date date,                               -- ngày xuất hóa đơn
+  invoice_no varchar(60),                          -- số hóa đơn
+  payer_name varchar(150),                         -- người thanh toán (phía khách)
+  method varchar(30) NOT NULL DEFAULT 'Chuyển khoản', -- Tiền mặt | Chuyển khoản
+  content text,                                    -- nội dung thanh toán
+  amount numeric(16,2) NOT NULL CHECK (amount > 0),
+  sales_order_ids uuid[] NOT NULL DEFAULT '{}',    -- số đơn hàng tham chiếu (không ảnh hưởng cách trừ nợ)
+  created_by uuid,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  is_cancelled boolean NOT NULL DEFAULT false,
+  cancelled_by uuid,
+  cancelled_at timestamptz,
+  cancel_reason text
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_payment_receipts_code ON public.payment_receipts (receipt_code);
+CREATE INDEX IF NOT EXISTS idx_payment_receipts_customer ON public.payment_receipts (customer_id);
+DROP TRIGGER IF EXISTS trg_gen_code ON public.payment_receipts;
+CREATE TRIGGER trg_gen_code BEFORE INSERT ON public.payment_receipts FOR EACH ROW EXECUTE FUNCTION public.gen_code_trg('PTT', '5', 'receipt_code');
+--     Phần phân bổ của phiếu thanh toán vào từng phiếu giao (NULL = lần thu cũ trước khi có phiếu thanh toán)
+ALTER TABLE public.delivery_payments ADD COLUMN IF NOT EXISTS receipt_id uuid REFERENCES public.payment_receipts(id);
+CREATE INDEX IF NOT EXISTS idx_delivery_payments_receipt ON public.delivery_payments (receipt_id);
+--     Ngưỡng công nợ — đổi trực tiếp trong app_settings, không cần sửa code. Chỉ seed nếu chưa có.
+--     debt_bad_days: phiếu giao còn nợ quá N ngày (tính từ ngày giao) → khách NỢ XẤU (cảnh báo)
+--     debt_limit_amount: tổng nợ VƯỢT số này → KHÔNG cho tạo phiếu giao mới cho khách
+INSERT INTO public.app_settings (key, value) VALUES ('debt_bad_days', '30'::jsonb) ON CONFLICT (key) DO NOTHING;
+INSERT INTO public.app_settings (key, value) VALUES ('debt_limit_amount', '300000000'::jsonb) ON CONFLICT (key) DO NOTHING;
+
+-- 16) ĐỒNG BỘ đã trả + trạng thái thanh toán của phiếu giao (dữ liệu cũ: "Số dư đầu kỳ" chuyển ở mục 13
+--     chỉ ghi lần thu, KHÔNG cập nhật trạng thái → vd phiếu đã thu 1 phần vẫn để "Giao hàng").
+--     Cùng quy tắc với receivables.recomputePaid. Idempotent: chạy lại không đổi gì nếu đã khớp.
+UPDATE public.delivery_notes d
+   SET paid_amount = s.paid, updated_at = now()
+  FROM (SELECT dn.id, COALESCE(SUM(p.amount) FILTER (WHERE p.is_cancelled = FALSE), 0) AS paid
+          FROM public.delivery_notes dn LEFT JOIN public.delivery_payments p ON p.delivery_note_id = dn.id
+         WHERE dn.is_deleted = FALSE GROUP BY dn.id) s
+ WHERE d.id = s.id AND d.paid_amount IS DISTINCT FROM s.paid;
+UPDATE public.delivery_notes
+   SET status = CASE
+         WHEN paid_amount > 0.005 AND paid_amount >= total_amount - 0.005 THEN 'Đã thanh toán'
+         WHEN paid_amount > 0.005 THEN 'Đã thanh toán 1 phần'
+         ELSE 'Chờ thanh toán' END,
+       updated_at = now()
+ WHERE is_deleted = FALSE
+   AND status IN ('Giao hàng', 'Đã xuất hóa đơn', 'Chờ thanh toán', 'Đã thanh toán 1 phần', 'Đã thanh toán')
+   AND status IS DISTINCT FROM CASE
+         WHEN paid_amount > 0.005 AND paid_amount >= total_amount - 0.005 THEN 'Đã thanh toán'
+         WHEN paid_amount > 0.005 THEN 'Đã thanh toán 1 phần'
+         WHEN status IN ('Đã thanh toán 1 phần', 'Đã thanh toán') THEN 'Chờ thanh toán'
+         ELSE status END;

@@ -1,5 +1,6 @@
 // backend/server.js
 const express = require('express');
+require('./src/core/asyncErrors'); // lỗi trong handler async → error handler cuối (500), không sập server
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
@@ -68,7 +69,8 @@ app.get('/health', (_, res) => res.json({ ok: true }));
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, _next) => {
   if (err.message?.startsWith('CORS')) return res.status(403).json({ message: err.message });
-  console.error('[Unhandled]', err);
+  console.error('[Unhandled]', req.method, req.originalUrl, err);
+  if (res.headersSent) return; // đã trả một phần → không gửi lại (tránh lỗi "headers already sent")
   res.status(500).json({ message: 'Lỗi máy chủ nội bộ' });
 });
 

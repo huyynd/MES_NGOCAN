@@ -5,7 +5,7 @@ import * as XLSX from "xlsx";
 import {
   LayoutDashboard, Package, ShoppingCart, Warehouse, Search, Plus, Trash2,
   Upload, Download, RotateCcw, ArrowLeft, Save, CheckCircle2, Activity, Cog,
-  Factory, ClipboardList, Database, FlaskConical, ChevronDown, Users, Wrench, MapPin, Pencil, Clock, CalendarDays, QrCode, ScanLine, Shield, ShieldCheck, UserCog, LogOut, GitBranch, Hammer, Copy, Scissors, Wind, Image as ImageIcon, FileText, Eye, Check, Layers, Menu, PanelLeftClose, PanelLeftOpen, Recycle,
+  Factory, ClipboardList, Database, FlaskConical, ChevronDown, Users, Wrench, MapPin, Pencil, Clock, CalendarDays, QrCode, ScanLine, Shield, ShieldCheck, UserCog, LogOut, GitBranch, Hammer, Copy, Scissors, Wind, Image as ImageIcon, FileText, Eye, Check, Layers, Menu, PanelLeftClose, PanelLeftOpen, Recycle, Wallet, Scale,
 } from "lucide-react";
 import { getLookups, getDashboard, auth, setToken, getToken, productRelated, nextCode, productFiles } from "./src/mesApi.js";
 import Login from "./src/Login.jsx";
@@ -31,6 +31,8 @@ import BomModule from "./src/modules/engineering/Bom.jsx";
 import ProcessModule from "./src/modules/engineering/Process.jsx";
 import OrdersModule from "./src/modules/sales/Orders.jsx";
 import DeliveriesModule from "./src/modules/sales/Deliveries.jsx";
+import PaymentReceiptsModule from "./src/modules/sales/PaymentReceipts.jsx";
+import ReceivablesModule from "./src/modules/sales/Receivables.jsx";
 import ReportsModule from "./src/modules/reports/Reports.jsx";
 import DirectorReport from "./src/modules/reports/DirectorReport.jsx";
 import InventoryReport from "./src/modules/reports/InventoryReport.jsx";
@@ -140,6 +142,9 @@ function Sidebar({ user, onLogout, collapsed, onToggle, mobileMenuOpen, onCloseM
       children: [
         { key: "orders", label: "Đơn hàng", icon: ShoppingCart, path: "/orders" },
         { key: "deliveries", label: "Phiếu giao hàng", icon: FileText, path: "/deliveries" },
+        // Thanh toán / công nợ dùng chung quyền Phiếu giao hàng (trang tự ẩn số tiền nếu không có quyền xem tiền)
+        { key: "payment_receipts", label: "Phiếu thanh toán", icon: Wallet, perm: "deliveries", path: "/payment-receipts" },
+        { key: "receivables", label: "Báo cáo công nợ", icon: Scale, perm: "deliveries", path: "/receivables" },
       ]
     },
     {
@@ -1008,7 +1013,7 @@ function Dashboard({ onNav, onOpenOrder, onOpenProductionOrder }) {
   useEffect(() => { getDashboard().then(setData).catch((e) => console.error("Dashboard lỗi:", e.message)); }, []);
   if (!data) return <div className="text-slate-400 text-sm py-10">Đang tải số liệu…</div>;
 
-  const { kpi, machines, in_progress, due_soon, status_breakdown, overdue_payments = [], finance } = data;
+  const { kpi, machines, in_progress, due_soon, status_breakdown, overdue_payments = [], finance, debt_bad_days: badDays = 30 } = data;
   const kpis = [
     { label: "Đơn hàng đang mở", value: kpi.open_orders, icon: ShoppingCart, color: "blue", nav: "orders" },
     { label: "Lệnh SX đang chạy", value: kpi.po_active, icon: Factory, color: "amber", nav: "production" },
@@ -1043,8 +1048,8 @@ function Dashboard({ onNav, onOpenOrder, onOpenProductionOrder }) {
           <div className="grid grid-cols-2 lg:grid-cols-4 divide-x divide-slate-100">
             {[
               { label: "Doanh thu (phiếu)", value: finance.revenue, cls: "text-slate-800", sub: `${fmt(finance.note_count)} phiếu` },
-              { label: "Đã thu", value: finance.paid, cls: "text-emerald-600" },
-              { label: "Còn phải thu (công nợ)", value: finance.debt, cls: "text-rose-600", nav: "deliveries" },
+              { label: "Đã thu", value: finance.paid, cls: "text-emerald-600", ...(Number(finance.credit) > 0 ? { sub: `gồm ${fmt(finance.credit)} đ trả trước` } : {}) },
+              { label: "Còn phải thu (công nợ)", value: finance.debt, cls: "text-rose-600", nav: "receivables" },
               { label: "Phiếu chưa thu đủ", value: finance.unpaid_count, cls: "text-amber-600", isCount: true, nav: "deliveries" },
             ].map((c) => (
               <button key={c.label} onClick={() => c.nav && onNav?.(c.nav)} disabled={!c.nav}
@@ -1058,20 +1063,20 @@ function Dashboard({ onNav, onOpenOrder, onOpenProductionOrder }) {
         </div>
       )}
 
-      {/* Cảnh báo: phiếu đã giao > 30 ngày chưa thanh toán đủ */}
+      {/* Cảnh báo: phiếu đã giao quá N ngày (app_settings.debt_bad_days) còn nợ — khớp Báo cáo công nợ */}
       {showMoney && overdue_payments.length > 0 && (
         <div className="bg-rose-50 border border-rose-200 rounded-xl overflow-hidden">
           <div className="px-5 py-3 border-b border-rose-200 flex items-center gap-2">
             <Activity size={18} className="text-rose-600" />
-            <h2 className="text-sm font-semibold text-rose-800">Công nợ quá hạn — {overdue_payments.length} phiếu đã giao trên 30 ngày chưa thanh toán đủ</h2>
+            <h2 className="text-sm font-semibold text-rose-800">Công nợ quá hạn — {overdue_payments.length} phiếu đã giao trên {badDays} ngày chưa thanh toán đủ</h2>
           </div>
           <div className="divide-y divide-rose-100">
             {overdue_payments.map((d) => (
-              <button key={d.id} onClick={() => onNav?.("deliveries")} className="w-full grid grid-cols-12 gap-2 px-5 py-2.5 items-center text-left hover:bg-rose-100/50 text-sm">
+              <button key={d.id} onClick={() => onNav?.("receivables")} className="w-full grid grid-cols-12 gap-2 px-5 py-2.5 items-center text-left hover:bg-rose-100/50 text-sm">
                 <span className="col-span-2 font-medium text-rose-700">{d.note_code}</span>
                 <span className="col-span-4 text-slate-700 truncate">{d.customer_name || "—"}</span>
                 <span className="col-span-2 text-slate-600">{fmtDate(d.delivery_date)}</span>
-                <span className="col-span-2 text-right font-semibold text-slate-800">{showMoney ? `${fmt(d.total_amount)} đ` : ""}</span>
+                <span className="col-span-2 text-right font-semibold text-slate-800" title={`Tổng phiếu ${fmt(d.total_amount)} đ`}>{showMoney ? `Còn nợ ${fmt(d.due_amount)} đ` : ""}</span>
                 <span className="col-span-2 text-right text-rose-600 font-semibold">Trễ {d.days_overdue} ngày</span>
               </button>
             ))}
@@ -1349,6 +1354,8 @@ export default function MesApp() {
               <Route path="/process" element={needLookups(ProcessModule)} />
               <Route path="/orders" element={lookups ? <OrdersModule lookups={lookups} focusId={focusSalesOrderId} onFocusConsumed={() => setFocusSalesOrderId(null)} onCreateDelivery={goNewDelivery} onOpenProductionOrder={goProductionOrder} /> : loadingEl} />
               <Route path="/deliveries" element={lookups ? <DeliveriesModule lookups={lookups} focusOrderId={deliveryOrderId} onFocusConsumed={() => setDeliveryOrderId(null)} /> : loadingEl} />
+              <Route path="/payment-receipts" element={lookups ? <PaymentReceiptsModule lookups={lookups} /> : loadingEl} />
+              <Route path="/receivables" element={<ReceivablesModule />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </div>

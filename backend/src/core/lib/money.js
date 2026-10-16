@@ -21,9 +21,13 @@ function canEditAmounts(req, app = 'deliveries') {
   return v === 'ALLOW' || v === true || v?.status === 'ALLOW' || f === 'edit';
 }
 
-// Điều kiện SQL CHUẨN cho "phiếu giao tính vào tiền/công nợ":
-// loại phiếu Bản nháp (chưa phát sinh) và Đã hủy. Dùng alias bảng delivery_notes (vd 'd' hoặc 'dn').
-const moneyNoteFilter = (alias = 'd') =>
-  `${alias}.is_deleted = FALSE AND ${alias}.status NOT IN ('Bản nháp','Đã hủy')`;
+// ĐỊNH NGHĨA DUY NHẤT "phiếu giao tính vào tiền / công nợ" = đã giao hàng (đã trừ kho).
+// Bản nháp (chưa phát sinh) và Đã hủy KHÔNG tính. Mọi truy vấn tiền / công nợ / "đã giao" PHẢI dùng
+// PAYABLE_NOTE_STATUSES (tham số SQL) hoặc moneyNoteFilter(alias) — KHÔNG tự viết lại điều kiện trạng thái.
+const PAYABLE_NOTE_STATUSES = ['Giao hàng', 'Đã xuất hóa đơn', 'Chờ thanh toán', 'Đã thanh toán 1 phần', 'Đã thanh toán'];
 
-module.exports = { canViewAmounts, canEditAmounts, moneyNoteFilter };
+// Điều kiện SQL chuẩn (gắn thẳng vào WHERE). alias = tên/alias bảng delivery_notes (vd 'd', 'dn', 'delivery_notes').
+const moneyNoteFilter = (alias = 'd') =>
+  `${alias}.is_deleted = FALSE AND ${alias}.status IN (${PAYABLE_NOTE_STATUSES.map((s) => `'${s}'`).join(',')})`;
+
+module.exports = { canViewAmounts, canEditAmounts, moneyNoteFilter, PAYABLE_NOTE_STATUSES };

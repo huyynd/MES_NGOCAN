@@ -71,9 +71,22 @@ export const deliveries = {
   deliverable: (customerId, excludeNote) =>
     http(`/deliveries/deliverable?customer_id=${customerId}${excludeNote ? `&exclude_note=${excludeNote}` : ""}`).then((r) => r.data),
   ship: (id) => http(`/deliveries/${id}/ship`, body("POST", {})),
-  // Thanh toán từng lần: { pay_date, amount, method, note } — đã trả + trạng thái tự tính ở backend
-  addPayment: (id, data) => http(`/deliveries/${id}/payments`, body("POST", data)),
-  cancelPayment: (pid, reason) => http(`/deliveries/payments/${pid}/cancel`, body("POST", { reason })),
+};
+
+// Phiếu thanh toán: khách trả 1 cục → backend tự trừ vào phiếu giao cũ nhất trước (FIFO)
+export const paymentReceipts = {
+  list: (params = {}) => resource("payment-receipts").list(params),
+  get: (id) => http(`/payment-receipts/${id}`),
+  create: (data) => http(`/payment-receipts`, body("POST", data)),
+  update: (id, data) => http(`/payment-receipts/${id}`, body("PUT", data)),
+  cancel: (id, reason) => http(`/payment-receipts/${id}/cancel`, body("POST", { reason })),
+  // Công nợ hiện tại 1 khách + phiếu giao còn nợ + đơn hàng (cảnh báo nợ xấu / chặn vượt hạn mức)
+  customer: (customerId) => http(`/payment-receipts/customer/${customerId}`),
+};
+// Báo cáo công nợ theo khách hàng
+export const receivables = {
+  list: () => http(`/receivables`),
+  detail: (customerId) => http(`/receivables/${customerId}`),
 };
 
 export const processes = resource("processes");

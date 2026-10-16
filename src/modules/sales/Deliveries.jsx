@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { RotateCcw, Plus, Trash2, Pencil, ArrowLeft, Save, Printer, FileText, Truck, Wallet, X } from "lucide-react";
-import { deliveries as api, resource, inventory } from "../../mesApi.js";
+import { deliveries as api, resource, inventory, paymentReceipts } from "../../mesApi.js";
+import { DebtBanner } from "./debtUi.jsx";
 
 const ordersApi = resource("sales-orders");
 import { usePerm } from "../../perm.jsx";
-import {  inputCls, fmt, fmtDate, statusClass , toast } from "../../ui.js";
+import {  inputCls, fmt, fmtDate, statusClass , toast, todayYmd } from "../../ui.js";
 import { specShort } from "../../specs.js";
 import { PageHeader, Section, ListHeader, DataTable, Logo, UnitSelect, SearchSelect } from "../../components.jsx";
 
@@ -22,7 +24,7 @@ const DN_TRANSITIONS = {
 };
 const PAYABLE_STATUSES = ["Giao hàng", "Đã xuất hóa đơn", "Chờ thanh toán", "Đã thanh toán 1 phần", "Đã thanh toán"];
 
-const today = () => new Date().toISOString().slice(0, 10);
+const today = todayYmd; // ngày giao mặc định theo giờ VN (toISOString lệch 1 ngày trước 7h sáng)
 
 // Thông tin đơn vị bán hàng (in trên phiếu xuất kho)
 const COMPANY = {
@@ -40,85 +42,45 @@ const Field = ({ label, required, children }) => (
   </div>
 );
 
-/* ---- Hộp "Thanh toán" (mở từ nút Thanh toán ở đầu phiếu): ghi nhận 1 lần thu + xem / hủy các lần thu trước ----
- * Đã trả = Σ lần thu chưa hủy; trạng thái phiếu tự nhảy; chặn trả vượt công nợ — tất cả tính ở backend.
+/* ---- Lịch sử được trả của phiếu (chỉ xem) ----
+ * Khách trả 1 cục bằng PHIẾU THANH TOÁN (menu Phiếu thanh toán) → hệ thống tự trừ vào phiếu giao cũ nhất trước.
+ * Ở đây chỉ hiện phiếu này đã được trả bởi phiếu thanh toán nào (hoặc lần thu cũ trước đây).
  */
-function PaymentModal({ noteId, noteCode, payments, total, paid, canEdit, onChanged, onClose }) {
-  const debt = Math.max(0, (Number(total) || 0) - (Number(paid) || 0));
-  const [p, setP] = useState({ pay_date: today(), amount: debt ? String(debt) : "", method: "Tiền mặt", note: "" });
-  const [busy, setBusy] = useState(false);
-  const add = async () => {
-    const amt = Number(p.amount);
-    if (!(amt > 0)) return toast.error("Nhập số tiền lớn hơn 0");
-    if (amt > debt + 1e-6) return toast.error(`Số tiền vượt công nợ còn lại ${fmt(debt)} đ`);
-    setBusy(true);
-    try { await api.addPayment(noteId, { ...p, amount: amt }); toast.success("Đã ghi nhận thanh toán"); onChanged(); onClose(); }
-    catch (e) { toast.error(e.message); }
-    finally { setBusy(false); }
-  };
-  const cancel = async (pm) => {
-    const reason = prompt(`Hủy lần thu ${fmt(pm.amount)} đ ngày ${fmtDate(pm.pay_date)}?\nNhập lý do hủy:`);
-    if (reason === null) return;
-    if (!reason.trim()) return toast.error("Cần nhập lý do hủy");
-    try { await api.cancelPayment(pm.id, reason.trim()); toast.success("Đã hủy lần thu"); onChanged(); }
-    catch (e) { toast.error(e.message); }
-  };
+function PaymentHistory({ payments }) {
+  const navigate = useNavigate();
+  const list = payments.filter((p) => !p.is_cancelled);
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200">
-          <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Wallet size={20} className="text-blue-600" /> Thanh toán phiếu {noteCode}</h3>
-          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-700"><X size={20} /></button>
-        </div>
-
-        <div className="grid grid-cols-3 gap-3 px-5 py-4 text-sm">
-          <div className="rounded-lg bg-slate-50 px-3 py-2"><div className="text-slate-500">Tổng tiền</div><div className="font-bold text-slate-800">{fmt(Number(total) || 0)} đ</div></div>
-          <div className="rounded-lg bg-slate-50 px-3 py-2"><div className="text-slate-500">Đã trả</div><div className="font-bold text-emerald-700">{fmt(Number(paid) || 0)} đ</div></div>
-          <div className="rounded-lg bg-slate-50 px-3 py-2"><div className="text-slate-500">Còn nợ</div><div className={"font-bold " + (debt > 0 ? "text-rose-600" : "text-emerald-600")}>{fmt(debt)} đ</div></div>
-        </div>
-
-        {canEdit && debt > 0 ? (
-          <div className="px-5 pb-4 grid grid-cols-2 gap-x-4 gap-y-3">
-            <Field label="Ngày thanh toán"><input type="date" className={inputCls} value={p.pay_date} onChange={(e) => setP({ ...p, pay_date: e.target.value })} /></Field>
-            <Field label="Số tiền (đ)"><input type="number" min="0" className={inputCls + " text-right no-spin font-semibold"} value={p.amount} onChange={(e) => setP({ ...p, amount: e.target.value })} placeholder="0" autoFocus /></Field>
-            <Field label="Hình thức">
-              <select className={inputCls} value={p.method} onChange={(e) => setP({ ...p, method: e.target.value })}>
-                <option>Tiền mặt</option><option>Chuyển khoản</option>
-              </select>
-            </Field>
-            <Field label="Ghi chú"><input className={inputCls} value={p.note} onChange={(e) => setP({ ...p, note: e.target.value })} placeholder="vd: CK Vietcombank" /></Field>
-            <div className="col-span-2 flex justify-end gap-2 pt-1">
-              <button type="button" onClick={onClose} className="btn-ghost">Đóng</button>
-              <button type="button" onClick={add} disabled={busy} className="btn-primary"><Save size={16} /> Ghi nhận</button>
-            </div>
-          </div>
-        ) : (
-          <div className="px-5 pb-4 text-sm text-slate-500">
-            {debt <= 0 ? "Phiếu đã thanh toán đủ." : "Bạn chỉ có quyền xem thanh toán."}
-          </div>
-        )}
-
-        {payments.length > 0 && (
-          <div className="border-t border-slate-200 px-5 py-3">
-            <div className="text-xs font-semibold text-slate-400 uppercase mb-2">Các lần đã thu</div>
-            <div className="divide-y divide-slate-100 text-sm">
-              {payments.map((pm) => (
-                <div key={pm.id} className={"flex items-start gap-3 py-1.5 " + (pm.is_cancelled ? "text-slate-400" : "")}>
-                  <span className="w-24 shrink-0">{fmtDate(pm.pay_date)}</span>
-                  <span className={"w-28 shrink-0 text-right font-semibold " + (pm.is_cancelled ? "line-through" : "text-emerald-700")}>{fmt(pm.amount)} đ</span>
-                  <span className="w-28 shrink-0">{pm.method}</span>
-                  <span className="flex-1 min-w-0">
-                    {pm.note || ""}{(pm.created_by_name || pm.method === "Số dư đầu kỳ") && <span className="text-slate-400"> · {pm.created_by_name || "Hệ thống"}</span>}
-                    {pm.is_cancelled && <div className="text-xs text-rose-500">Đã hủy{pm.cancelled_by_name ? ` bởi ${pm.cancelled_by_name}` : ""}: {pm.cancel_reason}</div>}
-                  </span>
-                  {canEdit && !pm.is_cancelled && <button type="button" onClick={() => cancel(pm)} className="text-xs text-slate-400 hover:text-rose-600 shrink-0">Hủy</button>}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
+    <Section title={`Đã được thanh toán (${list.length})`} bodyClass="p-0">
+      {list.length === 0 ? (
+        <div className="px-5 py-4 text-sm text-slate-400">Chưa được thanh toán. Thu tiền ở menu <b>Phiếu thanh toán</b> — hệ thống tự trừ vào phiếu giao cũ nhất trước.</div>
+      ) : (
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-slate-500 text-xs uppercase">
+            <tr>
+              <th className="text-left px-4 py-2">Ngày</th>
+              <th className="text-left px-4 py-2">Phiếu thanh toán</th>
+              <th className="text-left px-4 py-2">Hình thức</th>
+              <th className="text-right px-4 py-2">Số tiền trừ vào phiếu này</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {list.map((pm) => (
+              <tr key={pm.id}>
+                <td className="px-4 py-1.5">{fmtDate(pm.pay_date)}</td>
+                <td className="px-4 py-1.5">
+                  {pm.receipt_code
+                    ? <button type="button" onClick={() => navigate("/payment-receipts", { state: { openId: pm.receipt_id } })}
+                        className="font-medium text-blue-600 hover:underline" title="Mở phiếu thanh toán">{pm.receipt_code}</button>
+                    : <span className="text-slate-500">{pm.method === "Số dư đầu kỳ" ? "Số dư đầu kỳ" : "Lần thu cũ"}</span>}
+                </td>
+                <td className="px-4 py-1.5 text-slate-600">{pm.method}</td>
+                <td className="px-4 py-1.5 text-right font-semibold text-emerald-700">{fmt(pm.amount)} đ</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </Section>
   );
 }
 
@@ -145,10 +107,10 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
   const [cands, setCands] = useState([]);         // đơn giao được của khách: [{sales_order_id, order_code, status, lines:[...]}]
   const [savedItems, setSavedItems] = useState([]); // dòng đã lưu (chế độ xem)
   const [noteTotal, setNoteTotal] = useState(null);  // tổng tiền ĐÃ LƯU của phiếu (dùng khi chỉ xem)
-  const [payments, setPayments] = useState([]);      // lịch sử thanh toán
-  const [canEditAmt, setCanEditAmt] = useState(false); // quyền ghi nhận / hủy thanh toán (backend trả về)
-  const [payOpen, setPayOpen] = useState(false);       // hộp Thanh toán
+  const [payments, setPayments] = useState([]);      // phiếu này đã được trả bởi phiếu thanh toán nào
+  const [debtInfo, setDebtInfo] = useState(null);    // công nợ của khách đang chọn (cảnh báo nợ xấu / chặn hạn mức)
   const [noteCode, setNoteCode] = useState("");
+  const [savedCustomer, setSavedCustomer] = useState(""); // khách ĐÃ LƯU của phiếu (để biết người dùng có đổi khách không)
   const [stock, setStock] = useState([]);         // tồn kho cho dòng không theo đơn
   const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
 
@@ -156,6 +118,17 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
   const picking = editing && isDraft; // đang chọn / sửa dòng hàng
 
   useEffect(() => { inventory.list().then(setStock).catch(() => {}); }, []);
+  // Công nợ của khách: chỉ cần khi đang lập phiếu (Bản nháp) — cảnh báo nợ xấu, chặn khi vượt hạn mức
+  useEffect(() => {
+    if (!f.customer_id || !isDraft) { setDebtInfo(null); return; }
+    let alive = true;
+    paymentReceipts.customer(f.customer_id).then((d) => alive && setDebtInfo(d)).catch(() => alive && setDebtInfo(null));
+    return () => { alive = false; };
+  }, [f.customer_id, isDraft]);
+  // Hạn mức chỉ chặn TẠO phiếu mới; phiếu nháp đã có vẫn sửa / giao được
+  // Chặn khi TẠO phiếu, hoặc khi ĐỔI phiếu nháp sang khách khác — khớp chốt chặn backend (create + update).
+  // Phiếu nháp giữ nguyên khách cũ thì vẫn sửa / giao được.
+  const blockedNew = debtInfo?.level === "blocked" && (!editId || f.customer_id !== savedCustomer);
   // Gộp tồn theo sản phẩm (cả NVL/BTP/TP, bỏ Phế liệu) cho dòng không theo đơn
   const stockByProduct = React.useMemo(() => {
     const m = new Map();
@@ -194,11 +167,11 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
     if (!editId) return;
     api.get(editId).then(async (d) => {
       setF({ customer_id: d.customer_id, delivery_date: d.delivery_date?.slice(0, 10) || today(), status: d.status, note: d.note || "", paid_amount: d.paid_amount ?? "" });
+      setSavedCustomer(d.customer_id);
       const its = d.items || [];
       setSavedItems(its);
       setNoteTotal(d.total_amount ?? null);
       setPayments(d.payments || []);
-      setCanEditAmt(!!d.can_edit_amounts);
       setNoteCode(d.note_code || "");
       setRows(its.map((it, i) => newRow(i + 1, {
         sales_order_id: it.sales_order_id || NO_ORDER, sales_order_item_id: it.sales_order_item_id || "",
@@ -296,6 +269,9 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
 
   const save = async () => {
     if (!f.customer_id) return toast.error("Chọn khách hàng");
+    if (blockedNew) return toast.error(editId
+      ? "Khách mới chọn đang nợ vượt hạn mức — không thể chuyển phiếu sang khách này. Cần lập Phiếu thanh toán thu bớt nợ trước."
+      : "Khách nợ vượt hạn mức — không thể tạo phiếu giao mới. Cần lập Phiếu thanh toán thu bớt nợ trước.");
     let payloadItems;
     if (isDraft) {
       if (!validRows.length) return toast.error("Cần ít nhất 1 dòng có sản phẩm và SL giao > 0");
@@ -336,16 +312,16 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
         actions={editId && !editing ? (<>
           {isDraft && can("deliveries", "approve") &&
             <button onClick={ship} className="btn-primary"><Truck size={16} /> Giao hàng</button>}
-          {/* Thanh toán: phiếu đã giao, người có quyền xem tiền (ghi nhận cần quyền ghi tiền — kiểm trong hộp + backend) */}
-          {showMoney && PAYABLE_STATUSES.includes(f.status) &&
-            <button onClick={() => setPayOpen(true)} className="btn-primary"><Wallet size={16} /> Thanh toán</button>}
           <button onClick={() => onPrint?.(editId)} className="btn-ghost"><Printer size={16} /> In phiếu</button>
           {can("deliveries", "edit") && <button onClick={() => setEditing(true)} className="btn-ghost"><Pencil size={16} /> Sửa</button>}
           {can("deliveries", "delete") && <button onClick={del} className="btn-ghost" style={{ color: "#e11d48" }}><Trash2 size={16} /> Xóa</button>}
         </>) : (<>
           {editId && <button onClick={() => { setEditing(false); load(); }} className="btn-ghost">Hủy</button>}
-          <button onClick={save} className="btn-primary"><Save size={16} /> Lưu phiếu</button>
+          <button onClick={save} disabled={blockedNew} className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
+            title={blockedNew ? "Khách nợ vượt hạn mức" : undefined}><Save size={16} /> Lưu phiếu</button>
         </>)} />
+
+      {isDraft && <DebtBanner info={debtInfo} context="delivery" />}
 
       <fieldset disabled={!editing} className="space-y-5">
         <Section title="Thông tin phiếu">
@@ -371,7 +347,7 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
               <div className={inputCls + " bg-slate-50 font-semibold text-slate-800"}>{fmt(total)} đ</div>
             </Field>}
             {showMoney && <Field label="Số tiền đã trả">
-              {/* = tổng các lần thu ở mục "Thanh toán" bên dưới — không nhập tay */}
+              {/* = tổng tiền các Phiếu thanh toán đã trừ vào phiếu này (mục "Đã được thanh toán" bên dưới) — không nhập tay */}
               <div className={inputCls + " bg-slate-50 font-semibold text-emerald-700"}>{fmt(Number(f.paid_amount) || 0)} đ</div>
             </Field>}
             {showMoney && <Field label="Công nợ (còn lại)">
@@ -498,10 +474,7 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
         </Section>
       </fieldset>
 
-      {payOpen && (
-        <PaymentModal noteId={editId} noteCode={noteCode} payments={payments} total={noteTotal} paid={f.paid_amount}
-          canEdit={canEditAmt} onChanged={load} onClose={() => setPayOpen(false)} />
-      )}
+      {showMoney && editId && !editing && PAYABLE_STATUSES.includes(f.status) && <PaymentHistory payments={payments} />}
     </div>
   );
 }

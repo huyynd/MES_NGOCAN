@@ -4,7 +4,7 @@ import { RotateCcw, Plus, Trash2, Pencil, ArrowLeft, Save, FileText, Printer, Co
 import { resource, salesOrders as salesOrdersApi, planning } from "../../mesApi.js";
 import { DEFAULT_STAGES, stageFactory } from "../../productionDefaults.js";
 import { usePerm } from "../../perm.jsx";
-import {  inputCls, fmt, fmtDate, fmtDateTime, statusClass, dueTone , toast } from "../../ui.js";
+import {  inputCls, fmt, fmtDate, fmtDateTime, statusClass, dueTone , toast, todayYmd } from "../../ui.js";
 import { PageHeader, ListHeader, Section, usePager, DataTable, UnitSelect, DateInput, Logo, SearchSelect } from '../../components.jsx';
 import { PRODUCT_SPECS, SPEC_NAMES, splitNU, specShort } from "../../specs.js";
 import * as XLSX from "xlsx";
@@ -356,7 +356,7 @@ function OrderForm({ lookups, editId, copyId, onBack, onSaved, onPrint, onCreate
   const fdis = (k) => fperm("orders", k) !== "edit";
   const moneyPerm = fpermSecret("orders", "amounts"); // 'edit' | 'view' | 'hidden'
   const showMoney = moneyPerm !== "hidden";
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayYmd(); // giờ VN
   const [editing, setEditing] = useState(!editId); // tạo mới = sửa ngay; mở sẵn = xem
   const [allocating, setAllocating] = useState(false);
   const [f, setF] = useState({ customer_id: "", order_date: today, due_date: "", status: "Mới", note: "", priority: "Trung bình", mix_ratio: [] });

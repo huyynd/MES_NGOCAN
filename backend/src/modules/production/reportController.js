@@ -502,7 +502,8 @@ exports.employeeTasks = async (req, res) => {
 };
 
 // Quy\u1ec1n xem ti\u1ec1n (doanh thu/c\u00f4ng n\u1ee3) \u2014 helper d\u00f9ng chung
-const { canViewAmounts } = require('../../core/lib/money');
+const { canViewAmounts, moneyNoteFilter } = require('../../core/lib/money');
+const { receivableTotals, debtAgeSql } = require('../../core/lib/receivables');
 
 // GET /reports/director?period=week|month \u2014 B\u00e1o c\u00e1o t\u1ed5ng h\u1ee3p cho gi\u00e1m \u0111\u1ed1c (3 kh\u1ed1i)
 exports.director = async (req, res) => {
@@ -515,8 +516,12 @@ exports.director = async (req, res) => {
     const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     const f = ymd(from), t = ymd(now);
     const showAmt = canViewAmounts(req);
+    // Công nợ: CÙNG hàm tổng với Dashboard / Báo cáo công nợ (core/lib/receivables.js → receivableTotals):
+    // ngưỡng quá hạn = app_settings.debt_bad_days; đã thu = Σ phiếu thanh toán (+ lần thu cũ), gồm cả tiền trả trước.
+    const debt = await receivableTotals(db);
+    const badDays = debt.settings.bad_days;
 
-    const [salesQ, moneyQ, poCountQ, nvlQ, lowQ, workerCntQ, perfQ, agQ, custQ, billQ, salesListQ, deliveriesListQ] = await Promise.all([
+    const [salesQ, moneyQ, poCountQ, nvlQ, lowQ, workerCntQ, perfQ, agQ, custQ, salesListQ, deliveriesListQ] = await Promise.all([
       // Kh\u1ed1i 1: \u0111\u01a1n h\u00e0ng trong k\u1ef3 + gi\u00e1 tr\u1ecb + \u0111\u00e3 giao / ch\u01b0a giao (theo \u0111\u01a1n)
       db.query(`
         WITH ord AS (
@@ -526,7 +531,7 @@ exports.director = async (req, res) => {
                       FROM delivery_note_items di
                       JOIN delivery_notes dn ON dn.id=di.delivery_note_id
                       LEFT JOIN sales_order_items soi ON soi.id=di.sales_order_item_id
-                      WHERE soi.sales_order_id=so.id AND dn.is_deleted=FALSE AND dn.status NOT IN ('B\u1ea3n nh\u00e1p','\u0110\u00e3 h\u1ee7y')),0) AS delivered_val
+                      WHERE soi.sales_order_id=so.id AND ${moneyNoteFilter('dn')}),0) AS delivered_val
           FROM sales_orders so
           WHERE so.is_deleted=FALSE AND so.status<>'\u0110\u00e3 h\u1ee7y' AND so.order_date BETWEEN $1 AND $2
         )
@@ -543,7 +548,7 @@ exports.director = async (req, res) => {
                COALESCE(SUM(total_amount-paid_amount),0)::numeric AS debt,
                COALESCE(SUM(total_amount),0)::numeric AS invoiced
         FROM delivery_notes
-        WHERE is_deleted=FALSE AND status<>'\u0110\u00e3 h\u1ee7y' AND delivery_date BETWEEN $1 AND $2`, [f, t]),
+        WHERE ${moneyNoteFilter('delivery_notes')} AND delivery_date BETWEEN $1 AND $2`, [f, t]),
       // Kh\u1ed1i 2: s\u1ed1 y\u00eau c\u1ea7u s\u1ea3n xu\u1ea5t (LSX t\u1ea1o trong k\u1ef3)
       db.query(`SELECT COUNT(*)::int AS n FROM production_orders WHERE is_deleted=FALSE AND created_at::date BETWEEN $1 AND $2`, [f, t]),
       // Kh\u1ed1i 2: \u0111\u1ee7 / thi\u1ebfu NVL tr\u00ean c\u00e1c LSX c\u00f2n c\u1ea7n NVL (ch\u01b0a ho\u00e0n th\u00e0nh/h\u1ee7y)
@@ -609,40 +614,36 @@ exports.director = async (req, res) => {
       // Công nợ phải thu (as-of-now, loại Bản nháp/Đã hủy) — tổng + quá hạn + tuổi nợ
       db.query(`
         WITH openn AS (
-          SELECT dn.customer_id, (dn.total_amount - dn.paid_amount) AS due, (CURRENT_DATE - dn.delivery_date) AS age
+          SELECT dn.customer_id, (dn.total_amount - dn.paid_amount) AS due, ${debtAgeSql('dn')} AS age
           FROM delivery_notes dn
-          WHERE dn.is_deleted=FALSE AND dn.status NOT IN ('Bản nháp','Đã hủy')
-            AND (dn.total_amount - dn.paid_amount) > 0 AND dn.delivery_date IS NOT NULL
+          WHERE ${moneyNoteFilter('dn')}
+            AND (dn.total_amount - dn.paid_amount) > 0
         )
         SELECT COALESCE(SUM(due),0)::numeric AS total_debt,
                COUNT(DISTINCT customer_id)::int AS customer_count,
-               COALESCE(SUM(due) FILTER (WHERE age>30),0)::numeric AS overdue_amount,
-               COALESCE(SUM(due) FILTER (WHERE age<=30),0)::numeric AS intime_amount,
-               COUNT(*) FILTER (WHERE age>30)::int AS overdue_count,
-               COALESCE(SUM(due) FILTER (WHERE age<180),0)::numeric AS b_lt6m,
-               COALESCE(SUM(due) FILTER (WHERE age>=180 AND age<365),0)::numeric AS b_6_12,
-               COALESCE(SUM(due) FILTER (WHERE age>=365 AND age<730),0)::numeric AS b_1_2,
-               COALESCE(SUM(due) FILTER (WHERE age>=730),0)::numeric AS b_gt2
-        FROM openn`),
+               COALESCE(SUM(due) FILTER (WHERE age>$1),0)::numeric AS overdue_amount,
+               COALESCE(SUM(due) FILTER (WHERE age<=$1),0)::numeric AS intime_amount,
+               COUNT(*) FILTER (WHERE age>$1)::int AS overdue_count,
+               COALESCE(SUM(due) FILTER (WHERE age<=30),0)::numeric AS b_m1,
+               COALESCE(SUM(due) FILTER (WHERE age>30 AND age<=60),0)::numeric AS b_m2,
+               COALESCE(SUM(due) FILTER (WHERE age>60 AND age<=180),0)::numeric AS b_m3_6,
+               COALESCE(SUM(due) FILTER (WHERE age>180),0)::numeric AS b_gt6
+        FROM openn`, [badDays]),
       // Công nợ theo khách hàng (tuổi nợ) — top 8
       db.query(`
         WITH openn AS (
-          SELECT c.name AS customer_name, (dn.total_amount - dn.paid_amount) AS due, (CURRENT_DATE - dn.delivery_date) AS age
+          SELECT dn.customer_id, c.name AS customer_name, (dn.total_amount - dn.paid_amount) AS due, ${debtAgeSql('dn')} AS age
           FROM delivery_notes dn LEFT JOIN customers c ON c.id=dn.customer_id
-          WHERE dn.is_deleted=FALSE AND dn.status NOT IN ('Bản nháp','Đã hủy')
-            AND (dn.total_amount - dn.paid_amount) > 0 AND dn.delivery_date IS NOT NULL
+          WHERE ${moneyNoteFilter('dn')}
+            AND (dn.total_amount - dn.paid_amount) > 0
         )
-        SELECT COALESCE(customer_name,'(không rõ)') AS name,
+        SELECT COALESCE(MAX(customer_name),'(không rõ)') AS name,
                COALESCE(SUM(due),0)::numeric AS debt,
-               COALESCE(SUM(due) FILTER (WHERE age<180),0)::numeric AS b_lt6m,
-               COALESCE(SUM(due) FILTER (WHERE age>=180 AND age<365),0)::numeric AS b_6_12,
-               COALESCE(SUM(due) FILTER (WHERE age>=365 AND age<730),0)::numeric AS b_1_2,
-               COALESCE(SUM(due) FILTER (WHERE age>=730),0)::numeric AS b_gt2
-        FROM openn GROUP BY customer_name ORDER BY debt DESC LIMIT 8`),
-      // Tổng đã xuất hóa đơn & đã thu (as-of-now, loại Bản nháp/Đã hủy)
-      db.query(`
-        SELECT COALESCE(SUM(total_amount),0)::numeric AS billed, COALESCE(SUM(paid_amount),0)::numeric AS paid
-        FROM delivery_notes WHERE is_deleted=FALSE AND status NOT IN ('Bản nháp','Đã hủy')`),
+               COALESCE(SUM(due) FILTER (WHERE age<=30),0)::numeric AS b_m1,
+               COALESCE(SUM(due) FILTER (WHERE age>30 AND age<=60),0)::numeric AS b_m2,
+               COALESCE(SUM(due) FILTER (WHERE age>60 AND age<=180),0)::numeric AS b_m3_6,
+               COALESCE(SUM(due) FILTER (WHERE age>180),0)::numeric AS b_gt6
+        FROM openn GROUP BY customer_id ORDER BY debt DESC LIMIT 8`), // theo khách (không gộp nhầm 2 khách trùng tên)
       // Danh sách đơn hàng trong kỳ
       db.query(`
         SELECT so.id, so.order_code, so.order_date, c.name AS customer_name,
@@ -651,7 +652,7 @@ exports.director = async (req, res) => {
                     FROM delivery_note_items di
                     JOIN delivery_notes dn ON dn.id=di.delivery_note_id
                     LEFT JOIN sales_order_items soi ON soi.id=di.sales_order_item_id
-                    WHERE soi.sales_order_id=so.id AND dn.is_deleted=FALSE AND dn.status NOT IN ('Bản nháp','Đã hủy')),0) AS delivered_val
+                    WHERE soi.sales_order_id=so.id AND ${moneyNoteFilter('dn')}),0) AS delivered_val
         FROM sales_orders so
         LEFT JOIN customers c ON c.id=so.customer_id
         WHERE so.is_deleted=FALSE AND so.status<>'Đã hủy' AND so.order_date BETWEEN $1 AND $2
@@ -663,7 +664,7 @@ exports.director = async (req, res) => {
                dn.total_amount, dn.paid_amount
         FROM delivery_notes dn
         LEFT JOIN customers c ON c.id=dn.customer_id
-        WHERE dn.is_deleted=FALSE AND dn.status<>'Đã hủy' AND dn.delivery_date BETWEEN $1 AND $2
+        WHERE ${moneyNoteFilter('dn')} AND dn.delivery_date BETWEEN $1 AND $2
         ORDER BY dn.delivery_date DESC
       `, [f, t]),
     ]);
@@ -718,18 +719,35 @@ exports.director = async (req, res) => {
       receivables: showAmt ? (() => {
         const a = agQ.rows[0];
         return {
-          overdue_days: 30,
+          overdue_days: badDays,
           total_debt: num(a.total_debt),
-          billed_total: num(billQ.rows[0].billed),
-          collected_total: num(billQ.rows[0].paid),
+          // Phải thu / đã thu / trả trước: từ receivableTotals — cùng số với Dashboard & Báo cáo công nợ.
+          // Đã thu GỒM tiền trả trước chưa trừ vào phiếu giao.
+          billed_total: num(debt.billed),
+          collected_total: num(debt.paid),
+          credit_total: num(debt.credit),
           customer_count: a.customer_count,
           overdue_amount: num(a.overdue_amount),
           intime_amount: num(a.intime_amount),
           overdue_count: a.overdue_count,
-          buckets: { lt6m: num(a.b_lt6m), m6_12: num(a.b_6_12), y1_2: num(a.b_1_2), gt2: num(a.b_gt2) },
+          // Top khách NỢ XẤU (có tiền quá hạn), nhiều tiền quá hạn nhất trước — cùng nguồn với Báo cáo công nợ
+          ...(() => {
+            const bad = debt.rows.filter((x) => x.is_bad)
+              .sort((x, y) => y.overdue_debt - x.overdue_debt || y.oldest_days - x.oldest_days);
+            return {
+              bad_count: bad.length,
+              bad_total: num(bad.reduce((s2, x) => s2 + x.overdue_debt, 0)),
+              bad_customers: bad.slice(0, 10).map((x) => ({
+                customer_id: x.customer_id, name: x.customer_name, overdue: num(x.overdue_debt),
+                debt: num(x.debt), oldest_days: x.oldest_days, over_limit: x.over_limit,
+              })),
+            };
+          })(),
+          // Tuổi nợ (từ ngày giao): ≤1 tháng (0–30) · 1–2 tháng (31–60) · 2–6 tháng (61–180) · trên 6 tháng (>180)
+          buckets: { m1: num(a.b_m1), m2: num(a.b_m2), m3_6: num(a.b_m3_6), gt6: num(a.b_gt6) },
           by_customer: custQ.rows.map((r) => ({
             name: r.name, debt: num(r.debt),
-            lt6m: num(r.b_lt6m), m6_12: num(r.b_6_12), y1_2: num(r.b_1_2), gt2: num(r.b_gt2),
+            m1: num(r.b_m1), m2: num(r.b_m2), m3_6: num(r.b_m3_6), gt6: num(r.b_gt6),
           })),
         };
       })() : null,

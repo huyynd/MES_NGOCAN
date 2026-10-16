@@ -3,7 +3,7 @@ import { PackagePlus, Save, Plus, Trash2, RefreshCcw, FileText, History } from "
 import { ListHeader, DataTable, PageHeader, Section, UnitSelect, SearchSelect } from "../../components.jsx";
 import { inventory } from "../../mesApi.js";
 import { usePerm } from "../../perm.jsx";
-import { inputCls, fmt, fmtDate, statusClass, toast } from "../../ui.js";
+import { inputCls, fmt, fmtDate, statusClass, toast, todayYmd } from "../../ui.js";
 
 const Field = ({ label, required, children }) => (
   <div>
@@ -22,7 +22,7 @@ const emptyLine = () => ({
 
 function InboundForm({ lookups, onSaved }) {
   const [header, setHeader] = useState({
-    ref_code: "", inbound_date: new Date().toISOString().slice(0, 10),
+    ref_code: "", inbound_date: todayYmd(),
     location_id: "", source: "Mua hàng NCC", note: ""
   });
   const [lines, setLines] = useState([emptyLine()]);

@@ -9,20 +9,19 @@ import {
   X, ChevronLeft, ChevronRight, AlertCircle, BarChart2,
 } from "lucide-react";
 import { reports } from "../../mesApi.js";
-import { fmt, fmtDate, statusClass, toast } from "../../ui.js";
+import { fmt, fmtDate, statusClass, toast, ymd, todayYmd, monthStartYmd } from "../../ui.js";
 import * as XLSX from "xlsx";
 import { usePerm } from "../../perm.jsx";
 import { ListHeader, Section } from "../../components.jsx";
 
 /* ── helpers ── */
-const today = () => new Date().toISOString().slice(0, 10);
-const monthStart = () =>
-  new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
+const today = todayYmd; // ngày theo giờ VN (toISOString là UTC → lệch 1 ngày trước 7h sáng)
+const monthStart = monthStartYmd;
 const weekStart = () => {
   const d = new Date();
   const day = d.getDay();
   const diff = d.getDate() - day + (day === 0 ? -6 : 1);
-  return new Date(d.setDate(diff)).toISOString().slice(0, 10);
+  return ymd(new Date(d.setDate(diff)));
 };
 const pct = (a, b) => (b > 0 ? Math.round((Number(a) / Number(b)) * 100) : 0);
 const pctColor = (p) => p >= 100 ? "text-emerald-600" : p >= 80 ? "text-amber-600" : "text-rose-600";

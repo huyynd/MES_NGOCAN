@@ -5,7 +5,7 @@ import {
 } from "lucide-react";
 import { ListHeader, DataTable } from "../../components.jsx";
 import { recycling, resource } from "../../mesApi.js";
-import { inputCls, fmt, toast } from "../../ui.js";
+import { inputCls, fmt, toast, todayYmd } from "../../ui.js";
 
 const warehousesApi = resource("warehouses");
 
@@ -122,7 +122,7 @@ function TicketModal({ ticket, initialStep, warehouses, onClose, onSuccess }) {
 
   // Step 1 Form
   const [s1, setS1] = useState({
-    export_date: ticket?.export_date?.slice(0,10) || new Date().toISOString().slice(0, 10),
+    export_date: ticket?.export_date?.slice(0,10) || todayYmd(),
     scrap_warehouse_id: ticket?.scrap_warehouse_id || "",
     expected_qty: ticket?.expected_qty || "",
     third_party_name: ticket?.third_party_name || "",

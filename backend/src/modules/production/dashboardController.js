@@ -5,10 +5,14 @@ const db = require('../../core/db');
 const FINAL = `(CASE WHEN EXISTS (SELECT 1 FROM production_tasks t2 WHERE t2.production_order_id = po.id AND t2.stage='Cắt') THEN 'Cắt' ELSE 'Thổi' END)`;
 
 // Quyền xem số liệu tiền (doanh thu/công nợ) — helper dùng chung
-const { canViewAmounts } = require('../../core/lib/money');
+const { canViewAmounts, moneyNoteFilter } = require('../../core/lib/money');
+const { receivableTotals, debtAgeSql } = require('../../core/lib/receivables');
 
 exports.summary = async (req, res) => {
   try {
+    // Công nợ: CÙNG một hàm tổng với Báo cáo giám đốc / Báo cáo công nợ (ngưỡng quá hạn = app_settings.debt_bad_days)
+    const totals = await receivableTotals(db);
+    const badDays = totals.settings.bad_days;
     const [kpi, machines, inProgress, dueSoon, statusBreakdown, overduePay, finance] = await Promise.all([
       // KPI tổng
       db.query(`
@@ -55,27 +59,23 @@ exports.summary = async (req, res) => {
       db.query(`
         SELECT status, COUNT(*)::int AS n FROM production_orders WHERE is_deleted=FALSE GROUP BY status
       `),
-      // Công nợ quá hạn: phiếu đã giao > 30 ngày mà chưa thanh toán đủ
+      // Công nợ quá hạn: phiếu đã giao QUÁ N ngày (N = debt_bad_days) mà còn nợ — khớp định nghĩa "nợ xấu"
       db.query(`
         SELECT d.id, d.note_code, d.delivery_date, d.status, d.total_amount,
+               d.total_amount - d.paid_amount AS due_amount,
                c.name AS customer_name,
-               (CURRENT_DATE - d.delivery_date) AS days_overdue
+               ${debtAgeSql('d')} AS days_overdue
         FROM delivery_notes d LEFT JOIN customers c ON c.id = d.customer_id
-        WHERE d.is_deleted = FALSE AND d.status NOT IN ('Bản nháp','Đã hủy')
-          AND d.status <> 'Đã thanh toán'
-          AND d.delivery_date IS NOT NULL
-          AND d.delivery_date <= CURRENT_DATE - INTERVAL '30 days'
+        WHERE ${moneyNoteFilter('d')}
+          AND d.total_amount - d.paid_amount > 0.005
+          AND ${debtAgeSql('d')} > $1
         ORDER BY d.delivery_date
-      `),
-      // Tổng quan kế toán: doanh thu / đã thu / công nợ
+      `, [badDays]),
+      // Số phiếu (đếm) — tiền lấy từ receivableTotals để khớp mọi báo cáo
       db.query(`
-        SELECT
-          COALESCE(SUM(total_amount),0)::numeric AS revenue,
-          COALESCE(SUM(paid_amount),0)::numeric AS paid,
-          COALESCE(SUM(total_amount - paid_amount),0)::numeric AS debt,
-          COUNT(*) FILTER (WHERE total_amount - paid_amount > 0)::int AS unpaid_count,
-          COUNT(*)::int AS note_count
-        FROM delivery_notes WHERE is_deleted = FALSE AND status NOT IN ('Bản nháp','Đã hủy')
+        SELECT COUNT(*) FILTER (WHERE total_amount - paid_amount > 0.005)::int AS unpaid_count,
+               COUNT(*)::int AS note_count
+        FROM delivery_notes WHERE ${moneyNoteFilter('delivery_notes')}
       `),
     ]);
 
@@ -87,7 +87,11 @@ exports.summary = async (req, res) => {
       status_breakdown: statusBreakdown.rows,
       // Số liệu tiền: chỉ trả cho role được xem (defense-in-depth, không chỉ ẩn UI)
       overdue_payments: canViewAmounts(req) ? overduePay.rows : [],
-      finance: canViewAmounts(req) ? finance.rows[0] : null,
+      debt_bad_days: badDays,
+      // revenue = phải thu, paid = đã thu (GỒM tiền trả trước), debt = còn nợ — cùng số với Báo cáo giám đốc / công nợ
+      finance: canViewAmounts(req) ? {
+        revenue: totals.billed, paid: totals.paid, debt: totals.debt, credit: totals.credit, ...finance.rows[0],
+      } : null,
     });
   } catch (err) { console.error(err); res.status(500).json({ message: 'Lỗi khi lấy dữ liệu dashboard' }); }
 };

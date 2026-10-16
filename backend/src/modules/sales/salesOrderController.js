@@ -55,7 +55,7 @@ async function lineMaterials(it) {
 
 // Quyền xem thông tin tiền của Đơn hàng (đơn giá / thành tiền / tổng đơn)
 // Quyền xem tiền ở Đơn hàng — helper dùng chung (gate theo quyền 'orders')
-const { canViewAmounts: canViewAmountsBase } = require('../../core/lib/money');
+const { canViewAmounts: canViewAmountsBase, moneyNoteFilter } = require('../../core/lib/money');
 const canViewAmounts = (req) => canViewAmountsBase(req, 'orders');
 
 exports.getById = async (req, res) => {
@@ -118,7 +118,7 @@ exports.deliverableOrders = async (req, res) => {
              (SELECT COALESCE(SUM(COALESCE(di.actual_quantity, di.quantity)),0) FROM delivery_note_items di
                 JOIN delivery_notes dn ON dn.id = di.delivery_note_id
                 JOIN sales_order_items it2 ON it2.id = di.sales_order_item_id
-                WHERE it2.sales_order_id = so.id AND dn.is_deleted = FALSE AND dn.status NOT IN ('Bản nháp','Đã hủy')) AS delivered_total
+                WHERE it2.sales_order_id = so.id AND ${moneyNoteFilter('dn')}) AS delivered_total
       FROM sales_orders so
       WHERE so.customer_id = $1 AND so.is_deleted = FALSE
         AND so.status IN ('Đang sản xuất','Hoàn thành sản xuất','Chuyển hàng 1 phần','Đang vận chuyển')

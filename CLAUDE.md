@@ -27,10 +27,13 @@ Backend và frontend chia **cùng 7 nhóm nghiệp vụ**:
 `auth · sales · production · inventory · engineering · masterData · recycling` (+ `reports` ở frontend).
 
 - **Backend module:** `backend/src/modules/<nhóm>/` gồm `*.route.js` + `*Controller.js`.
+- **Lỗi async (Express 4):** `core/asyncErrors.js` (nạp đầu `server.js`) chuyển mọi Promise reject trong handler về error handler cuối → 500, không sập server. `db.js` bọc `pool.connect()`: `ROLLBACK` lỗi chỉ ghi log + hủy kết nối khi release (không ném, không che lỗi thật). Vẫn nên viết `try/catch/finally { client.release() }` như cũ.
 - **Backend core:** `backend/src/core/db.js`, `genericCrud.js`, và `core/lib/`:
   - `stock.js` — `applyStock(client, {product_id, location_id, delta, unit, specs, spec_key, lot_code, trx_type, ref_code, note})`: **hàm duy nhất** để thay đổi tồn kho + ghi `inventory_transactions` (kèm cột `delta` CÓ DẤU để đối soát). Luôn mutate tồn qua đây, đừng UPDATE trực tiếp. Trừ tồn là 1 câu UPDATE có điều kiện (khóa dòng + kiểm đủ + trừ cùng lúc) — thiếu thì ném `StockShortageError`; trong `catch` của controller gọi `if (stockErrorResponse(res, err)) return;` để trả 400. `clampZero` đã bỏ (bị bỏ qua). CSDL có `CHECK (quantity >= 0)` làm lưới an toàn.
-  - `money.js` — `canViewAmounts(req, app)` / `canEditAmounts(req, app)`: cổng phân quyền xem / ghi tiền; `moneyNoteFilter(alias)`: điều kiện chuẩn "phiếu giao tính tiền".
+  - `money.js` — `canViewAmounts(req, app)` / `canEditAmounts(req, app)`: cổng phân quyền xem / ghi tiền. **Định nghĩa DUY NHẤT "phiếu giao tính tiền / đã giao"**: `PAYABLE_NOTE_STATUSES` (tham số SQL) hoặc `moneyNoteFilter(alias)` (chèn vào WHERE). KHÔNG tự viết `NOT IN ('Bản nháp','Đã hủy')` / `<> 'Đã hủy'`.
+  - Tổng phải thu / đã thu / còn nợ / trả trước toàn công ty: **chỉ** lấy từ `receivableTotals()` (`receivables.js`) — Dashboard, Báo cáo giám đốc, Báo cáo công nợ cùng một nguồn; không tự `SUM(paid_amount)` (thiếu tiền trả trước).
   - `specs.js` — `buildSpecKey(specs)` = `SPEC_NAMES.map(n => s[n]||'').join('|')`. Specs rỗng → `'||||'` (5 trường, 4 dấu `|`), **KHÔNG phải** `''`. SPEC_NAMES = ['Số lớp','Chiều dài','Chiều ngang (Rộng)','Độ dày','Màu sắc'].
+  - `receivables.js` — công nợ phải thu. Khách trả 1 cục bằng **Phiếu thanh toán** (`payment_receipts`), tiền tự phân bổ vào phiếu giao còn nợ **cũ nhất trước** (`allocateCustomer`; mỗi phần = 1 dòng `delivery_payments.receipt_id`). Hủy / đổi ngày phiếu → `rebuildCustomer` (phân bổ lại từ đầu). Trả dư = tiền trả trước, tự trừ khi giao phiếu mới (gọi trong `ship`). Ngưỡng nợ xấu / hạn mức chặn tạo phiếu giao ở `app_settings` (`debt_bad_days`, `debt_limit_amount`).
   - `units.js`, `deleteGuard.js`, `bomSync.js`.
 - **Frontend module:** `src/modules/<nhóm>/`. Dùng chung component ở `src/components.jsx`.
 

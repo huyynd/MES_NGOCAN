@@ -16,6 +16,7 @@ router.use('/', require('./modules/auth/user.route'));
 router.use('/', require('./modules/production/workSchedule.route'));
 router.use('/', require('./modules/sales/salesOrder.route'));
 router.use('/', require('./modules/sales/delivery.route'));
+router.use('/', require('./modules/sales/payment.route'));
 router.use('/', require('./modules/production/production.route'));
 router.use('/', require('./modules/engineering/process.route'));
 router.use('/', require('./modules/engineering/bom.route'));

@@ -10,7 +10,7 @@ import {
 } from "recharts";
 import { ListHeader, Section } from "../../components.jsx";
 import { inventory } from "../../mesApi.js";
-import { fmt, fmtDate, toast } from "../../ui.js";
+import { fmt, fmtDate, toast, todayYmd } from "../../ui.js";
 import * as XLSX from "xlsx";
 import { usePerm } from "../../perm.jsx";
 
@@ -250,7 +250,7 @@ export default function InventoryReport({ lookups }) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `bao-cao-kho-${new Date().toISOString().slice(0, 10)}.xlsx`;
+    a.download = `bao-cao-kho-${todayYmd()}.xlsx`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);

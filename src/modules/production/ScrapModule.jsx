@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import { PageHeader, DataTable } from "../../components.jsx";
 import { scrap } from "../../mesApi.js";
-import { inputCls, fmt, toast } from "../../ui.js";
+import { inputCls, fmt, toast, todayYmd } from "../../ui.js";
 import { usePerm } from "../../perm.jsx";
 
 // ----- STATISTICS COMPONENT -----
@@ -24,7 +24,7 @@ function ScrapStatistics({ worker, onOpenOrder }) {
     if (!worker) return setStats([]);
     setLoading(true);
     try {
-      const today = new Date().toISOString().slice(0, 10);
+      const today = todayYmd();
       const res = await scrap.stats(worker, today);
       // API mới trả về { rows, totals } — rows cho bảng theo ngày, totals cho KPI summary
       if (res && res.rows) {
@@ -516,7 +516,7 @@ function ScrapForm({ worker, workerId, date, setDate, onOpenOrder, cameFromManag
 
 // ----- MANAGEMENT COMPONENT -----
 function ScrapManagement({ onEdit }) {
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(todayYmd());
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState("");
@@ -597,7 +597,7 @@ export default function ScrapModule({ onOpenOrder }) {
   // GLOBAL STATE
   const [worker, setWorker] = useState("");
   const [workerList, setWorkerList] = useState([]);
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10)); // For recording form
+  const [date, setDate] = useState(todayYmd()); // For recording form
 
   // Load all workers who worked recently
   useEffect(() => {

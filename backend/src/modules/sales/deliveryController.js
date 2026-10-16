@@ -48,38 +48,23 @@ const DN_TRANSITIONS = {
   'Đã thanh toán':        [],
   'Đã hủy':               [],
 };
-const PAYABLE_STATUSES = ['Giao hàng', 'Đã xuất hóa đơn', 'Chờ thanh toán', 'Đã thanh toán 1 phần', 'Đã thanh toán'];
-const PAY_METHODS = ['Tiền mặt', 'Chuyển khoản'];
+// Thanh toán: khách trả 1 cục qua PHIẾU THANH TOÁN (paymentReceiptController) — tiền tự phân bổ vào
+// các phiếu giao cũ nhất trước (core/lib/receivables.js). Phiếu giao không còn ghi nhận thu lẻ.
+const { allocateCustomer, debtBlockMessage } = require('../../core/lib/receivables');
 
-// Tính lại số đã trả = Σ lần thu chưa hủy, và TỰ đặt trạng thái thanh toán:
-//   đã trả ≥ tổng tiền → "Đã thanh toán"; 0 < đã trả < tổng → "Đã thanh toán 1 phần";
-//   = 0 → giữ nguyên, trừ khi đang ở trạng thái thanh toán (do hủy lần thu) → về "Chờ thanh toán".
-async function recomputePaid(client, noteId) {
-  const r = (await client.query(`
-    UPDATE delivery_notes d SET paid_amount = sub.s, updated_at = now()
-    FROM (SELECT COALESCE(SUM(amount), 0) AS s FROM delivery_payments WHERE delivery_note_id = $1 AND is_cancelled = FALSE) sub
-    WHERE d.id = $1 RETURNING d.paid_amount, d.total_amount, d.status`, [noteId])).rows[0];
-  if (!r || !PAYABLE_STATUSES.includes(r.status)) return;
-  const paid = num(r.paid_amount), total = num(r.total_amount);
-  let st = r.status;
-  if (paid > 1e-6 && paid >= total - 1e-6) st = 'Đã thanh toán';
-  else if (paid > 1e-6) st = 'Đã thanh toán 1 phần';
-  else if (['Đã thanh toán 1 phần', 'Đã thanh toán'].includes(r.status)) st = 'Chờ thanh toán';
-  if (st !== r.status) await client.query(`UPDATE delivery_notes SET status = $1 WHERE id = $2`, [st, noteId]);
-}
-
-// Lịch sử thanh toán của 1 phiếu (kèm tên người thu / người hủy)
+// Lịch sử được trả của 1 phiếu: từng phần phân bổ từ phiếu thanh toán (hoặc lần thu cũ trước đây)
 async function paymentsOf(conn, noteId) {
   return (await conn.query(`
-    SELECT p.*, u1.full_name AS created_by_name, u2.full_name AS cancelled_by_name
+    SELECT p.*, r.receipt_code, u1.full_name AS created_by_name, u2.full_name AS cancelled_by_name
     FROM delivery_payments p
-    LEFT JOIN users u1 ON u1.id = p.created_by
+    LEFT JOIN payment_receipts r ON r.id = p.receipt_id
+    LEFT JOIN users u1 ON u1.id = COALESCE(p.created_by, r.created_by)
     LEFT JOIN users u2 ON u2.id = p.cancelled_by
     WHERE p.delivery_note_id = $1 ORDER BY p.pay_date, p.created_at`, [noteId])).rows;
 }
 
 // Quyền xem tiền ở Phiếu giao hàng (chặn ở backend — không chỉ ẩn UI) — helper dùng chung
-const { canViewAmounts, canEditAmounts } = require('../../core/lib/money');
+const { canViewAmounts, canEditAmounts, moneyNoteFilter } = require('../../core/lib/money');
 const stripMoneyItem = (it) => { const { unit_price, amount, ...rest } = it; return rest; };
 
 exports.list = async (req, res) => {
@@ -139,7 +124,7 @@ exports.fromOrder = async (req, res) => {
                        WHERE po.sales_order_item_id = it.id AND po.is_deleted = FALSE), 0) AS produced,
              COALESCE((SELECT SUM(COALESCE(di.actual_quantity, di.quantity)) FROM delivery_note_items di
                        JOIN delivery_notes dn ON dn.id = di.delivery_note_id
-                       WHERE di.sales_order_item_id = it.id AND dn.is_deleted = FALSE AND dn.status NOT IN ('Bản nháp','Đã hủy')), 0) AS delivered
+                       WHERE di.sales_order_item_id = it.id AND ${moneyNoteFilter('dn')}), 0) AS delivered
       FROM sales_order_items it JOIN products p ON p.id = it.product_id
       WHERE it.sales_order_id = $1 ORDER BY p.product_code`, [req.params.orderId])).rows;
     const showAmt = canViewAmounts(req);
@@ -179,7 +164,7 @@ exports.deliverable = async (req, res) => {
                COALESCE((SELECT SUM(COALESCE(di.actual_quantity, di.quantity)) FROM delivery_note_items di
                          JOIN delivery_notes dn ON dn.id = di.delivery_note_id
                          WHERE di.sales_order_item_id = it.id AND dn.is_deleted = FALSE
-                           AND dn.status NOT IN ('Bản nháp','Đã hủy')), 0) AS delivered,
+                           AND ${moneyNoteFilter('dn')}), 0) AS delivered,
                COALESCE((SELECT SUM(COALESCE(di.actual_quantity, di.quantity)) FROM delivery_note_items di
                          JOIN delivery_notes dn ON dn.id = di.delivery_note_id
                          WHERE di.sales_order_item_id = it.id AND dn.is_deleted = FALSE AND dn.status = 'Bản nháp'
@@ -226,7 +211,7 @@ async function updateOrderStatusAfterDelivery(client, salesOrderId) {
     SELECT it.quantity AS ordered,
            COALESCE((SELECT SUM(COALESCE(di.actual_quantity, di.quantity)) FROM delivery_note_items di
                      JOIN delivery_notes dn ON dn.id = di.delivery_note_id
-                     WHERE di.sales_order_item_id = it.id AND dn.is_deleted = FALSE AND dn.status NOT IN ('Bản nháp','Đã hủy')), 0) AS delivered
+                     WHERE di.sales_order_item_id = it.id AND ${moneyNoteFilter('dn')}), 0) AS delivered
     FROM sales_order_items it WHERE it.sales_order_id = $1`, [salesOrderId])).rows;
   if (!rows.length) return;
   const anyDelivered = rows.some((r) => Number(r.delivered) > 0);
@@ -271,6 +256,9 @@ exports.create = async (req, res) => {
     // Phiếu mới LUÔN là "Bản nháp" (bỏ qua b.status gửi lên) — mọi trạng thái sau đó phải đi
     // qua đúng luồng: "Giao hàng" bằng nút ship (trừ kho), rồi mới tới hóa đơn/thanh toán.
     await client.query('BEGIN');
+    // Khách nợ vượt hạn mức (app_settings.debt_limit_amount) → không cho tạo phiếu giao mới (kiểm TRONG transaction)
+    const blocked = await debtBlockMessage(client, b.customer_id);
+    if (blocked) { await client.query('ROLLBACK'); return res.status(400).json({ message: blocked, code: 'DEBT_LIMIT' }); }
     // Đơn ở đầu phiếu = đơn duy nhất của các dòng (phiếu nhiều đơn → NULL); phiếu bán tồn kho → NULL
     const headOrder = await orderIdOfItems(client, b.items);
     const { rows } = await client.query(
@@ -292,7 +280,8 @@ exports.update = async (req, res) => {
     const b = req.body;
     await client.query('BEGIN');
     // Chặn đổi trạng thái tự do quanh "Giao hàng" (tránh: đánh dấu đã giao mà không trừ kho, hoặc trừ kho 2 lần)
-    const cur = (await client.query(`SELECT status FROM delivery_notes WHERE id = $1 AND is_deleted = FALSE`, [req.params.id])).rows[0];
+    const cur = (await client.query(
+      `SELECT status, customer_id FROM delivery_notes WHERE id = $1 AND is_deleted = FALSE FOR UPDATE`, [req.params.id])).rows[0];
     if (!cur) { await client.query('ROLLBACK'); return res.status(404).json({ message: 'Không tìm thấy phiếu' }); }
     if (b.status !== undefined && b.status !== cur.status) {
       if (b.status === 'Giao hàng') { await client.query('ROLLBACK'); return res.status(400).json({ message: 'Không đặt trạng thái "Giao hàng" thủ công — hãy dùng nút "Giao hàng" để xuất kho + trừ tồn.' }); }
@@ -303,6 +292,14 @@ exports.update = async (req, res) => {
     if (b.items !== undefined && cur.status !== 'Bản nháp') {
       await client.query('ROLLBACK');
       return res.status(400).json({ message: 'Phiếu đã rời "Bản nháp" — không thể sửa dòng hàng (đã chốt theo lượng xuất kho).' });
+    }
+    // Đã giao → khóa khách hàng (công nợ + tiền thanh toán đã phân bổ theo khách)
+    if (b.customer_id !== undefined && cur.status !== 'Bản nháp') delete b.customer_id;
+    // Phiếu nháp ĐỔI sang khách khác = lập phiếu mới cho khách đó → cùng chốt chặn hạn mức nợ như khi tạo
+    // (không thì lách được: tạo nháp cho khách sạch rồi đổi sang khách vượt hạn mức). Giữ nguyên khách thì không chặn.
+    if (b.customer_id && b.customer_id !== cur.customer_id) {
+      const blocked = await debtBlockMessage(client, b.customer_id);
+      if (blocked) { await client.query('ROLLBACK'); return res.status(400).json({ message: blocked, code: 'DEBT_LIMIT' }); }
     }
     // Đơn ở đầu phiếu tính lại từ dòng khi dòng thay đổi (không lấy từ client)
     const ordersBefore = await orderIdsOfNote(client, req.params.id);
@@ -442,6 +439,8 @@ exports.ship = async (req, res) => {
 
     // (trạng thái 'Giao hàng' đã được set atomically ở bước "claim" đầu transaction)
     for (const soId of await orderIdsOfNote(client, dn.id)) await updateOrderStatusAfterDelivery(client, soId);
+    // Phiếu vừa phát sinh nợ → trừ ngay vào tiền trả trước (phiếu thanh toán còn dư) của khách, nếu có
+    await allocateCustomer(client, dn.customer_id);
     await client.query('COMMIT');
     res.json({ message: `Đã giao hàng — tạo phiếu xuất kho ${slip.slip_code} (${lines.length} dòng) và trừ tồn kho.`, slip_code: slip.slip_code, slip_id: slip.id });
   } catch (err) { await client.query('ROLLBACK'); console.error(err); if (stockErrorResponse(res, err)) return; res.status(500).json({ message: err.detail || 'Lỗi khi giao hàng' }); }
@@ -461,61 +460,4 @@ exports.remove = async (req, res) => {
     if (!rowCount) return res.status(404).json({ message: 'Không tìm thấy phiếu' });
     res.json({ message: 'Đã xóa phiếu' });
   } catch (err) { console.error(err); res.status(500).json({ message: 'Lỗi khi xóa phiếu' }); }
-};
-
-// POST /api/deliveries/:id/payments — GHI NHẬN 1 lần thanh toán { pay_date, amount, method, note }
-// Chỉ phiếu đã giao (không Bản nháp / Đã hủy); chặn trả vượt tổng tiền; tự tính lại đã trả + trạng thái.
-exports.addPayment = async (req, res) => {
-  if (!canEditAmounts(req)) return res.status(403).json({ message: 'Bạn không có quyền ghi nhận thanh toán.' });
-  const client = await db.pool.connect();
-  try {
-    const b = req.body || {};
-    const amount = num(b.amount);
-    if (!(amount > 0)) return res.status(400).json({ message: 'Số tiền thanh toán phải lớn hơn 0.' });
-    const method = PAY_METHODS.includes(b.method) ? b.method : null;
-    if (!method) return res.status(400).json({ message: `Hình thức thanh toán phải là: ${PAY_METHODS.join(' / ')}.` });
-    await client.query('BEGIN');
-    // Khóa phiếu khi ghi nhận → 2 người cùng ghi không vượt tổng
-    const dn = (await client.query(
-      `SELECT id, status, total_amount, paid_amount FROM delivery_notes WHERE id = $1 AND is_deleted = FALSE FOR UPDATE`,
-      [req.params.id])).rows[0];
-    if (!dn) { await client.query('ROLLBACK'); return res.status(404).json({ message: 'Không tìm thấy phiếu' }); }
-    if (!PAYABLE_STATUSES.includes(dn.status)) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ message: `Phiếu đang "${dn.status}" — chỉ ghi nhận thanh toán sau khi đã giao hàng.` });
-    }
-    const debt = num(dn.total_amount) - num(dn.paid_amount);
-    if (amount > debt + 1e-6) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ message: `Số tiền ${amount.toLocaleString('vi-VN')} đ vượt công nợ còn lại ${Math.max(0, debt).toLocaleString('vi-VN')} đ của phiếu.` });
-    }
-    await client.query(
-      `INSERT INTO delivery_payments (delivery_note_id, pay_date, amount, method, note, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [dn.id, b.pay_date || new Date(), amount, method, b.note || null, req.userId || null]);
-    await recomputePaid(client, dn.id);
-    await client.query('COMMIT');
-    res.status(201).json({ message: 'Đã ghi nhận thanh toán', payments: await paymentsOf(db, dn.id) });
-  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi ghi nhận thanh toán' }); }
-  finally { client.release(); }
-};
-
-// POST /api/deliveries/payments/:pid/cancel — HỦY 1 lần thu (thu nhầm) { reason } — giữ dấu vết, không xóa
-exports.cancelPayment = async (req, res) => {
-  if (!canEditAmounts(req)) return res.status(403).json({ message: 'Bạn không có quyền hủy thanh toán.' });
-  const client = await db.pool.connect();
-  try {
-    const reason = String(req.body?.reason || '').trim();
-    if (!reason) return res.status(400).json({ message: 'Vui lòng nhập lý do hủy lần thu.' });
-    await client.query('BEGIN');
-    const p = (await client.query(
-      `UPDATE delivery_payments SET is_cancelled = TRUE, cancelled_by = $2, cancelled_at = now(), cancel_reason = $3
-       WHERE id = $1 AND is_cancelled = FALSE RETURNING delivery_note_id`, [req.params.pid, req.userId || null, reason])).rows[0];
-    if (!p) { await client.query('ROLLBACK'); return res.status(404).json({ message: 'Không tìm thấy lần thu (hoặc đã hủy trước đó).' }); }
-    await client.query(`SELECT id FROM delivery_notes WHERE id = $1 FOR UPDATE`, [p.delivery_note_id]);
-    await recomputePaid(client, p.delivery_note_id);
-    await client.query('COMMIT');
-    res.json({ message: 'Đã hủy lần thu', payments: await paymentsOf(db, p.delivery_note_id) });
-  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi hủy lần thu' }); }
-  finally { client.release(); }
 };

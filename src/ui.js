@@ -19,6 +19,13 @@ export const fmtDate = (d) => {
   return s;
 };
 
+// Ngày "yyyy-MM-dd" theo GIỜ MÁY (VN, UTC+7). KHÔNG dùng `date.toISOString().slice(0,10)` — đó là ngày UTC:
+// 00:00–07:00 sáng sẽ ra ngày HÔM TRƯỚC, và new Date(y, m, 1) ra ngày cuối tháng trước.
+export const ymd = (d = new Date()) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+export const todayYmd = () => ymd(new Date());
+export const monthStartYmd = () => { const n = new Date(); return ymd(new Date(n.getFullYear(), n.getMonth(), 1)); };
+
 export const fmtDateTime = (d) => {
   if (!d) return "—";
   const s = String(d);

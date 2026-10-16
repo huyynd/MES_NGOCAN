@@ -4,6 +4,7 @@ import {
   CalendarDays, Lightbulb, Trophy, PackageCheck, PackageX, ClipboardList, Gauge,
   Lock, CheckCircle2, Receipt, Info, X, ExternalLink,
 } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { reports } from "../../mesApi.js";
 import { fmt, fmtDate, toast } from "../../ui.js";
 
@@ -11,10 +12,10 @@ import { fmt, fmtDate, toast } from "../../ui.js";
 
 /* Nhóm tuổi nợ: khóa dữ liệu · nhãn · màu (tuần tự lạnh → nóng) */
 const AGE = [
-  { key: "lt6m", label: "< 6 tháng", color: "#38bdf8" },
-  { key: "m6_12", label: "6–12 tháng", color: "#f59e0b" },
-  { key: "y1_2", label: "1–2 năm", color: "#f97316" },
-  { key: "gt2", label: "> 2 năm", color: "#e11d48" },
+  { key: "m1", label: "≤ 1 tháng", color: "#38bdf8" },
+  { key: "m2", label: "1–2 tháng", color: "#f59e0b" },
+  { key: "m3_6", label: "2–6 tháng", color: "#f97316" }, // 61–180 ngày (trên 2 tháng → 6 tháng)
+  { key: "gt6", label: "> 6 tháng", color: "#e11d48" },
 ];
 
 const C = { overdue: "#e11d48", intime: "#0a63b8", good: "#10b981", violet: "#7c3aed", track: "#eef2f6" };
@@ -278,6 +279,7 @@ function Skeleton() {
 /* ───────────────────────── Tab 1 · Kinh doanh ───────────────────────── */
 
 function SalesView({ s, r, period }) {
+  const navigate = useNavigate();
   const periodLb = period === "week" ? "Tuần này" : "Tháng này";
   const total = r.total_debt;
   const ovPct = pct(r.overdue_amount, total);
@@ -295,6 +297,12 @@ function SalesView({ s, r, period }) {
     ? { name: "Phần khác", other: true, debt: otherDebt, ...Object.fromEntries(buckets.map((b) => [b.key, Math.max(0, b.value - top5.reduce((a, c) => a + (c[b.key] || 0), 0))])) }
     : null;
   const tableRows = otherRow ? [...top5, otherRow] : top5;
+  // Top khách nợ xấu: xếp theo tiền QUÁ HẠN (nhiều nhất = top 1)
+  const badTop = (r.bad_customers || []).slice(0, 5);
+  const badTotal = r.bad_total || 0;
+  const badOther = Math.max(0, badTotal - badTop.reduce((a, c) => a + c.overdue, 0));
+  const badOtherCount = Math.max(0, (r.bad_count || 0) - badTop.length);
+  const maxBad = Math.max(1, ...badTop.map((c) => c.overdue));
   const maxCell = Math.max(1, ...tableRows.flatMap((c) => AGE.map((a) => c[a.key] || 0)));
 
   const [ordersModal, setOrdersModal] = useState(false);
@@ -317,10 +325,10 @@ function SalesView({ s, r, period }) {
       text: sh >= 25 ? "Mức tập trung cao — nên ưu tiên đôn đốc thu hồi" : "Rủi ro tập trung ở mức an toàn",
     });
   }
-  if ((r.buckets?.gt2 || 0) > 0) {
+  if ((r.buckets?.gt6 || 0) > 0) {
     insights.push({
       tone: "bad", icon: Clock,
-      title: `${short(r.buckets.gt2)} nợ trên 2 năm`,
+      title: `${short(r.buckets.gt6)} nợ trên 6 tháng`,
       text: "Nguy cơ nợ khó đòi — cân nhắc trích lập dự phòng",
     });
   }
@@ -328,7 +336,7 @@ function SalesView({ s, r, period }) {
     insights.push({
       tone: collectRate >= 85 ? "good" : collectRate >= 60 ? "warn" : "bad", icon: Wallet,
       title: `Thu hồi lũy kế đạt ${collectRate}%`,
-      text: `${short(r.collected_total)} trên ${short(r.billed_total)} đã xuất hóa đơn`,
+      text: `${short(r.collected_total)} trên ${short(r.billed_total)} đã giao hàng`,
     });
   }
 
@@ -356,16 +364,20 @@ function SalesView({ s, r, period }) {
         />
         <KpiCard
           icon={Truck} accent="emerald" label="Tiến độ giao hàng" hint={periodLb} delay={70}
-          onClick={() => setOrdersModal(true)}
+          // Mở danh sách Phiếu giao hàng / Hóa đơn trong kỳ (trước đây lối vào nằm ở ô "Tiền đã thu";
+          // ô đó nay mở Báo cáo công nợ). Danh sách đơn hàng vẫn mở từ ô "Giá trị đơn hàng".
+          onClick={() => setDeliveriesModal(true)}
           value={<><Count value={s.shipped_count} /><span className="ml-1.5 text-[15px] font-medium text-slate-400">/ {fmt(s.order_count)} đơn</span></>}
           meta={<><span className="font-semibold text-slate-700">{fmt(s.fully_count)}</span> đơn đã giao đủ</>}
           footer={<Meter label="Tỷ lệ đơn đã xuất giao" value={shipRate} color={C.good} />}
         />
         <KpiCard
           icon={Receipt} accent="violet" label="Tiền đã thu" hint="Lũy kế đến hôm nay" delay={140}
-          onClick={() => setDeliveriesModal(true)}
+          // Số lũy kế → mở Báo cáo công nợ (đã trả / còn nợ theo từng khách), không phải danh sách phiếu giao trong kỳ
+          onClick={() => navigate("/receivables")}
           value={<Money value={r.collected_total} />}
-          meta={<>trên <span className="font-semibold text-slate-700" title={full(r.billed_total)}>{short(r.billed_total)}</span> đã xuất hóa đơn</>}
+          meta={<>trên <span className="font-semibold text-slate-700" title={`${full(r.billed_total)} — tổng tiền các phiếu đã giao hàng`}>{short(r.billed_total)}</span> đã giao hàng
+            {r.credit_total > 0 && <> · gồm <span className="font-semibold text-blue-700" title={full(r.credit_total)}>{short(r.credit_total)}</span> trả trước</>}</>}
           footer={<Meter label="Tỷ lệ thu hồi" value={collectRate} color={C.violet} />}
         />
         <KpiCard
@@ -497,6 +509,46 @@ function SalesView({ s, r, period }) {
           </div>
         </Panel>
       </div>
+
+      {/* Top khách NỢ XẤU: xếp theo tiền quá hạn (nhiều nhất = top 1) — thanh 1 màu, không chia tuổi nợ */}
+      <Panel delay={420} icon={AlertTriangle}
+        title="Top khách nợ xấu"
+        subtitle={`Xếp theo tiền nợ quá ${r.overdue_days} ngày · ${fmt(r.bad_count || 0)} khách nợ xấu · tổng ${short(badTotal)}`}
+        action={<button type="button" onClick={() => navigate("/receivables")} className="text-xs font-medium text-blue-600 hover:underline">Xem báo cáo công nợ →</button>}>
+        {badTop.length ? (
+          <>
+            <ol className="divide-y divide-slate-100">
+              {badTop.map((c, i) => (
+                <li key={c.customer_id} className="grid grid-cols-[28px_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 py-3 first:pt-0">
+                  <span className={`flex h-7 w-7 items-center justify-center rounded-lg text-xs font-bold ${i < 3 ? "bg-rose-600 text-white" : "bg-slate-100 text-slate-500"}`}>{i + 1}</span>
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-medium text-slate-800" title={c.name}>{c.name}</span>
+                    <span className="block text-xs text-slate-400">
+                      Nợ lâu nhất <b className="font-semibold text-rose-600">{fmt(c.oldest_days)} ngày</b> · tổng nợ {short(c.debt)}
+                      {c.over_limit && <span className="ml-1.5 rounded bg-rose-600 px-1.5 py-0.5 text-[10px] font-semibold text-white">Vượt hạn mức</span>}
+                    </span>
+                  </span>
+                  <span className="text-right text-sm tabular-nums">
+                    <b className="font-semibold text-rose-600" title={full(c.overdue)}>{short(c.overdue)}</b>
+                    <span className="ml-2 inline-block w-10 text-right text-xs font-medium text-slate-400">{pct(c.overdue, badTotal)}%</span>
+                  </span>
+                  <div className="col-span-2 col-start-2">
+                    <div style={{ width: `${(c.overdue / maxBad) * 100}%` }}>
+                      <Bar height={8} track={false} segments={[{ pct: 100, color: C.overdue, title: `Quá hạn: ${full(c.overdue)}` }]} />
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ol>
+            {badOther > 1e-6 && (
+              <div className="mt-3 flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                <span>+ {fmt(badOtherCount)} khách nợ xấu khác</span>
+                <span className="tabular-nums"><b className="font-semibold text-slate-700">{short(badOther)}</b><span className="ml-2 inline-block w-10 text-right">{pct(badOther, badTotal)}%</span></span>
+              </div>
+            )}
+          </>
+        ) : <Empty text={`Không có khách nợ quá ${r.overdue_days} ngày.`} />}
+      </Panel>
 
       {/* Bảng chi tiết */}
       <div id="debt-table">
