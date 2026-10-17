@@ -192,7 +192,7 @@ function pageNumbers(page, count) {
 
 const pagerBtn = "min-w-[32px] h-8 px-2 inline-flex items-center justify-center rounded-md border border-slate-200 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition";
 
-export function Pagination({ total, page, size, pageCount, start, onPage, onSize }) {
+export function Pagination({ total, page, size, pageCount, start, onPage, onSize, sizes = PAGE_SIZES }) {
   if (!total) return null;
   const from = start + 1, to = Math.min(start + size, total);
   return (
@@ -201,7 +201,7 @@ export function Pagination({ total, page, size, pageCount, start, onPage, onSize
         <span>Hiển thị</span>
         <select value={size} onChange={(e) => onSize(+e.target.value)}
           className="rounded-md border border-slate-300 px-2 py-1 text-sm">
-          {PAGE_SIZES.map((n) => <option key={n} value={n}>{n}</option>)}
+          {sizes.map((n) => <option key={n} value={n}>{n}</option>)}
         </select>
         <span>dòng · {from}–{to} / {total}</span>
       </div>
@@ -222,7 +222,7 @@ export function Pagination({ total, page, size, pageCount, start, onPage, onSize
  * Hook phân trang: nhận mảng dữ liệu, trả về `slice` (dòng của trang hiện tại)
  * và `Pager` (component thanh phân trang đã gắn sẵn state). Mặc định 10 dòng/trang.
  */
-export function usePager(rows, initialSize = 10) {
+export function usePager(rows, initialSize = 10, sizes) {
   const [size, setSize] = useState(initialSize);
   const [page, setPage] = useState(1);
   const total = rows.length;
@@ -232,7 +232,7 @@ export function usePager(rows, initialSize = 10) {
   const slice = rows.slice(start, start + size);
   const Pager = () => (
     <Pagination total={total} page={page} size={size} pageCount={pageCount}
-      start={start} onPage={setPage} onSize={(s) => { setSize(s); setPage(1); }} />
+      start={start} onPage={setPage} onSize={(s) => { setSize(s); setPage(1); }} sizes={sizes} />
   );
   // Hàng trống lấp đầy để bảng luôn cao đúng `size` dòng → thanh phân trang không nhảy.
   const fillCount = total > 0 ? Math.max(0, size - slice.length) : 0;

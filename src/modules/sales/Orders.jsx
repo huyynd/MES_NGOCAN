@@ -359,15 +359,16 @@ function OrderForm({ lookups, editId, copyId, onBack, onSaved, onPrint, onCreate
   const today = todayYmd(); // giờ VN
   const [editing, setEditing] = useState(!editId); // tạo mới = sửa ngay; mở sẵn = xem
   const [allocating, setAllocating] = useState(false);
-  const [f, setF] = useState({ customer_id: "", order_date: today, due_date: "", status: "Mới", note: "", priority: "Trung bình", mix_ratio: [] });
+  const [f, setF] = useState({ customer_id: "", order_date: today, due_date: "", status: "Mới", note: "", priority: "Trung bình", mix_ratio: [], has_vat: true });
   const [items, setItems] = useState([{ _k: 1, product_id: "", quantity: "", unit: "", specs: {}, core_weight: "", total_weight: "", note: "", planned_start_date: "", planned_end_date: "", material_type: null, unit_price: "" }]);
   const [seq, setSeq] = useState(2);
   const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
+  const vatRate = f.has_vat ? 1.08 : 1; // Có VAT: cộng 8% (như cũ) · Không VAT: giữ nguyên thành tiền
 
   const loadData = useCallback(() => {
     if (!editId) return;
     ordersApi.get(editId).then((d) => {
-      setF({ customer_id: d.customer_id, order_date: d.order_date?.slice(0, 10) || today, due_date: d.due_date?.slice(0, 10) || "", status: d.status, note: d.note || "", priority: d.priority || "Trung bình", mix_ratio: d.mix_ratio || [] });
+      setF({ customer_id: d.customer_id, order_date: d.order_date?.slice(0, 10) || today, due_date: d.due_date?.slice(0, 10) || "", status: d.status, note: d.note || "", priority: d.priority || "Trung bình", mix_ratio: d.mix_ratio || [], has_vat: d.has_vat !== false });
       setItems((d.items || []).map((it, i) => ({ _k: i + 1, id: it.id, product_id: it.product_id, quantity: it.quantity, unit: it.unit || "", specs: it.specs || {}, core_weight: it.core_weight ?? "", total_weight: it.total_weight ?? "", note: it.note || "", planned_start_date: it.planned_start_date?.slice(0, 10) || "", planned_end_date: it.planned_end_date?.slice(0, 10) || "", actual_start_date: it.actual_start_date || null, actual_end_date: it.actual_end_date || null, materials: it.materials || [], production_orders: it.production_orders || [], material_type: it.material_type || null, mix_ratio: it.mix_ratio || [], unit_price: it.unit_price ?? "" })));
       setSeq((d.items?.length || 0) + 1);
     }).catch((e) => toast.error("Lỗi tải đơn: " + e.message));
@@ -378,7 +379,7 @@ function OrderForm({ lookups, editId, copyId, onBack, onSaved, onPrint, onCreate
   useEffect(() => {
     if (editId || !copyId) return;
     ordersApi.get(copyId).then((d) => {
-      setF({ customer_id: d.customer_id, order_date: today, due_date: "", status: "Mới", note: d.note || "", priority: d.priority || "Trung bình", mix_ratio: d.mix_ratio || [] });
+      setF({ customer_id: d.customer_id, order_date: today, due_date: "", status: "Mới", note: d.note || "", priority: d.priority || "Trung bình", mix_ratio: d.mix_ratio || [], has_vat: d.has_vat !== false });
       setItems((d.items || []).map((it, i) => ({ _k: i + 1, product_id: it.product_id, quantity: it.quantity, unit: it.unit || "", specs: it.specs || {}, core_weight: it.core_weight ?? "", total_weight: it.total_weight ?? "", note: it.note || "", planned_start_date: "", planned_end_date: "", material_type: it.material_type || null, mix_ratio: it.mix_ratio || [], unit_price: it.unit_price ?? "" })));
       setSeq((d.items?.length || 0) + 1);
     }).catch((e) => toast.error("Lỗi tải đơn nguồn để sao chép: " + e.message));
@@ -526,9 +527,9 @@ function OrderForm({ lookups, editId, copyId, onBack, onSaved, onPrint, onCreate
                     </div>
                   </label>
                   <label>
-                    <span className="block text-xs font-medium text-slate-500 mb-1">Thành tiền (sau VAT 8%)</span>
+                    <span className="block text-xs font-medium text-slate-500 mb-1">{f.has_vat ? "Thành tiền (sau VAT 8%)" : "Thành tiền (không VAT)"}</span>
                     <div className="px-3 py-2 rounded-lg bg-white border border-slate-200 text-blue-700 font-semibold">
-                      {fmt(((Number(it.unit_price) || 0) * (Number(it.quantity) || 0)) * 1.08)} đ
+                      {fmt(((Number(it.unit_price) || 0) * (Number(it.quantity) || 0)) * vatRate)} đ
                     </div>
                   </label>
                 </div>
@@ -699,7 +700,12 @@ function OrderForm({ lookups, editId, copyId, onBack, onSaved, onPrint, onCreate
             </div>
           ))}
           {showMoney && (
-            <div className="flex justify-end items-baseline gap-6 pt-3 border-t border-slate-200">
+            <div className="flex flex-wrap justify-end items-baseline gap-x-6 gap-y-2 pt-3 border-t border-slate-200">
+              <label className={`flex items-center gap-2 text-sm text-slate-700 select-none ${moneyPerm === "edit" ? "cursor-pointer" : "cursor-default"}`}>
+                <input type="checkbox" className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                  disabled={moneyPerm !== "edit"} checked={!!f.has_vat} onChange={(e) => set("has_vat", e.target.checked)} />
+                Có VAT 8%
+              </label>
               <div className="flex items-baseline gap-2">
                 <span className="text-sm text-slate-500">Tổng trước VAT:</span>
                 <span className="text-base font-semibold text-slate-700">
@@ -707,9 +713,9 @@ function OrderForm({ lookups, editId, copyId, onBack, onSaved, onPrint, onCreate
                 </span>
               </div>
               <div className="flex items-baseline gap-2">
-                <span className="text-sm text-slate-500">Tổng sau VAT (8%):</span>
+                <span className="text-sm text-slate-500">{f.has_vat ? "Tổng sau VAT (8%):" : "Tổng (không VAT):"}</span>
                 <span className="text-lg font-bold text-blue-700">
-                  {fmt(items.reduce((s, it) => s + (Number(it.unit_price) || 0) * (Number(it.quantity) || 0) * 1.08, 0))} đ
+                  {fmt(items.reduce((s, it) => s + (Number(it.unit_price) || 0) * (Number(it.quantity) || 0) * vatRate, 0))} đ
                 </span>
               </div>
             </div>

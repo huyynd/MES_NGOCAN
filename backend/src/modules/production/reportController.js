@@ -51,7 +51,7 @@ exports.kpi = async (req, res) => {
                (jsonb_array_elements(warehouse_limits)->>'warehouse_id')::uuid AS warehouse_id,
                (jsonb_array_elements(warehouse_limits)->>'min_quantity')::numeric AS min_quantity
         FROM products
-        WHERE warehouse_limits IS NOT NULL AND jsonb_array_length(warehouse_limits) > 0
+        WHERE is_deleted = FALSE AND warehouse_limits IS NOT NULL AND jsonb_array_length(warehouse_limits) > 0
       )
       SELECT COUNT(DISTINCT pl.product_id)::int AS count
       FROM product_limits pl
@@ -251,9 +251,9 @@ exports.machines = async (req, res) => {
 };
 
 // GET /reports/employees — tổng hợp hiệu suất từng nhân viên
-exports.employees = async (req, res) => {
-  try {
-    const { fromDate, toDate, stage, shift, team, orderCode } = req.query;
+// Hiệu suất từng nhân viên — NGUỒN DUY NHẤT cho màn Hiệu suất nhân viên và tab Nhân sự của Báo cáo giám đốc
+// (sản lượng, phế theo Quản lý phế, giờ công 8h/ngày có làm). Đổi logic ở đây thì cả 2 màn cùng đổi.
+async function employeeRows({ fromDate, toDate, stage, shift, team, orderCode } = {}) {
     const params = []; let i = 1;
     
     const taskWhere = [];
@@ -379,7 +379,12 @@ exports.employees = async (req, res) => {
       GROUP BY e.id, e.name, e.factory
       ORDER BY actual_qty DESC, planned_qty DESC, e.name
     `, params);
-    res.json({ data: rows });
+    return rows;
+}
+
+exports.employees = async (req, res) => {
+  try {
+    res.json({ data: await employeeRows(req.query) });
   } catch (err) { console.error(err); res.status(500).json({ message: 'L\u1ed7i khi l\u1ea5y b\u00e1o c\u00e1o nh\u00e2n vi\u00ean' }); }
 };
 
@@ -521,7 +526,7 @@ exports.director = async (req, res) => {
     const debt = await receivableTotals(db);
     const badDays = debt.settings.bad_days;
 
-    const [salesQ, moneyQ, poCountQ, nvlQ, lowQ, workerCntQ, perfQ, agQ, custQ, salesListQ, deliveriesListQ] = await Promise.all([
+    const [salesQ, moneyQ, poQ, scrapQ, shortQ, lowQ, empRows, agQ, custQ, salesListQ, deliveriesListQ] = await Promise.all([
       // Kh\u1ed1i 1: \u0111\u01a1n h\u00e0ng trong k\u1ef3 + gi\u00e1 tr\u1ecb + \u0111\u00e3 giao / ch\u01b0a giao (theo \u0111\u01a1n)
       db.query(`
         WITH ord AS (
@@ -549,68 +554,74 @@ exports.director = async (req, res) => {
                COALESCE(SUM(total_amount),0)::numeric AS invoiced
         FROM delivery_notes
         WHERE ${moneyNoteFilter('delivery_notes')} AND delivery_date BETWEEN $1 AND $2`, [f, t]),
-      // Kh\u1ed1i 2: s\u1ed1 y\u00eau c\u1ea7u s\u1ea3n xu\u1ea5t (LSX t\u1ea1o trong k\u1ef3)
-      db.query(`SELECT COUNT(*)::int AS n FROM production_orders WHERE is_deleted=FALSE AND created_at::date BETWEEN $1 AND $2`, [f, t]),
-      // Kh\u1ed1i 2: \u0111\u1ee7 / thi\u1ebfu NVL tr\u00ean c\u00e1c LSX c\u00f2n c\u1ea7n NVL (ch\u01b0a ho\u00e0n th\u00e0nh/h\u1ee7y)
+      // Kh\u1ed1i 2: LSX T\u1ea0O TRONG K\u1ef2 \u2014 \u0111\u1ebfm theo tr\u1ea1ng th\u00e1i + s\u1ea3n l\u01b0\u1ee3ng (ch\u1ec9 l\u1ec7nh \u0111\u01a1n v\u1ecb KG; quy \u0111\u1ed5i \u0111\u01a1n v\u1ecb l\u00e0m sau).
+      // Th\u1ef1c t\u1ebf = \u03a3 ho\u00e0n th\u00e0nh \u1edf c\u00f4ng \u0111o\u1ea1n cu\u1ed1i (DONE_BY_ORDER) \u2014 c\u00f9ng c\u00f4ng th\u1ee9c trang S\u1ea3n l\u01b0\u1ee3ng s\u1ea3n xu\u1ea5t.
+      //   Tr\u1ea3 T\u1eeaNG L\u1ec6NH (\u0111\u1ec3 v\u1eeba t\u1ed5ng h\u1ee3p KPI v\u1eeba l\u00e0m b\u1ea3ng chi ti\u1ebft \u1edf cu\u1ed1i tab).
       db.query(`
-        WITH nvl AS (
+        SELECT po.id, po.order_code, po.status, po.quantity::numeric AS quantity, po.due_date::text AS due_date,
+               po.created_at::date::text AS created_date, p.product_code, p.product_name,
+               COALESCE(NULLIF(po.unit,''), p.unit) AS unit, COALESCE(d.done_qty,0)::numeric AS done_qty,
+               upper(COALESCE(NULLIF(po.unit,''), p.unit, ''))='KG' AS is_kg,
+               COALESCE(po.due_date < CURRENT_DATE AND po.status NOT IN ('Ho\u00e0n th\u00e0nh','\u0110\u00e3 h\u1ee7y'), FALSE) AS overdue
+        FROM production_orders po
+        LEFT JOIN products p ON p.id=po.product_id
+        LEFT JOIN (${DONE_BY_ORDER}) d ON d.production_order_id=po.id
+        WHERE po.is_deleted=FALSE AND po.created_at::date BETWEEN $1 AND $2
+        ORDER BY po.created_at DESC`, [f, t]),
+      // Kh\u1ed1i 2: ph\u1ebf theo ng\u00e0y \u2014 ngu\u1ed3n Qu\u1ea3n l\u00fd ph\u1ebf (c\u00f9ng /scrap/summary)
+      db.query(`
+        SELECT dsr.record_date::text AS date,
+               COALESCE(SUM(dsi.scrap_qty),0)::numeric AS scrap, COALESCE(SUM(dsi.finished_qty),0)::numeric AS finished
+        FROM daily_scrap_records dsr JOIN daily_scrap_items dsi ON dsi.record_id=dsr.id
+        WHERE dsr.record_date BETWEEN $1 AND $2
+        GROUP BY dsr.record_date ORDER BY dsr.record_date DESC`, [f, t]),
+      // Kh\u1ed1i 2: NVL \u0110ANG THI\u1ebeU \u2014 t\u00ecnh tr\u1ea1ng HI\u1ec6N T\u1ea0I (kh\u00f4ng l\u1ecdc k\u1ef3): C\u1ed8NG D\u1ed2N "NVL c\u1ea7n cung c\u1ea5p" c\u1ee7a m\u1ecdi l\u1ec7nh
+      // \u0111ang m\u1edf CH\u01afA xu\u1ea5t NVL (\u0111\u00e3 xu\u1ea5t th\u00ec kho \u0111\u00e3 tr\u1eeb r\u1ed3i), so v\u1edbi t\u1ed3n kho NVL.
+      db.query(`
+        WITH need AS (
+          SELECT pom.material_id, SUM(pom.qty) AS need, COUNT(DISTINCT po.id)::int AS po_count,
+                 MAX(pom.unit) AS unit
+          FROM production_order_materials pom
+          JOIN production_orders po ON po.id=pom.production_order_id
+          WHERE po.is_deleted=FALSE AND COALESCE(po.materials_issued,FALSE)=FALSE
+            AND po.status NOT IN ('Ho\u00e0n th\u00e0nh','\u0110\u00e3 h\u1ee7y') AND pom.qty > 0
+          GROUP BY pom.material_id
+        ),
+        nvl AS (
           SELECT s.product_id, SUM(s.quantity) AS oh
           FROM inventory_stock s JOIN locations l ON l.id=s.location_id JOIN warehouses w ON w.id=l.warehouse_id
           WHERE w.warehouse_type='NVL' GROUP BY s.product_id
-        ),
-        po_period AS (
-          SELECT id FROM production_orders
-          WHERE is_deleted=FALSE AND status NOT IN ('Ho\u00e0n th\u00e0nh','\u0110\u00e3 h\u1ee7y') AND created_at::date BETWEEN $1 AND $2
-        ),
-        short AS (
-          SELECT DISTINCT pom.production_order_id
-          FROM production_order_materials pom
-          JOIN po_period pp ON pp.id=pom.production_order_id
-          LEFT JOIN nvl ON nvl.product_id=pom.material_id
-          WHERE COALESCE(pom.qty,0) > COALESCE(nvl.oh,0)
         )
-        SELECT (SELECT COUNT(*)::int FROM po_period) AS active_po,
-               (SELECT COUNT(*)::int FROM short) AS short_po`, [f, t]),
-      // Kh\u1ed1i 2: NVL (kg) t\u1ed3n d\u01b0\u1edbi 1 t\u1ea5n
+        SELECT p.product_code AS code, p.product_name AS name, COALESCE(n.unit, p.unit) AS unit,
+               n.need::numeric AS need, COALESCE(nvl.oh,0)::numeric AS on_hand, n.po_count,
+               (n.need - COALESCE(nvl.oh,0))::numeric AS short
+        FROM need n JOIN products p ON p.id=n.material_id
+        LEFT JOIN nvl ON nvl.product_id=n.material_id
+        WHERE n.need > COALESCE(nvl.oh,0)
+        ORDER BY (n.need - COALESCE(nvl.oh,0)) DESC`),
+      // Kh\u1ed1i 2: C\u1ea2NH B\u00c1O T\u1ed2N \u2014 d\u01b0\u1edbi "T\u1ed3n t\u1ed1i thi\u1ec3u" khai \u1edf Master data s\u1ea3n ph\u1ea9m (\u0110\u1ecbnh m\u1ee9c theo Kho).
+      // C\u00f9ng \u0111\u1ecbnh ngh\u0129a v\u1edbi Dashboard / m\u00e0n T\u1ed3n kho: so t\u1ed3n T\u1eeaNG KHO v\u1edbi m\u1ee9c t\u1ed1i thi\u1ec3u c\u1ee7a kho \u0111\u00f3.
       db.query(`
-        SELECT p.product_name AS name, SUM(s.quantity)::numeric AS on_hand, MAX(s.unit) AS unit
-        FROM inventory_stock s
-        JOIN products p ON p.id=s.product_id
-        JOIN locations l ON l.id=s.location_id JOIN warehouses w ON w.id=l.warehouse_id
-        WHERE w.warehouse_type='NVL' AND upper(COALESCE(s.unit,''))='KG'
-        GROUP BY p.id, p.product_name
-        HAVING SUM(s.quantity) < 1000
-        ORDER BY SUM(s.quantity) ASC`),
-      // Kh\u1ed1i 3: s\u1ed1 c\u00f4ng nh\u00e2n
-      db.query(`SELECT COUNT(*)::int AS n FROM employees WHERE is_deleted=FALSE`),
-      // Kh\u1ed1i 3: s\u1ea3n l\u01b0\u1ee3ng & gi\u1edd c\u00f4ng theo nh\u00e2n vi\u00ean (trong k\u1ef3)
-      db.query(`
-        WITH raw_tasks AS (
-          SELECT po.id AS production_order_id,
-            CASE
-              WHEN po.status IN ('Ch\u1edd duy\u1ec7t','\u0110\u00e3 l\u00ean k\u1ebf ho\u1ea1ch','\u0110\u00e3 h\u1ee7y') THEN 0
-              WHEN t.status='\u0110\u00e3 h\u1ee7y' THEN 0
-              WHEN COALESCE(t.status,po.status)='Ho\u00e0n th\u00e0nh' THEN COALESCE(t.actual_qty,po.posted_qty,po.quantity)
-              ELSE COALESCE(t.actual_qty,po.posted_qty,0)
-            END AS actual_qty,
-            COALESCE(t.updated_at,po.updated_at) AS updated_at,
-            COALESCE(t.planned_date,po.planned_date) AS planned_date,
-            COALESCE(t.assigned_worker,po.assigned_worker) AS final_worker,
-            t.assigned_worker_id AS final_worker_id
-          FROM production_orders po
-          LEFT JOIN production_tasks t ON t.production_order_id=po.id
-          WHERE po.is_deleted=FALSE
-            AND COALESCE(t.assigned_worker,po.assigned_worker) IS NOT NULL
-            AND COALESCE(t.assigned_worker,po.assigned_worker)<>''
-            AND COALESCE(t.updated_at::date,t.planned_date,po.planned_date,po.created_at::date) BETWEEN $1 AND $2
+        WITH lim AS (
+          SELECT p.id AS product_id, p.product_code, p.product_name, p.unit,
+                 (x->>'warehouse_id')::uuid AS warehouse_id, NULLIF(x->>'min_quantity','')::numeric AS min_qty
+          FROM products p CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.warehouse_limits,'[]'::jsonb)) x
+          WHERE p.is_deleted=FALSE
         ),
-        emp AS (SELECT id,name FROM employees WHERE is_deleted=FALSE)
-        SELECT e.name AS worker,
-               COALESCE(SUM(t.actual_qty),0)::numeric AS actual_qty,
-               (COUNT(DISTINCT COALESCE(t.updated_at::date,t.planned_date))*8)::int AS work_hours
-        FROM emp e
-        LEFT JOIN raw_tasks t ON (t.final_worker_id=e.id OR (t.final_worker_id IS NULL AND t.final_worker=e.name))
-        GROUP BY e.id, e.name`, [f, t]),
+        oh AS (
+          SELECT s.product_id, l.warehouse_id, SUM(s.quantity) AS qty
+          FROM inventory_stock s JOIN locations l ON l.id=s.location_id
+          GROUP BY s.product_id, l.warehouse_id
+        )
+        SELECT lim.product_code AS code, lim.product_name AS name, lim.unit, w.name AS warehouse,
+               COALESCE(oh.qty,0)::numeric AS on_hand, lim.min_qty
+        FROM lim
+        LEFT JOIN oh ON oh.product_id=lim.product_id AND oh.warehouse_id=lim.warehouse_id
+        LEFT JOIN warehouses w ON w.id=lim.warehouse_id
+        WHERE lim.min_qty > 0 AND COALESCE(oh.qty,0) < lim.min_qty
+        ORDER BY COALESCE(oh.qty,0) / lim.min_qty ASC`),
+      // Kh\u1ed1i 3: hi\u1ec7u su\u1ea5t t\u1eebng nh\u00e2n vi\u00ean \u2014 D\u00d9NG CHUNG v\u1edbi m\u00e0n Hi\u1ec7u su\u1ea5t nh\u00e2n vi\u00ean (employeeRows), c\u00f9ng k\u1ef3
+      employeeRows({ fromDate: f, toDate: t }),
       // Công nợ phải thu (as-of-now, loại Bản nháp/Đã hủy) — tổng + quá hạn + tuổi nợ
       db.query(`
         WITH openn AS (
@@ -669,13 +680,18 @@ exports.director = async (req, res) => {
       `, [f, t]),
     ]);
 
-    const s = salesQ.rows[0], m = moneyQ.rows[0], nv = nvlQ.rows[0];
+    const s = salesQ.rows[0], m = moneyQ.rows[0];
     const num = (x) => Math.round(Number(x) || 0);
 
     // Hi\u1ec7u su\u1ea5t: n\u0103ng su\u1ea5t/gi\u1edd = s\u1ea3n l\u01b0\u1ee3ng / gi\u1edd c\u00f4ng (gi\u1edd c\u00f4ng = s\u1ed1 ng\u00e0y l\u00e0m \u00d7 8)
-    const perf = perfQ.rows
-      .map((r) => ({ worker: r.worker, actual: Number(r.actual_qty) || 0, hours: Number(r.work_hours) || 0 }))
+    // Cùng số liệu màn Hiệu suất nhân viên: sản lượng (kg), phế (kg, Quản lý phế), giờ công.
+    const perf = empRows
+      .map((r) => ({ worker: r.worker, team: r.team, actual: Number(r.actual_qty) || 0, scrap: Number(r.scrap_qty) || 0, hours: Number(r.work_hours) || 0 }))
       .filter((r) => r.actual > 0);
+    // Tổng phế cộng trên MỌI nhân viên (kể cả người sản lượng = 0 trong kỳ: phế lọc theo ngày ghi phế,
+    // sản lượng theo ngày hoàn thành → có thể lệch kỳ) — đúng như "Báo cáo chung" màn Hiệu suất nhân viên.
+    const totScrap = empRows.reduce((a, r) => a + (Number(r.scrap_qty) || 0), 0);
+    const r3 = (x) => Math.round(x * 1000) / 1000;
     const totActual = perf.reduce((a, r) => a + r.actual, 0);
     const totHours = perf.reduce((a, r) => a + r.hours, 0);
     const top = perf
@@ -703,15 +719,54 @@ exports.director = async (req, res) => {
           total: num(r.total_amount), paid: num(r.paid_amount)
         })) : [],
       },
-      production: {
-        request_count: poCountQ.rows[0].n,
-        active_count: nv.active_po,
-        short_count: nv.short_po,
-        enough_count: Math.max(0, nv.active_po - nv.short_po),
-        low_materials: lowQ.rows.map((r) => ({ name: r.name, on_hand: Math.round(Number(r.on_hand) || 0), unit: r.unit || 'KG' })),
-      },
+      production: (() => {
+        const n = (x) => Number(x) || 0;
+        const r1 = (x) => Math.round(n(x) * 10) / 10;
+        const list = poQ.rows.map((r) => ({
+          id: r.id, code: r.order_code, product_code: r.product_code, product_name: r.product_name, unit: r.unit,
+          status: r.status, created: r.created_date, due: r.due_date, overdue: r.overdue, is_kg: r.is_kg,
+          plan: r1(r.quantity), actual: r1(r.done_qty), remaining: r1(Math.max(0, n(r.quantity) - n(r.done_qty))),
+        }));
+        const live = list.filter((x) => x.status !== 'Đã hủy');
+        const kg = live.filter((x) => x.is_kg);
+        const cnt = (fn) => list.filter(fn).length;
+        const plan = kg.reduce((a, x) => a + x.plan, 0), actual = kg.reduce((a, x) => a + x.actual, 0);
+        const scrapDays = scrapQ.rows.map((r) => ({ date: r.date, scrap: r1(r.scrap), finished: r1(r.finished) }));
+        const scrap = scrapDays.reduce((a, x) => a + x.scrap, 0), fin = scrapDays.reduce((a, x) => a + x.finished, 0);
+        const low = lowQ.rows.map((r) => ({ code: r.code, name: r.name, warehouse: r.warehouse, unit: r.unit,
+          on_hand: r1(r.on_hand), min_qty: r1(r.min_qty) }));
+        return {
+          output: { // sản lượng (kg) — LSX tạo trong kỳ
+            plan: r1(plan), actual: r1(actual), remaining: r1(Math.max(0, plan - actual)), over: r1(Math.max(0, actual - plan)),
+            scrap: r1(scrap), scrap_rate: (fin + scrap) > 0 ? Math.round(scrap / (fin + scrap) * 1000) / 10 : 0,
+            non_kg_count: live.length - kg.length,
+          },
+          orders: { total: live.length, done: cnt((x) => x.status === 'Hoàn thành'), running: cnt((x) => x.status === 'Đang sản xuất'),
+            wait_nvl: cnt((x) => x.status === 'Chờ nguyên vật liệu'),
+            not_started: cnt((x) => x.status === 'Chờ duyệt' || x.status === 'Đã lên kế hoạch'),
+            cancelled: list.length - live.length, overdue: cnt((x) => x.overdue) },
+          order_list: list,      // bảng chi tiết cuối tab
+          scrap_days: scrapDays, // bảng chi tiết khi chọn thẻ Phế phẩm
+          shortages: shortQ.rows.map((r) => ({ code: r.code, name: r.name, unit: r.unit, need: r1(r.need),
+            on_hand: r1(r.on_hand), short: r1(r.short), po_count: r.po_count })),
+          low_stock: low,
+          // Trường cũ — giữ cho app mobile (MES_Mobile) đang đọc
+          request_count: list.length, // nghĩa cũ: MỌI LSX tạo trong kỳ, GỒM cả lệnh hủy (web dùng orders.total)
+          low_materials: low.map((x) => ({ name: x.name, on_hand: Math.round(x.on_hand), unit: x.unit || 'KG' })),
+        };
+      })(),
       workforce: {
-        worker_count: workerCntQ.rows[0].n,
+        worker_count: empRows.length,            // tổng nhân viên (chưa xóa)
+        active_count: perf.length,               // nhân viên có sản lượng trong kỳ
+        // 3 chữ số thập phân — như fmt() của màn Hiệu suất nhân viên, không làm tròn mất số lẻ
+        total_output: r3(totActual),
+        total_scrap: r3(totScrap),
+        scrap_ratio: totActual > 0 ? r3(totScrap / totActual) : 0, // kg phế / 1 kg thành phẩm (TB toàn xưởng)
+        // Danh sách người có sản lượng — web tự xếp theo 3 tiêu chí như màn Hiệu suất nhân viên
+        workers: perf.map((r) => ({ worker: r.worker, team: r.team, output: r3(r.actual),
+          scrap: r3(r.scrap), scrap_ratio: r3(r.actual > 0 ? r.scrap / r.actual : 0),
+          per_hour: r.hours > 0 ? Math.round(r.actual / r.hours) : 0, hours: r.hours })),
+        // Trường cũ — giữ cho app mobile (MES_Mobile)
         avg_per_hour: totHours > 0 ? Math.round(totActual / totHours) : 0,
         top,
       },

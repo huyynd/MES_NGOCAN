@@ -175,9 +175,10 @@ exports.create = async (req, res) => {
       return res.status(400).json({ message: 'Đơn hàng cần ít nhất 1 dòng hàng hợp lệ' });
     await client.query('BEGIN');
     const { rows } = await client.query(
-      `INSERT INTO sales_orders (customer_id, order_date, due_date, status, note, material_type, priority, mix_ratio)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-      [b.customer_id, b.order_date || new Date(), b.due_date || null, b.status || 'Mới', b.note || null, b.material_type || null, b.priority || 'Trung bình', JSON.stringify(b.mix_ratio || [])]);
+      `INSERT INTO sales_orders (customer_id, order_date, due_date, status, note, material_type, priority, mix_ratio, has_vat)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [b.customer_id, b.order_date || new Date(), b.due_date || null, b.status || 'Mới', b.note || null, b.material_type || null, b.priority || 'Trung bình', JSON.stringify(b.mix_ratio || []),
+       b.has_vat !== false]); // mặc định CÓ VAT (như trước); chỉ false khi bỏ tick
     await saveItems(client, rows[0].id, b.items);
     await client.query('COMMIT');
     res.status(201).json(rows[0]);
@@ -190,9 +191,12 @@ exports.update = async (req, res) => {
   try {
     const b = req.body;
     await client.query('BEGIN');
-    const fields = ['customer_id', 'order_date', 'due_date', 'status', 'note', 'material_type', 'priority', 'mix_ratio'];
+    const fields = ['customer_id', 'order_date', 'due_date', 'status', 'note', 'material_type', 'priority', 'mix_ratio', 'has_vat'];
     const cols = [], vals = []; let i = 1;
-    for (const f of fields) if (b[f] !== undefined) { cols.push(`${f} = $${i++}`); vals.push(b[f] === '' ? null : (f === 'mix_ratio' ? JSON.stringify(b[f]) : b[f])); }
+    for (const f of fields) if (b[f] !== undefined) {
+      cols.push(`${f} = $${i++}`);
+      vals.push(f === 'has_vat' ? b[f] !== false : b[f] === '' ? null : (f === 'mix_ratio' ? JSON.stringify(b[f]) : b[f]));
+    }
     if (cols.length) {
       const r = await client.query(`UPDATE sales_orders SET ${cols.join(', ')} WHERE id = $${i} AND is_deleted = FALSE RETURNING id`, [...vals, req.params.id]);
       if (!r.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ message: 'Không tìm thấy đơn hàng' }); }

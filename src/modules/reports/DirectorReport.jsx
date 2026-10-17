@@ -2,11 +2,13 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   ShoppingCart, Factory, Users, AlertTriangle, RotateCcw, Wallet, Truck, Clock,
   CalendarDays, Lightbulb, Trophy, PackageCheck, PackageX, ClipboardList, Gauge,
-  Lock, CheckCircle2, Receipt, Info, X, ExternalLink,
+  Lock, CheckCircle2, Receipt, Info, X, ExternalLink, Download, List, ChevronRight,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import * as XLSX from "xlsx";
 import { reports } from "../../mesApi.js";
-import { fmt, fmtDate, toast } from "../../ui.js";
+import { fmt, fmtDate, toast, statusClass } from "../../ui.js";
+import { usePager } from "../../components.jsx";
 
 /* ───────────────────────── Bảng màu & hằng số ───────────────────────── */
 
@@ -145,13 +147,13 @@ function Meter({ label, value, color, right }) {
   );
 }
 
-function KpiCard({ icon: Icon, accent = "blue", label, hint, value, valueClass, meta, footer, delay = 0, onClick }) {
+function KpiCard({ icon: Icon, accent = "blue", label, hint, value, valueClass, meta, footer, delay = 0, onClick, active, compact }) {
   const a = ACCENTS[accent];
   const Comp = onClick ? "button" : "div";
   return (
     <Comp
       onClick={onClick}
-      className={`group relative flex flex-col overflow-hidden rounded-2xl border border-slate-200/70 bg-white p-5 shadow-card transition-all duration-300 animate-rise motion-reduce:animate-none text-left ${onClick ? "cursor-pointer hover:-translate-y-1 hover:shadow-card-hover hover:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/40" : "hover:-translate-y-0.5 hover:shadow-card-hover"}`}
+      className={`group relative flex flex-col overflow-hidden rounded-2xl border border-slate-200/70 bg-white ${compact ? "p-4" : "p-5"} shadow-card transition-all duration-300 animate-rise motion-reduce:animate-none text-left ${active ? "!border-blue-400 ring-2 ring-blue-500/30" : ""} ${onClick ?"cursor-pointer hover:-translate-y-1 hover:shadow-card-hover hover:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/40" : "hover:-translate-y-0.5 hover:shadow-card-hover"}`}
       style={{ animationDelay: `${delay}ms` }}
     >
       <div className={`pointer-events-none absolute -right-12 -top-12 h-36 w-36 rounded-full blur-2xl transition-opacity duration-300 group-hover:opacity-100 opacity-70 ${a.glow}`} />
@@ -164,11 +166,11 @@ function KpiCard({ icon: Icon, accent = "blue", label, hint, value, valueClass, 
           <Icon size={18} strokeWidth={2} />
         </div>
       </div>
-      <div className={`relative mt-4 font-display font-semibold leading-none tracking-tight text-slate-900 tabular-nums ${valueClass || "text-[30px]"}`}>
+      <div className={`relative ${compact ? "mt-3" : "mt-4"} font-display font-semibold leading-none tracking-tight text-slate-900 tabular-nums ${valueClass || (compact ? "text-[26px]" : "text-[30px]")}`}>
         {value}
       </div>
-      {meta && <div className="relative mt-2 text-[13px] text-slate-500">{meta}</div>}
-      {footer && <div className="relative mt-auto pt-4"><div className="border-t border-slate-100 pt-3.5">{footer}</div></div>}
+      {meta && <div className={`relative mt-2 ${compact ? "text-xs" : "text-[13px]"} text-slate-500`}>{meta}</div>}
+      {footer && <div className={`relative mt-auto ${compact ? "pt-3" : "pt-4"}`}><div className={`border-t border-slate-100 ${compact ? "pt-3" : "pt-3.5"}`}>{footer}</div></div>}
     </Comp>
   );
 }
@@ -339,12 +341,41 @@ function SalesView({ s, r, period }) {
       text: `${short(r.collected_total)} trên ${short(r.billed_total)} đã giao hàng`,
     });
   }
+  if ((r.bad_count || 0) > 0) {
+    insights.push({
+      tone: "bad", icon: AlertTriangle,
+      title: `${fmt(r.bad_count)} khách nợ xấu`,
+      text: `${short(r.bad_total)} quá hạn trên ${r.overdue_days} ngày — cần đôn đốc / cân nhắc dừng giao`,
+    });
+  }
+  // Kinh doanh trong kỳ
+  if (s.order_count > 0) {
+    insights.push({
+      tone: shipRate >= 70 ? "good" : shipRate >= 40 ? "warn" : "bad", icon: Truck,
+      title: `${shipRate}% đơn ${periodLb.toLowerCase()} đã xuất giao`,
+      text: `${fmt(s.shipped_count)}/${fmt(s.order_count)} đơn · ${fmt(s.fully_count)} đơn đã giao đủ`,
+    });
+  }
+  if ((s.undelivered_value || 0) > 0) {
+    insights.push({
+      tone: deliveredPct < 50 ? "warn" : "neutral", icon: ShoppingCart,
+      title: `${short(s.undelivered_value)} giá trị đơn chưa giao`,
+      text: `${100 - deliveredPct}% giá trị đơn hàng ${periodLb.toLowerCase()} — theo dõi tiến độ sản xuất & giao`,
+    });
+  }
+  // Bản tin: nghiêm trọng trước, tốt sau cùng
+  const RANK = { bad: 0, warn: 1, neutral: 2, good: 3 };
+  insights.sort((a, b) => RANK[a.tone] - RANK[b.tone]);
+  const [showAllNews, setShowAllNews] = useState(false);
+  const NEWS_MAX = 4;
+  const news = showAllNews ? insights : insights.slice(0, NEWS_MAX);
 
   return (
     <div className="space-y-5">
-      {/* KPI */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <KpiCard
+      {/* KPI 2×2 (3/4 màn) · Bản tin điểm nhấn (1/4 màn) */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:col-span-3">
+        <KpiCard compact
           icon={ShoppingCart} accent="blue" label="Giá trị đơn hàng" hint={periodLb} delay={0}
           onClick={() => setOrdersModal(true)}
           value={<Money value={s.total_value} />}
@@ -362,7 +393,7 @@ function SalesView({ s, r, period }) {
             </div>
           }
         />
-        <KpiCard
+        <KpiCard compact
           icon={Truck} accent="emerald" label="Tiến độ giao hàng" hint={periodLb} delay={70}
           // Mở danh sách Phiếu giao hàng / Hóa đơn trong kỳ (trước đây lối vào nằm ở ô "Tiền đã thu";
           // ô đó nay mở Báo cáo công nợ). Danh sách đơn hàng vẫn mở từ ô "Giá trị đơn hàng".
@@ -371,7 +402,7 @@ function SalesView({ s, r, period }) {
           meta={<><span className="font-semibold text-slate-700">{fmt(s.fully_count)}</span> đơn đã giao đủ</>}
           footer={<Meter label="Tỷ lệ đơn đã xuất giao" value={shipRate} color={C.good} />}
         />
-        <KpiCard
+        <KpiCard compact
           icon={Receipt} accent="violet" label="Tiền đã thu" hint="Lũy kế đến hôm nay" delay={140}
           // Số lũy kế → mở Báo cáo công nợ (đã trả / còn nợ theo từng khách), không phải danh sách phiếu giao trong kỳ
           onClick={() => navigate("/receivables")}
@@ -380,7 +411,7 @@ function SalesView({ s, r, period }) {
             {r.credit_total > 0 && <> · gồm <span className="font-semibold text-blue-700" title={full(r.credit_total)}>{short(r.credit_total)}</span> trả trước</>}</>}
           footer={<Meter label="Tỷ lệ thu hồi" value={collectRate} color={C.violet} />}
         />
-        <KpiCard
+        <KpiCard compact
           icon={Wallet} accent="rose" label="Dư nợ phải thu" hint="Tại thời điểm hiện tại" delay={210}
           onClick={() => document.getElementById('debt-table')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
           value={<Money value={total} />}
@@ -400,28 +431,40 @@ function SalesView({ s, r, period }) {
         />
       </div>
 
-      {/* Điểm nhấn */}
-      {insights.length > 0 && (
-        <Panel title="Điểm nhấn cho lãnh đạo" subtitle="Tự động rút ra từ số liệu công nợ hiện tại" icon={Lightbulb} delay={260}>
-          <div className={`grid grid-cols-1 gap-3 sm:grid-cols-2 ${insights.length >= 4 ? "xl:grid-cols-4" : insights.length === 3 ? "xl:grid-cols-3" : ""}`}>
-            {insights.map((it, i) => {
+      {/* Bản tin điểm nhấn — cao bằng khối 4 ô bên trái, dài thì cuộn trong khung */}
+      <div className="lg:relative">
+        <section className="flex flex-col rounded-2xl border border-slate-200/70 bg-white p-4 shadow-card animate-rise motion-reduce:animate-none lg:absolute lg:inset-0"
+          style={{ animationDelay: "260ms" }}>
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-slate-100 text-slate-500"><Lightbulb size={15} /></div>
+              <h3 className="text-[15px] font-semibold text-slate-900">Điểm nhấn</h3>
+            </div>
+            {insights.length > 0 && <span className="rounded-full bg-slate-900 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-white">{insights.length}</span>}
+          </div>
+          <p className="mt-1 text-[11px] text-slate-500">Tự động rút ra từ số liệu kinh doanh & công nợ</p>
+          <div className="mt-3 min-h-0 flex-1 space-y-2.5 overflow-y-auto pr-0.5">
+            {news.length ? news.map((it, i) => {
               const t = TONES[it.tone];
-              const Icon = it.icon;
               return (
-                <div key={i} className="relative flex flex-col overflow-hidden rounded-xl border border-slate-200/80 bg-white p-4 pl-5 transition-shadow hover:shadow-card-hover">
+                <div key={i} className="relative overflow-hidden rounded-xl border border-slate-200/80 bg-white p-3 pl-4">
                   <span className={`absolute inset-y-0 left-0 w-1 ${t.stripe}`} />
-                  <div className="flex items-center justify-between gap-2">
-                    <div className={`flex h-8 w-8 items-center justify-center rounded-lg ${t.icon}`}><Icon size={16} /></div>
-                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.06em] ${t.pill}`}>{t.label}</span>
-                  </div>
-                  <div className="mt-3 text-sm font-semibold leading-snug text-slate-900">{it.title}</div>
-                  <div className="mt-1 text-xs leading-relaxed text-slate-500">{it.text}</div>
+                  <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.06em] ${t.pill}`}>{t.label}</span>
+                  <div className="mt-1.5 text-[13px] font-semibold leading-snug text-slate-900">{it.title}</div>
+                  <div className="mt-1 text-[11.5px] leading-relaxed text-slate-500">{it.text}</div>
                 </div>
               );
-            })}
+            }) : <Empty text="Chưa có điểm nhấn nào." />}
           </div>
-        </Panel>
-      )}
+          {insights.length > NEWS_MAX && (
+            <button type="button" onClick={() => setShowAllNews((v) => !v)}
+              className="mt-3 inline-flex items-center justify-center gap-1 text-xs font-semibold text-blue-600 hover:underline">
+              {showAllNews ? "Thu gọn" : `Xem tất cả (${insights.length})`} <ChevronRight size={13} className={showAllNews ? "-rotate-90" : ""} />
+            </button>
+          )}
+        </section>
+      </div>
+      </div>
 
       {/* Top khách hàng · Cơ cấu nợ */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
@@ -744,39 +787,221 @@ function SalesView({ s, r, period }) {
 
 /* ───────────────────────── Tab 2 · Sản xuất ───────────────────────── */
 
+/* Trạng thái LSX: khóa dữ liệu · nhãn · màu */
+const PO_STATES = [
+  { key: "done", label: "Hoàn thành", color: C.good },
+  { key: "running", label: "Đang sản xuất", color: C.intime },
+  { key: "not_started", label: "Chưa bắt đầu", color: "#94a3b8" },
+  { key: "wait_nvl", label: "Chờ NVL", color: "#f59e0b" },
+];
+
+const Kg = ({ value }) => <><Count value={value} /><span className="ml-1.5 text-[15px] font-medium text-slate-400">kg</span></>;
+
+/* Bảng chi tiết cuối tab "Sản xuất & NVL": mỗi thẻ / ô trạng thái = 1 góc nhìn */
+const PROD_VIEWS = {
+  all: { label: "Tất cả lệnh sản xuất", test: () => true },
+  total: { label: "Lệnh sản xuất (không tính lệnh hủy)", test: (r) => r.status !== "Đã hủy" },
+  plan: { label: "Sản lượng kế hoạch — lệnh tính bằng kg", test: (r) => r.is_kg && r.status !== "Đã hủy" },
+  actual: { label: "Sản lượng thực tế — lệnh đã có sản lượng", test: (r) => r.is_kg && r.status !== "Đã hủy" && r.actual > 0 },
+  remain: { label: "Sản lượng còn lại — lệnh còn phải sản xuất", test: (r) => r.is_kg && r.status !== "Đã hủy" && r.remaining > 0 },
+  done: { label: "Lệnh hoàn thành", test: (r) => r.status === "Hoàn thành" },
+  running: { label: "Lệnh đang sản xuất", test: (r) => r.status === "Đang sản xuất" },
+  not_started: { label: "Lệnh chưa bắt đầu", test: (r) => r.status === "Chờ duyệt" || r.status === "Đã lên kế hoạch" },
+  wait_nvl: { label: "Lệnh chờ nguyên vật liệu", test: (r) => r.status === "Chờ nguyên vật liệu" },
+  overdue: { label: "Lệnh quá hạn", test: (r) => !!r.overdue },
+  scrap: { label: "Phế phẩm theo ngày (Quản lý phế)" },
+};
+
+const th = "px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-slate-500";
+const td = "px-4 py-2.5 text-sm text-slate-700";
+
+function ProdDetail({ view, rows, isScrap, periodLb }) {
+  const { slice, Pager, Filler } = usePager(rows, 5, [5, 10, 20]);
+  const label = PROD_VIEWS[view].label;
+  const exportExcel = () => {
+    if (!rows.length) { toast.error("Danh sách đang trống, không có gì để xuất"); return; }
+    const data = isScrap
+      ? rows.map((d) => ({ "Ngày": fmtDate(d.date), "SL thành phẩm (kg)": d.finished, "SL phế (kg)": d.scrap,
+          "Tỷ lệ phế (%)": d.finished + d.scrap > 0 ? Math.round(d.scrap / (d.finished + d.scrap) * 1000) / 10 : 0 }))
+      : rows.map((r) => ({ "Mã lệnh SX": r.code, "Mã SP": r.product_code, "Tên sản phẩm": r.product_name,
+          "Ngày tạo": fmtDate(r.created), "Hạn chót": fmtDate(r.due) || "", "Quá hạn": r.overdue ? "Có" : "",
+          "SL kế hoạch": r.plan, "SL thực tế": r.actual, "SL còn lại": r.remaining, "Đơn vị": r.unit || "", "Trạng thái": r.status }));
+    const ws = XLSX.utils.aoa_to_sheet([[`${label} · ${periodLb}`], []]);
+    XLSX.utils.sheet_add_json(ws, data, { origin: "A3" });
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, isScrap ? "Phế phẩm" : "Lệnh sản xuất");
+    XLSX.writeFile(wb, `bao-cao-giam-doc_${view}.xlsx`);
+  };
+  return (
+    <>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700 ring-1 ring-inset ring-blue-100">
+          {label} · {fmt(rows.length)} dòng
+        </span>
+        <button type="button" onClick={exportExcel}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50">
+          <Download size={14} /> Xuất Excel
+        </button>
+      </div>
+      <div className="overflow-x-auto rounded-xl border border-slate-200">
+        <table className="w-full whitespace-nowrap">
+          <thead className="bg-slate-50">
+            {isScrap ? (
+              <tr><th className={th}>Ngày</th><th className={`${th} text-right`}>SL thành phẩm</th><th className={`${th} text-right`}>SL phế</th><th className={`${th} text-right`}>Tỷ lệ phế</th></tr>
+            ) : (
+              <tr><th className={th}>Mã lệnh</th><th className={th}>Sản phẩm</th><th className={th}>Ngày tạo</th><th className={th}>Hạn chót</th>
+                <th className={`${th} text-right`}>Kế hoạch</th><th className={`${th} text-right`}>Thực tế</th><th className={`${th} text-right`}>Còn lại</th><th className={th}>Trạng thái</th></tr>
+            )}
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {!rows.length && <tr><td colSpan={8} className="px-4 py-8 text-center text-sm text-slate-400">Không có dữ liệu</td></tr>}
+            {isScrap ? slice.map((d) => (
+              <tr key={d.date} className="hover:bg-slate-50/70">
+                <td className={td}>{fmtDate(d.date)}</td>
+                <td className={`${td} text-right tabular-nums`}>{fmt(d.finished)} kg</td>
+                <td className={`${td} text-right font-semibold tabular-nums text-rose-600`}>{fmt(d.scrap)} kg</td>
+                <td className={`${td} text-right tabular-nums`}>{d.finished + d.scrap > 0 ? (d.scrap / (d.finished + d.scrap) * 100).toFixed(1) : "0.0"}%</td>
+              </tr>
+            )) : slice.map((r) => (
+              <tr key={r.id} className="hover:bg-slate-50/70">
+                <td className={`${td} font-medium text-slate-900`}>{r.code}</td>
+                <td className={`${td} max-w-[260px] truncate`} title={`${r.product_code} · ${r.product_name}`}>{r.product_name}</td>
+                <td className={td}>{fmtDate(r.created)}</td>
+                <td className={`${td} ${r.overdue ? "font-semibold text-rose-600" : ""}`}>{fmtDate(r.due) || "—"}</td>
+                <td className={`${td} text-right tabular-nums`}>{fmt(r.plan)} <span className="text-xs text-slate-400">{r.unit}</span></td>
+                <td className={`${td} text-right tabular-nums`}>{fmt(r.actual)}</td>
+                <td className={`${td} text-right tabular-nums`}>{fmt(r.remaining)}</td>
+                <td className={td}><span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${statusClass(r.status)}`}>{r.status}</span></td>
+              </tr>
+            ))}
+            {rows.length > 0 && <Filler cols={isScrap ? 4 : 8} />}
+          </tbody>
+        </table>
+      </div>
+      <div className="mt-3"><Pager /></div>
+    </>
+  );
+}
+
 function ProdView({ p, period }) {
-  const periodLb = period === "week" ? "Tuần này" : "Tháng này";
-  const enoughPct = pct(p.enough_count, p.active_count);
-  const sevColor = (kg) => (kg < 250 ? C.overdue : kg < 500 ? "#f97316" : "#f59e0b");
+  const navigate = useNavigate();
+  const periodLb = period === "week" ? "LSX tạo tuần này" : "LSX tạo tháng này";
+  const o = p.output || {}, ord = p.orders || {}, shortages = p.shortages || [], low = p.low_stock || [];
+  const achieve = pct(o.actual, o.plan);
+  const [view, setView] = useState("all");
+  const listRef = useRef(null);
+  // Bấm thẻ → đổi góc nhìn bảng chi tiết cuối tab + cuộn xuống (bấm lại thẻ đang chọn → về "Tất cả")
+  const pick = (key) => {
+    setView((v) => (v === key ? "all" : key));
+    setTimeout(() => listRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+  };
+  const isScrap = view === "scrap";
+  const detailRows = isScrap ? (p.scrap_days || []) : (p.order_list || []).filter(PROD_VIEWS[view].test);
+  const goOutput = (key) => () => pick(key);
+  // Mức nghiêm trọng tồn thấp: tồn / tối thiểu
+  const lowColor = (m) => { const r = m.min_qty > 0 ? m.on_hand / m.min_qty : 0; return r < 0.25 ? C.overdue : r < 0.5 ? "#f97316" : "#f59e0b"; };
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <KpiCard icon={ClipboardList} accent="blue" label="Yêu cầu sản xuất" hint={periodLb}
-          value={<><Count value={p.request_count} /><span className="ml-1.5 text-[15px] font-medium text-slate-400">lệnh</span></>}
-          meta={<><span className="font-semibold text-slate-700">{fmt(p.active_count)}</span> lệnh đang mở</>} />
-        <KpiCard icon={PackageCheck} accent="emerald" label="Lệnh đủ nguyên vật liệu" hint="Lệnh đang mở" delay={70}
-          value={<><Count value={p.enough_count} /><span className="ml-1.5 text-[15px] font-medium text-slate-400">/ {fmt(p.active_count)}</span></>}
-          footer={<Meter label="Sẵn sàng sản xuất" value={enoughPct} color={C.good} />} />
-        <KpiCard icon={PackageX} accent={p.short_count > 0 ? "rose" : "slate"} label="Lệnh thiếu nguyên vật liệu" hint="Cần bổ sung" delay={140}
-          value={<span className={p.short_count > 0 ? "text-rose-600" : ""}><Count value={p.short_count} /><span className="ml-1.5 text-[15px] font-medium text-slate-400">lệnh</span></span>}
-          meta={p.short_count > 0 ? "Ảnh hưởng tiến độ — cần mua bổ sung" : "Không có lệnh nào bị thiếu"} />
+      {/* Hàng 1 · Sản lượng (kg) */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <KpiCard icon={ClipboardList} accent="blue" label="Sản lượng kế hoạch" hint={periodLb} onClick={goOutput("plan")} active={view === "plan"}
+          value={<Kg value={o.plan} />}
+          meta={o.non_kg_count > 0 ? <span title="Chưa quy đổi đơn vị — các lệnh không tính bằng kg chưa được cộng vào">Chưa tính {fmt(o.non_kg_count)} lệnh khác đơn vị kg</span> : "Tổng các lệnh tính bằng kg"} />
+        <KpiCard icon={Factory} accent="emerald" label="Sản lượng thực tế" hint="Đã hoàn thành công đoạn cuối" delay={70} onClick={goOutput("actual")} active={view === "actual"}
+          value={<Kg value={o.actual} />}
+          footer={<Meter label="Đạt kế hoạch" value={Math.min(100, achieve)} right={`${achieve}%`} color={C.good} />} />
+        <KpiCard icon={Clock} accent="amber" label="Sản lượng còn lại" hint="Còn phải sản xuất" delay={140} onClick={goOutput("remain")} active={view === "remain"}
+          value={<Kg value={o.remaining} />}
+          meta={o.over > 0 ? <>Vượt kế hoạch <span className="font-semibold text-slate-700">{fmt(o.over)}</span> kg</> : "Kế hoạch − thực tế"} />
+        <KpiCard icon={PackageX} accent={o.scrap > 0 ? "rose" : "slate"} label="Phế phẩm" hint="Theo Quản lý phế" delay={210} onClick={goOutput("scrap")} active={view === "scrap"}
+          value={<Kg value={o.scrap} />}
+          meta={<>Tỷ lệ phế <span className="font-semibold text-slate-700">{o.scrap_rate ?? 0}%</span></>} />
       </div>
 
-      <Panel delay={220} icon={AlertTriangle} title="Cảnh báo tồn NVL dưới 1 tấn"
-        subtitle="Chỉ xét NVL tính bằng kg · thanh đầy = 1.000 kg"
-        action={<Legend items={[{ label: "< 250 kg", color: C.overdue }, { label: "< 500 kg", color: "#f97316" }, { label: "< 1.000 kg", color: "#f59e0b" }]} />}>
-        {p.low_materials.length ? (
-          <ul className="divide-y divide-slate-100">
-            {p.low_materials.map((m) => (
-              <li key={m.name} className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,2fr)_96px] items-center gap-4 py-2.5 first:pt-0">
-                <span className="truncate text-sm font-medium text-slate-800" title={m.name}>{m.name}</span>
-                <Bar height={8} segments={[{ pct: (m.on_hand / 1000) * 100, color: sevColor(m.on_hand) }]} />
-                <span className="text-right text-sm font-semibold tabular-nums text-slate-900">{fmt(m.on_hand)} <span className="text-xs font-medium text-slate-400">{m.unit}</span></span>
-              </li>
-            ))}
-          </ul>
-        ) : <Empty text="Không có NVL (kg) nào dưới 1 tấn." />}
+      {/* Hàng 2 · Lệnh sản xuất */}
+      <Panel delay={260} icon={ClipboardList} title="Lệnh sản xuất" subtitle={`${periodLb}${ord.cancelled ? ` · không tính ${fmt(ord.cancelled)} lệnh đã hủy` : ""}`}
+        action={ord.overdue > 0 && (
+          <button type="button" onClick={() => pick("overdue")}
+            className={`inline-flex items-center gap-1.5 rounded-full bg-rose-50 px-2.5 py-1 text-xs font-semibold text-rose-600 ring-inset transition hover:bg-rose-100 ${view === "overdue" ? "ring-2 ring-rose-400" : "ring-1 ring-rose-100"}`}>
+            <AlertTriangle size={13} /> {fmt(ord.overdue)} lệnh quá hạn
+          </button>
+        )}>
+        {ord.total ? (
+          <>
+            <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
+              {[{ key: "total", label: "Tổng LSX" }, ...PO_STATES].map((st) => (
+                <button key={st.key} type="button" onClick={() => pick(st.key)}
+                  className={`rounded-xl px-4 py-3 text-left transition hover:bg-slate-100 ${view === st.key ? "bg-blue-50 ring-2 ring-blue-400" : "bg-slate-50"}`}>
+                  <div className="flex items-center gap-1.5 text-xs text-slate-500">
+                    {st.color && <span className="h-2 w-2 rounded-full" style={{ background: st.color }} />}{st.label}
+                  </div>
+                  <div className="mt-1 font-display text-2xl font-semibold tabular-nums text-slate-900"><Count value={ord[st.key]} /></div>
+                </button>
+              ))}
+            </div>
+            <Bar height={10} segments={PO_STATES.map((st) => ({ pct: pct(ord[st.key], ord.total), color: st.color, title: `${st.label}: ${ord[st.key]}` }))} />
+          </>
+        ) : <Empty icon={Info} tone="text-slate-400" text="Chưa có lệnh sản xuất nào tạo trong kỳ." />}
       </Panel>
+
+      {/* Hàng 3 · NVL */}
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+        <Panel delay={320} icon={PackageX} title="NVL đang thiếu"
+          subtitle="Cộng dồn NVL cần cung cấp của mọi lệnh đang mở chưa xuất NVL, so với tồn kho NVL">
+          {shortages.length ? (
+            <ul className="divide-y divide-slate-100">
+              {shortages.map((m) => (
+                <li key={m.code} className="py-2.5 first:pt-0">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <span className="truncate text-sm font-medium text-slate-800" title={`${m.code} · ${m.name}`}>{m.name}</span>
+                    <span className="shrink-0 text-sm font-semibold tabular-nums text-rose-600">−{fmt(m.short)} <span className="text-xs font-medium text-slate-400">{m.unit}</span></span>
+                  </div>
+                  <div className="mt-1.5">
+                    <Bar height={6} segments={[{ pct: pct(m.on_hand, m.need), color: C.good, title: `Tồn ${fmt(m.on_hand)}` }, { pct: 100 - pct(m.on_hand, m.need), color: C.overdue, title: `Thiếu ${fmt(m.short)}` }]} />
+                  </div>
+                  <div className="mt-1 text-xs text-slate-500">
+                    Cần {fmt(m.need)} · tồn {fmt(m.on_hand)} {m.unit} · ảnh hưởng <span className="font-semibold text-slate-700">{fmt(m.po_count)}</span> lệnh
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : <Empty text="Đủ NVL cho mọi lệnh đang mở." />}
+        </Panel>
+
+        <Panel delay={380} icon={AlertTriangle} title="Cảnh báo tồn kho"
+          subtitle="Dưới mức tồn tối thiểu khai ở Master data sản phẩm (Định mức theo Kho)"
+          action={<Legend items={[{ label: "< 25%", color: C.overdue }, { label: "< 50%", color: "#f97316" }, { label: "< 100%", color: "#f59e0b" }]} />}>
+          {low.length ? (
+            <ul className="divide-y divide-slate-100">
+              {low.map((m) => (
+                <li key={`${m.code}-${m.warehouse}`} className="py-2.5 first:pt-0">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <span className="min-w-0 truncate text-sm font-medium text-slate-800" title={`${m.code} · ${m.name}`}>
+                      {m.name} <span className="text-xs font-normal text-slate-400">· {m.warehouse || "—"}</span>
+                    </span>
+                    <span className="shrink-0 text-sm font-semibold tabular-nums text-slate-900">
+                      {fmt(m.on_hand)} <span className="text-xs font-medium text-slate-400">/ {fmt(m.min_qty)} {m.unit}</span>
+                    </span>
+                  </div>
+                  <div className="mt-1.5"><Bar height={6} segments={[{ pct: pct(m.on_hand, m.min_qty), color: lowColor(m) }]} /></div>
+                </li>
+              ))}
+            </ul>
+          ) : <Empty text="Không có sản phẩm nào dưới tồn tối thiểu." />}
+          <button type="button" onClick={() => navigate("/inventory")} className="mt-3 text-xs font-medium text-blue-600 hover:underline">Xem tồn kho →</button>
+        </Panel>
+      </div>
+
+      {/* Hàng 4 · Danh sách chi tiết theo thẻ đang chọn */}
+      <div ref={listRef} className="scroll-mt-4">
+        <Panel delay={440} icon={List} title="Danh sách chi tiết"
+          subtitle="Bấm vào thẻ sản lượng hoặc ô trạng thái lệnh ở trên để lọc danh sách"
+          action={view !== "all" && (
+            <button type="button" onClick={() => setView("all")} className="text-xs font-medium text-blue-600 hover:underline">Xem tất cả lệnh</button>
+          )}>
+          <ProdDetail key={view} view={view} rows={detailRows} isScrap={isScrap} periodLb={periodLb} />
+        </Panel>
+      </div>
     </div>
   );
 }
@@ -789,38 +1014,70 @@ const MEDALS = [
   "bg-gradient-to-br from-orange-300 to-orange-500 text-white shadow-sm shadow-orange-500/30",
 ];
 
+/* 3 tiêu chí xếp hạng — CÙNG thứ tự & màu với màn Hiệu suất nhân viên */
+const fmt3 = (v) => Number(v || 0).toFixed(3);
+const STAFF_CRITERIA = [
+  { key: "output", label: "Sản lượng", desc: "kg thành phẩm — cao nhất dẫn đầu", color: "#6366f1",
+    sort: (a, b) => b.output - a.output, val: (x) => x.output, show: (v) => <>{fmt(v)} <span className="text-xs font-medium text-slate-400">kg</span></> },
+  { key: "scrap", label: "Ít phế nhất", desc: "kg phế — ít nhất được vinh danh", color: "#10b981",
+    sort: (a, b) => a.scrap - b.scrap, val: (x) => x.scrap, show: (v) => <>{fmt(v)} <span className="text-xs font-medium text-slate-400">kg</span></> },
+  { key: "ratio", label: "Phế / 1kg thấp nhất", desc: "kg phế / kg thành phẩm — ít nhất được vinh danh", color: "#f59e0b",
+    sort: (a, b) => a.scrap_ratio - b.scrap_ratio, val: (x) => x.scrap_ratio, show: (v) => fmt3(v) },
+];
+
 function StaffView({ w }) {
-  const maxHour = Math.max(1, ...(w.top || []).map((x) => x.per_hour));
-  const champ = w.top[0];
+  const navigate = useNavigate();
+  const [crit, setCrit] = useState("output");
+  const cr = STAFF_CRITERIA.find((c) => c.key === crit);
+  const ranked = [...(w.workers || [])].sort(cr.sort).slice(0, 5);
+  const maxVal = Math.max(...ranked.map(cr.val), 0);
+  const unit = <span className="ml-1.5 text-[15px] font-medium text-slate-400">kg</span>;
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <KpiCard icon={Users} accent="blue" label="Công nhân trong xưởng" hint="Đang làm việc"
-          value={<><Count value={w.worker_count} /><span className="ml-1.5 text-[15px] font-medium text-slate-400">người</span></>} />
-        <KpiCard icon={Gauge} accent="violet" label="Năng suất trung bình" hint="Toàn xưởng" delay={70}
-          value={<><Count value={w.avg_per_hour} /><span className="ml-1.5 text-[15px] font-medium text-slate-400">sp / giờ</span></>} />
-        <KpiCard icon={Trophy} accent="amber" label="Quán quân năng suất" hint="Trong kỳ" delay={140}
-          valueClass="text-[22px] truncate"
-          value={<span title={champ?.worker}>{champ?.worker || "—"}</span>}
-          meta={champ ? <><span className="font-semibold text-slate-700">{fmt(champ.per_hour)}</span> sp/giờ · {fmt(champ.output)} sp</> : "Chưa có dữ liệu"} />
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <KpiCard icon={Users} accent="blue" label="Công nhân có sản xuất" hint="Trong kỳ"
+          value={<><Count value={w.active_count} /><span className="ml-1.5 text-[15px] font-medium text-slate-400">/ {fmt(w.worker_count)} người</span></>}
+          footer={<Meter label="Tỷ lệ tham gia sản xuất" value={pct(w.active_count, w.worker_count)} color={C.intime} />} />
+        <KpiCard icon={Factory} accent="violet" label="Tổng sản lượng" hint="Toàn xưởng" delay={70}
+          value={<>{fmt(w.total_output ?? 0)}{unit}</>}
+          meta={<>TB <span className="font-semibold text-slate-700">{fmt(w.avg_per_hour)}</span> kg / giờ công</>} />
+        <KpiCard icon={PackageX} accent={w.total_scrap > 0 ? "rose" : "slate"} label="Tổng phế" hint="Theo Quản lý phế" delay={140}
+          value={<>{fmt(w.total_scrap ?? 0)}{unit}</>} />
+        <KpiCard icon={Gauge} accent="amber" label="Phế / 1kg (TB)" hint="kg phế / kg thành phẩm" delay={210}
+          value={fmt3(w.scrap_ratio)} />
       </div>
 
-      <Panel delay={220} icon={Trophy} title="Bảng xếp hạng năng suất" subtitle="Sản phẩm / giờ công · giờ công tính 8 giờ/ngày có làm việc">
-        {w.top.length ? (
+      <Panel delay={260} icon={Trophy} title="Bảng xếp hạng nhân viên" subtitle={`Top 5 · ${cr.desc}`}
+        action={
+          <div className="flex flex-wrap gap-1 rounded-lg bg-slate-100 p-1">
+            {STAFF_CRITERIA.map((c) => (
+              <button key={c.key} type="button" onClick={() => setCrit(c.key)}
+                className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${crit === c.key ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
+                {c.label}
+              </button>
+            ))}
+          </div>
+        }>
+        {ranked.length ? (
           <ol className="divide-y divide-slate-100">
-            {w.top.map((x, i) => (
+            {ranked.map((x, i) => (
               <li key={x.worker} className="grid grid-cols-[32px_minmax(0,1.2fr)_minmax(0,2fr)_96px] items-center gap-4 py-3 first:pt-0">
                 <span className={`flex h-8 w-8 items-center justify-center rounded-full text-xs font-bold ${MEDALS[i] || "bg-slate-100 text-slate-500"}`}>{i + 1}</span>
                 <div className="min-w-0">
                   <div className="truncate text-sm font-medium text-slate-800" title={x.worker}>{x.worker}</div>
-                  <div className="text-xs text-slate-400">{fmt(x.output)} sản phẩm</div>
+                  <div className="truncate text-xs text-slate-400">
+                    {x.team ? `${x.team} · ` : ""}{fmt(x.output)} kg · phế {fmt(x.scrap)} kg · {fmt(x.per_hour)} kg/giờ
+                  </div>
                 </div>
-                <Bar height={8} segments={[{ pct: (x.per_hour / maxHour) * 100, color: i === 0 ? "#f59e0b" : C.violet }]} />
-                <span className="text-right text-sm font-semibold tabular-nums text-slate-900">{fmt(x.per_hour)} <span className="text-xs font-medium text-slate-400">sp/h</span></span>
+                <Bar height={8} segments={[{ pct: maxVal > 0 ? (cr.val(x) / maxVal) * 100 : 0, color: cr.color }]} />
+                <span className="text-right text-sm font-semibold tabular-nums text-slate-900">{cr.show(cr.val(x))}</span>
               </li>
             ))}
           </ol>
         ) : <Empty icon={Info} tone="text-slate-400" text="Chưa có sản lượng trong kỳ để xếp hạng." />}
+        <button type="button" onClick={() => navigate("/reports/employees")} className="mt-3 text-xs font-medium text-blue-600 hover:underline">
+          Xem chi tiết tại Hiệu suất nhân viên →
+        </button>
       </Panel>
     </div>
   );

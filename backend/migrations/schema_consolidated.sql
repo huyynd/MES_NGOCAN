@@ -2486,3 +2486,8 @@ UPDATE public.delivery_notes
          WHEN paid_amount > 0.005 THEN 'Đã thanh toán 1 phần'
          WHEN status IN ('Đã thanh toán 1 phần', 'Đã thanh toán') THEN 'Chờ thanh toán'
          ELSE status END;
+
+-- 17) ĐƠN HÀNG CÓ / KHÔNG VAT — tick "Có VAT 8%" ở form đơn hàng. Mặc định TRUE: mọi đơn cũ giữ cách hiển thị
+--     cũ (sau VAT = trước VAT × 1,08). FALSE: sau VAT = thành tiền (không cộng 8%).
+--     Chỉ ảnh hưởng phần HIỂN THỊ tiền sau VAT của đơn; phiếu giao / công nợ vẫn tính theo tiền trước VAT như cũ.
+ALTER TABLE public.sales_orders ADD COLUMN IF NOT EXISTS has_vat boolean NOT NULL DEFAULT true;
