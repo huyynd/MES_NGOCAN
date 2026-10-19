@@ -2,7 +2,11 @@
 const db = require('../../core/db');
 const { buildSpecKey, legacyAttrs, specsFromBody } = require('../../core/lib/specs');
 const { upUnit } = require('../../core/lib/units');
-const { guardDelete } = require('../../core/lib/deleteGuard');
+const { guardDelete, findDependent } = require('../../core/lib/deleteGuard');
+
+// Trạng thái hợp lệ (khớp CHECK sales_orders_status_check) — chặn status rác → 500
+const ORDER_STATUSES = ['Mới', 'Đang sản xuất', 'Hoàn thành sản xuất', 'Chuyển hàng 1 phần', 'Đang vận chuyển',
+  'Đã vận chuyển, chưa thanh toán', 'Đã thanh toán', 'Hoàn thành', 'Đã hủy'];
 
 exports.list = async (req, res) => {
   try {
@@ -132,6 +136,23 @@ exports.deliverableOrders = async (req, res) => {
 
 const numOrNull = (v) => (v === '' || v == null ? null : v);
 
+// Kiểm dòng hàng có chọn sản phẩm: SL là số > 0, đơn giá (nếu gửi) là số ≥ 0. Trả thông báo lỗi hoặc null.
+// Đơn giá bỏ trống = NV không có quyền tiền → không gửi, hợp lệ.
+function itemsError(items) {
+  const list = Array.isArray(items) ? items : [];
+  for (let i = 0; i < list.length; i++) {
+    const it = list[i];
+    if (!it || !it.product_id) continue;
+    const q = Number(it.quantity);
+    if (it.quantity === '' || it.quantity == null || !Number.isFinite(q) || q <= 0) return `Dòng ${i + 1}: Số lượng phải là số lớn hơn 0.`;
+    if (it.unit_price !== undefined && it.unit_price !== '' && it.unit_price !== null) {
+      const p = Number(it.unit_price);
+      if (!Number.isFinite(p) || p < 0) return `Dòng ${i + 1}: Đơn giá phải là số không âm.`;
+    }
+  }
+  return null;
+}
+
 // UPSERT dòng hàng: giữ id cũ (không xóa-tạo lại) để bảo toàn ngày thực tế + liên kết lệnh SX.
 async function saveItems(client, orderId, items) {
   const list = (Array.isArray(items) ? items : []).filter((x) => x && x.product_id && x.quantity);
@@ -160,7 +181,7 @@ async function saveItems(client, orderId, items) {
         `INSERT INTO sales_order_items
            (sales_order_id, product_id, quantity, unit, specs, spec_key, attr_size, attr_thickness, attr_color,
             core_weight, total_weight, note, planned_start_date, planned_end_date, material_type, mix_ratio, unit_price)
-         VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,COALESCE($17,0))`,
+         VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,COALESCE($17::numeric,0))`,
         [orderId, ...base]);
     }
   }
@@ -173,23 +194,57 @@ exports.create = async (req, res) => {
     if (!b.customer_id) return res.status(400).json({ message: 'Vui lòng chọn Khách hàng' });
     if (!Array.isArray(b.items) || !b.items.filter(x => x.product_id && x.quantity).length)
       return res.status(400).json({ message: 'Đơn hàng cần ít nhất 1 dòng hàng hợp lệ' });
+    const itemErr = itemsError(b.items);
+    if (itemErr) return res.status(400).json({ message: itemErr });
     await client.query('BEGIN');
     const { rows } = await client.query(
       `INSERT INTO sales_orders (customer_id, order_date, due_date, status, note, material_type, priority, mix_ratio, has_vat)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-      [b.customer_id, b.order_date || new Date(), b.due_date || null, b.status || 'Mới', b.note || null, b.material_type || null, b.priority || 'Trung bình', JSON.stringify(b.mix_ratio || []),
+      // Đơn mới LUÔN "Mới" (bỏ qua b.status) — các trạng thái sau đi theo sản xuất / giao hàng
+      [b.customer_id, b.order_date || new Date(), b.due_date || null, 'Mới', b.note || null, b.material_type || null, b.priority || 'Trung bình', JSON.stringify(b.mix_ratio || []),
        b.has_vat !== false]); // mặc định CÓ VAT (như trước); chỉ false khi bỏ tick
     await saveItems(client, rows[0].id, b.items);
     await client.query('COMMIT');
     res.status(201).json(rows[0]);
-  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi tạo đơn hàng' }); }
+  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: 'Lỗi khi tạo đơn hàng' }); }
   finally { client.release(); }
 };
+
+// B1: đơn còn phiếu giao (chưa hủy) hoặc LSX chưa hủy thì KHÔNG được hủy / xóa — trả thông báo hoặc null.
+const ORDER_DEPENDENTS = [
+  {
+    sql: `SELECT DISTINCT dn.note_code AS code FROM delivery_note_items di
+          JOIN delivery_notes dn ON dn.id = di.delivery_note_id
+          JOIN sales_order_items it ON it.id = di.sales_order_item_id
+          WHERE it.sales_order_id = $1 AND dn.is_deleted = FALSE AND dn.status <> 'Đã hủy' ORDER BY 1`,
+    message: (rows) => `Đơn đã có phiếu giao (${rows.map((r) => r.code).join(', ')}) — không thể hủy / xóa. Hãy hủy hoặc xóa phiếu giao trước.`,
+  },
+  {
+    sql: `SELECT order_code AS code FROM production_orders
+          WHERE sales_order_id = $1 AND is_deleted = FALSE AND status <> 'Đã hủy' ORDER BY 1`,
+    message: (rows) => `Đơn đã có lệnh sản xuất chưa hủy (${rows.map((r) => r.code).join(', ')}) — không thể hủy / xóa. Hãy hủy lệnh sản xuất trước.`,
+  },
+];
 
 exports.update = async (req, res) => {
   const client = await db.pool.connect();
   try {
     const b = req.body;
+    const itemErr = b.items !== undefined ? itemsError(b.items) : null;
+    if (itemErr) return res.status(400).json({ message: itemErr });
+    if (b.status !== undefined) {
+      const cur = (await client.query(`SELECT status FROM sales_orders WHERE id = $1 AND is_deleted = FALSE`, [req.params.id])).rows[0];
+      if (!cur) return res.status(404).json({ message: 'Không tìm thấy đơn hàng' });
+      if (b.status !== cur.status) {
+        if (!ORDER_STATUSES.includes(b.status)) return res.status(400).json({ message: `Trạng thái "${b.status}" không hợp lệ.` });
+        // Đơn đã hủy chỉ được khôi phục về "Mới"
+        if (cur.status === 'Đã hủy' && b.status !== 'Mới') return res.status(400).json({ message: 'Đơn đã hủy chỉ có thể khôi phục về trạng thái "Mới".' });
+        if (b.status === 'Đã hủy') {
+          const dep = await findDependent(req.params.id, ORDER_DEPENDENTS);
+          if (dep) return res.status(400).json({ message: dep });
+        }
+      }
+    }
     await client.query('BEGIN');
     const fields = ['customer_id', 'order_date', 'due_date', 'status', 'note', 'material_type', 'priority', 'mix_ratio', 'has_vat'];
     const cols = [], vals = []; let i = 1;
@@ -204,7 +259,7 @@ exports.update = async (req, res) => {
     if (b.items !== undefined) await saveItems(client, req.params.id, b.items);
     await client.query('COMMIT');
     res.json({ message: 'Đã cập nhật đơn hàng' });
-  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi cập nhật' }); }
+  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: 'Lỗi khi cập nhật' }); }
   finally { client.release(); }
 };
 
@@ -213,6 +268,7 @@ exports.remove = async (req, res) => {
     const g = await guardDelete('sales_orders', req.params.id, {
       allow: ['Đã hủy'],
       message: 'Không thể xóa đơn hàng đang xử lý. Chỉ xóa được đơn ở trạng thái "Đã hủy" — vui lòng chuyển đơn sang "Đã hủy" trước, rồi mới xóa.',
+      dependents: ORDER_DEPENDENTS,
     });
     if (g.notFound) return res.status(404).json({ message: 'Không tìm thấy đơn hàng' });
     if (g.blocked) return res.status(400).json({ message: g.message });

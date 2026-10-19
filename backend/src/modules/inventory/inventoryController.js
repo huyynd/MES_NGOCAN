@@ -4,11 +4,16 @@ const { buildSpecKey, legacyAttrs, specsFromBody } = require('../../core/lib/spe
 const { upUnit } = require('../../core/lib/units');
 const { getDataScope } = require('../../core/dataScope');
 const { applyStock, stockErrorResponse } = require('../../core/lib/stock');
+const { nextSlipCode } = require('../../core/lib/codes');
+
+// A5: tồn của SP / kho / vị trí ĐÃ XÓA không hiển thị, không tính tổng (dữ liệu cũ vẫn giữ trong DB).
+// Dòng tồn cũ không có vị trí (location_id NULL) của SP còn hoạt động vẫn hiện.
+const NOT_DELETED = `p.is_deleted = FALSE AND COALESCE(l.is_deleted, FALSE) = FALSE AND COALESCE(w.is_deleted, FALSE) = FALSE`;
 
 // GET /api/inventory/tree — tồn kho (trả về dữ liệu phẳng để frontend tự nhóm)
 exports.tree = async (req, res) => {
   try {
-    const where = [];
+    const where = [NOT_DELETED];
     const params = []; let i = 1;
     const { product_id, q } = req.query;
     if (product_id) { where.push(`s.product_id = $${i++}`); params.push(product_id); }
@@ -46,7 +51,7 @@ exports.tree = async (req, res) => {
 // GET /api/inventory — tồn kho GỘP theo sản phẩm + kho (mỗi (SP, kho) là 1 dòng)
 exports.list = async (req, res) => {
   try {
-    const where = [];
+    const where = [NOT_DELETED];
     const params = []; let i = 1;
     const { product_id, warehouse_id, q } = req.query;
     if (product_id)   { where.push(`s.product_id = $${i++}`); params.push(product_id); }
@@ -95,7 +100,7 @@ exports.stockDetail = async (req, res) => {
       FROM inventory_stock s
       LEFT JOIN locations l ON l.id = s.location_id
       LEFT JOIN production_orders po ON po.id = s.prod_order_id
-      WHERE s.product_id = $1 AND ${whCond}
+      WHERE s.product_id = $1 AND ${whCond} AND COALESCE(l.is_deleted, FALSE) = FALSE
       ORDER BY l.name NULLS FIRST, s.spec_key, s.lot_code`, params);
     const prod = (await db.query(`SELECT id, product_code, product_name, product_type FROM products WHERE id = $1`, [product_id])).rows[0];
     let warehouse = null;
@@ -282,10 +287,8 @@ exports.createOutboundSlip = async (req, res) => {
 
     await client.query('BEGIN');
 
-    // Sinh mã phiếu PXK00001…
-    const slipCode = (await client.query(
-      `SELECT 'PXK' || LPAD((COALESCE(MAX(NULLIF(regexp_replace(slip_code,'\\D','','g'),''))::int,0)+1)::text,5,'0') AS code
-       FROM outbound_slips WHERE slip_code ~ '^PXK[0-9]+$'`)).rows[0].code;
+    // Sinh mã phiếu PXK00001… (D1: khóa theo bảng — tạo đồng thời không trùng mã)
+    const slipCode = await nextSlipCode(client);
 
     const slip = (await client.query(
       `INSERT INTO outbound_slips (slip_code, purpose, location_id, status, note, created_by)
@@ -504,7 +507,7 @@ exports.transfer = async (req, res) => {
     for (const sr of srcRows) {
       if (remain <= 1e-9) break;
       const take = Math.min(remain, Number(sr.quantity));
-      const common = { product_id: b.product_id, unit: sr.unit || unit, specs: sr.specs || {}, spec_key: sr.spec_key, lot_code: sr.lot_code || '', clampZero: false };
+      const common = { product_id: b.product_id, unit: sr.unit || unit, specs: sr.specs || {}, spec_key: sr.spec_key, lot_code: sr.lot_code || '', clampZero: false, transfer: true };
       // 1. Xuất khỏi kho nguồn
       await applyStock(client, { ...common, location_id: b.from_location_id, delta: -take, trx_type: 'Xuất', note: `Chuyển kho → ${toLabel}${b.note ? ' | ' + b.note : ''}` });
       // 2. Nhập vào kho đích (cùng spec_key + lô)
@@ -513,7 +516,10 @@ exports.transfer = async (req, res) => {
     }
 
     await client.query('COMMIT');
-    res.status(201).json({ message: `Đã chuyển ${qty} ${unit} từ ${fromLabel} → ${toLabel}` });
+    // F5: không gửi đơn vị → lấy từ dòng tồn / sản phẩm (trước đây hiện "Đã chuyển 2 null")
+    const shownUnit = unit || upUnit(srcRows[0]?.unit)
+      || upUnit((await client.query(`SELECT unit FROM products WHERE id = $1`, [b.product_id])).rows[0]?.unit) || '';
+    res.status(201).json({ message: `Đã chuyển ${qty.toLocaleString('vi-VN')}${shownUnit ? ' ' + shownUnit : ''} từ ${fromLabel} → ${toLabel}` });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error(err); if (stockErrorResponse(res, err)) return;

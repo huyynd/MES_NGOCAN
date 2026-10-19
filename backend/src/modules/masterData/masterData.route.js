@@ -3,6 +3,26 @@ const router = express.Router();
 const { requirePerm } = require('../../core/requireAuth');
 const { makeCrud } = require('../../core/genericCrud');
 const production = require('../production/productionController');
+const { WAREHOUSE_DEPENDENTS, LOCATION_DEPENDENTS, EMPLOYEE_DEPENDENTS } = require('../../core/lib/deleteGuard');
+const { duplicateNameMessage, isEmail, isTime } = require('../../core/lib/validate');
+
+// F4: kiểm dữ liệu danh mục → 400 tiếng Việt (trước đây thiếu tên / giờ sai → 500).
+// Tạo (id = null): tên bắt buộc. Sửa: chỉ kiểm trường có gửi lên.
+const requireName = (label) => (b, id) =>
+  ((!id || b.name !== undefined) && !String(b.name || '').trim() ? `Vui lòng nhập ${label}.` : null);
+const validators = {
+  customers: async (conn, b, id) => requireName('Tên khách hàng')(b, id)
+    || (b.email && !isEmail(b.email) ? 'Email không đúng định dạng.' : null)
+    || (b.name !== undefined ? await duplicateNameMessage(conn, { table: 'customers', codeCol: 'customer_code', label: 'Khách hàng' }, b.name, id) : null),
+  machines: async (conn, b, id) => requireName('Tên máy')(b, id),
+  warehouses: async (conn, b, id) => requireName('Tên kho')(b, id),
+  zones: async (conn, b, id) => requireName('Tên khu vực')(b, id),
+  locations: async (conn, b, id) => requireName('Tên vị trí')(b, id) || (!id && !b.warehouse_id ? 'Vui lòng chọn Kho.' : null),
+  employees: async (conn, b, id) => requireName('Tên nhân viên')(b, id),
+  shifts: async (conn, b, id) => requireName('Tên ca')(b, id)
+    || (b.start_time && !isTime(b.start_time) ? 'Giờ bắt đầu không hợp lệ (định dạng HH:MM, 00:00–23:59).' : null)
+    || (b.end_time && !isTime(b.end_time) ? 'Giờ kết thúc không hợp lệ (định dạng HH:MM, 00:00–23:59).' : null),
+};
 
 // ---- Master data ----
 function mountCrud(path, crud) {
@@ -15,14 +35,14 @@ function mountCrud(path, crud) {
 }
 
 mountCrud('/customers', makeCrud({
-  table: 'customers',
+  table: 'customers', validate: validators.customers,
   columns: ['name', 'customer_type', 'phone', 'email', 'address', 'status'],
   searchCols: ['name', 'customer_code', 'phone'], exactCols: ['customer_type', 'status'], codeCol: 'customer_code',
   blockDeleteStatuses: ['Hoạt động'],
 }));
 
 mountCrud('/machines', makeCrud({
-  table: 'machines',
+  table: 'machines', validate: validators.machines,
   columns: ['name', 'factory', 'machine_type', 'status'],
   searchCols: ['name', 'machine_code'], exactCols: ['factory', 'status'], codeCol: 'machine_code',
   blockDeleteStatuses: ['Hoạt động', 'Bảo trì'],
@@ -38,7 +58,7 @@ mountCrud('/machines', makeCrud({
 router.get('/machines/:id/orders', production.byMachine);
 
 mountCrud('/warehouses', makeCrud({
-  table: 'warehouses',
+  table: 'warehouses', validate: validators.warehouses,
   columns: [
     'name', 'warehouse_type', 'status', 'purpose', 'factory', 'workshop',
     'address', 'manager', 'department', 'phone', 'description',
@@ -48,34 +68,37 @@ mountCrud('/warehouses', makeCrud({
   ],
   searchCols: ['name', 'warehouse_code'], exactCols: ['warehouse_type', 'status'], codeCol: 'warehouse_code',
   blockDeleteStatuses: ['Hoạt động', 'Đang kiểm đếm'],
+  deleteDependents: WAREHOUSE_DEPENDENTS,
 }));
 
 mountCrud('/zones', makeCrud({
-  table: 'zones',
+  table: 'zones', validate: validators.zones,
   columns: ['warehouse_id', 'name', 'description', 'status'],
   searchCols: ['name', 'zone_code'], exactCols: ['warehouse_id', 'status'], codeCol: 'zone_code',
   blockDeleteStatuses: ['Hoạt động'],
 }));
 
 mountCrud('/locations', makeCrud({
-  table: 'locations',
+  table: 'locations', validate: validators.locations,
   columns: ['warehouse_id', 'zone_id', 'name'],
   searchCols: ['name', 'location_code'], exactCols: ['warehouse_id', 'zone_id'], codeCol: 'location_code',
+  deleteDependents: LOCATION_DEPENDENTS,
 }));
 
 mountCrud('/shifts', makeCrud({
-  table: 'shifts',
+  table: 'shifts', validate: validators.shifts,
   columns: ['name', 'start_time', 'end_time', 'status'],
   searchCols: ['name', 'shift_code'], exactCols: ['status'], orderBy: 'shift_code', codeCol: 'shift_code',
   blockDeleteStatuses: ['Hoạt động'],
 }));
 
 mountCrud('/employees', makeCrud({
-  table: 'employees',
+  table: 'employees', validate: validators.employees,
   columns: ['name', 'factory', 'position', 'skill_level', 'phone', 'status'],
   searchCols: ['name', 'employee_code', 'phone'], exactCols: ['factory', 'status'], codeCol: 'employee_code',
   blockDeleteStatuses: ['Hoạt động'],
   blockDeleteMessage: 'Không thể xóa nhân viên đang "Hoạt động" - họ có thể đang được phân công ở công việc khác. Vui lòng chuyển trạng thái sang "Không hoạt động" (hoặc "Đã nghỉ") trước, rồi mới xóa.',
+  deleteDependents: EMPLOYEE_DEPENDENTS,
 }));
 
 module.exports = router;

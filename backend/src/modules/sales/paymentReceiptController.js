@@ -60,6 +60,30 @@ function cleanBody(b, { forCreate }) {
   return { data: out };
 }
 
+// C1: kiểm dữ liệu cần tra DB — ngày hợp lệ & không sau hôm nay (giờ VN), khách tồn tại,
+// đơn hàng gắn kèm phải là đơn của CHÍNH khách đó. Trả thông báo lỗi hoặc null.
+const isYmd = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s).slice(0, 10)) && !Number.isNaN(Date.parse(String(s).slice(0, 10)));
+const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s));
+async function refsError(conn, b, customerId) {
+  if (!isYmd(b.pay_date)) return 'Ngày thanh toán không hợp lệ.';
+  if (b.invoice_date && !isYmd(b.invoice_date)) return 'Ngày hóa đơn không hợp lệ.';
+  const { future } = (await conn.query(
+    `SELECT $1::date > (now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS future`, [String(b.pay_date).slice(0, 10)])).rows[0];
+  if (future) return 'Ngày thanh toán không được sau hôm nay.';
+  if (!isUuid(customerId)) return 'Khách hàng không tồn tại.';
+  const c = (await conn.query(`SELECT 1 FROM customers WHERE id = $1 AND is_deleted = FALSE`, [customerId])).rowCount;
+  if (!c) return 'Khách hàng không tồn tại.';
+  if (b.sales_order_ids.length) {
+    if (!b.sales_order_ids.every(isUuid)) return 'Đơn hàng gắn kèm không hợp lệ.';
+    const bad = (await conn.query(
+      `SELECT x.id, so.order_code FROM unnest($1::uuid[]) AS x(id)
+         LEFT JOIN sales_orders so ON so.id = x.id AND so.is_deleted = FALSE
+        WHERE so.id IS NULL OR so.customer_id <> $2`, [b.sales_order_ids, customerId])).rows;
+    if (bad.length) return `Đơn hàng ${bad.map((r) => r.order_code || '(không tồn tại)').join(', ')} không phải đơn của khách này.`;
+  }
+  return null;
+}
+
 exports.list = async (req, res) => {
   if (!canViewAmounts(req)) return noView(res);
   try {
@@ -86,6 +110,8 @@ exports.create = async (req, res) => {
   const b = v.data;
   const client = await db.pool.connect();
   try {
+    const refErr = await refsError(client, b, b.customer_id);
+    if (refErr) return res.status(400).json({ message: refErr });
     await client.query('BEGIN');
     const r = (await client.query(
       `INSERT INTO payment_receipts (customer_id, pay_date, invoice_date, invoice_no, payer_name, method, content, amount, sales_order_ids, created_by)
@@ -120,6 +146,8 @@ exports.update = async (req, res) => {
       `SELECT customer_id, pay_date::text AS pay_date FROM payment_receipts WHERE id = $1 AND is_cancelled = FALSE FOR UPDATE`,
       [req.params.id])).rows[0];
     if (!cur) { await client.query('ROLLBACK'); return res.status(404).json({ message: 'Không tìm thấy phiếu (hoặc phiếu đã hủy).' }); }
+    const refErr = await refsError(client, b, cur.customer_id);
+    if (refErr) { await client.query('ROLLBACK'); return res.status(400).json({ message: refErr }); }
     await client.query(
       `UPDATE payment_receipts SET pay_date=$2, invoice_date=$3, invoice_no=$4, payer_name=$5, method=$6, content=$7,
               sales_order_ids=$8::uuid[], updated_at=now()

@@ -286,13 +286,15 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
     }
     // Phiếu đã rời Bản nháp: chỉ lưu thông tin phiếu (trạng thái, ghi chú, đã trả) — dòng hàng đã chốt
     const body = { ...f, ...(payloadItems ? { items: payloadItems } : {}) };
+    // B7: đơn giá lệch đơn hàng → chỉ cảnh báo sau khi lưu (không chặn)
+    const warnPrice = (r) => { if (r?.warnings?.length) toast(`⚠ Đơn giá khác đơn hàng:\n${r.warnings.join("\n")}`, { duration: 8000 }); };
     try {
       if (editId) {
-        await api.update(editId, body);
+        warnPrice(await api.update(editId, body));
         toast.success("Đã lưu thành công");
         setEditing(false); load(); // ở lại màn chi tiết
       } else {
-        await api.create(body);
+        warnPrice(await api.create(body));
         toast.success("Đã lưu thành công"); onSaved(); // tạo mới → về list
       }
     } catch (e) { toast.error("Lỗi lưu phiếu: " + e.message); }
@@ -314,7 +316,7 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
             <button onClick={ship} className="btn-primary"><Truck size={16} /> Giao hàng</button>}
           <button onClick={() => onPrint?.(editId)} className="btn-ghost"><Printer size={16} /> In phiếu</button>
           {can("deliveries", "edit") && <button onClick={() => setEditing(true)} className="btn-ghost"><Pencil size={16} /> Sửa</button>}
-          {can("deliveries", "delete") && <button onClick={del} className="btn-ghost" style={{ color: "#e11d48" }}><Trash2 size={16} /> Xóa</button>}
+          {can("deliveries", "delete") && f.status === "Đã hủy" && <button onClick={del} className="btn-ghost" style={{ color: "#e11d48" }}><Trash2 size={16} /> Xóa</button>}
         </>) : (<>
           {editId && <button onClick={() => { setEditing(false); load(); }} className="btn-ghost">Hủy</button>}
           <button onClick={save} disabled={blockedNew} className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
@@ -341,7 +343,9 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
                 {(DN_TRANSITIONS[f.status] || []).map((s) => <option key={s} value={s}>{s}</option>)}
               </select>
             </Field>
-            <Field label="Ngày giao"><input type="date" className={inputCls} value={f.delivery_date} onChange={(e) => set("delivery_date", e.target.value)} /></Field>
+            {/* Ngày giao chốt = ngày bấm "Giao hàng" → sau đó khóa; không chọn ngày tương lai */}
+            <Field label="Ngày giao"><input type="date" className={inputCls} value={f.delivery_date} max={today()} disabled={!isDraft}
+              title={!isDraft ? "Ngày giao đã chốt khi bấm Giao hàng" : undefined} onChange={(e) => set("delivery_date", e.target.value)} /></Field>
             <Field label="Ghi chú"><input className={inputCls} value={f.note} onChange={(e) => set("note", e.target.value)} /></Field>
             {showMoney && <Field label="Tổng tiền phiếu">
               <div className={inputCls + " bg-slate-50 font-semibold text-slate-800"}>{fmt(total)} đ</div>
@@ -646,7 +650,7 @@ export default function DeliveriesModule({ lookups, focusOrderId, onFocusConsume
     { key: "_act", label: "", align: "right", render: (r) => (<>
         <button onClick={() => { setVoucherId(r.id); setView("voucher"); }} title="In phiếu" className="text-slate-400 hover:text-emerald-600 p-1"><FileText size={15} /></button>
         <button onClick={() => { setEditId(r.id); setView("form"); }} title="Sửa" className="text-slate-400 hover:text-blue-600 p-1"><Pencil size={15} /></button>
-        {can("deliveries", "delete") && <button onClick={() => del(r.id)} title="Xóa" className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={15} /></button>}
+        {can("deliveries", "delete") && r.status === "Đã hủy" && <button onClick={() => del(r.id)} title="Xóa" className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={15} /></button>}
       </>) },
   ];
 

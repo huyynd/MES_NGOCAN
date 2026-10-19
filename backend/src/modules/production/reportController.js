@@ -1,4 +1,15 @@
 const db = require('../../core/db');
+const { upUnit } = require('../../core/lib/units');
+
+// A5: nguồn tồn kho cho báo cáo — bỏ tồn của SP / kho / vị trí đã xóa (cùng điều kiện màn Tồn kho)
+// G3: kỳ báo cáo — nhận cả fromDate/toDate lẫn from/to (các màn cũ dùng khác nhau), không đổi tham số cũ
+const periodOf = (q = {}) => ({ fromDate: q.fromDate || q.from || undefined, toDate: q.toDate || q.to || undefined });
+
+const VISIBLE_STOCK = `inventory_stock s
+      JOIN products p ON p.id = s.product_id
+      LEFT JOIN locations l ON l.id = s.location_id
+      LEFT JOIN warehouses w ON w.id = l.warehouse_id
+      WHERE p.is_deleted = FALSE AND COALESCE(l.is_deleted, FALSE) = FALSE AND COALESCE(w.is_deleted, FALSE) = FALSE`;
 
 // L67: "Đã sản xuất" của một lệnh = Σ lần HOÀN THÀNH ở CÔNG ĐOẠN CUỐI (có Cắt → Cắt, không → Thổi).
 // Cùng định nghĩa với recomputeOrder / produced_qty ở productionController. Trước đây cộng mọi
@@ -18,9 +29,15 @@ exports.kpi = async (req, res) => {
       SELECT
         (SELECT COUNT(*)::int FROM production_orders WHERE is_deleted = FALSE) AS total_production_orders,
         (SELECT COUNT(*)::int FROM production_orders WHERE is_deleted = FALSE AND status = 'Đang sản xuất') AS active_production_orders,
-        (SELECT COUNT(*)::int FROM machines WHERE is_deleted = FALSE AND status = 'Hoạt động') AS active_machines,
-        (SELECT COALESCE(SUM(quantity), 0) FROM inventory_stock) AS total_inventory_items
+        (SELECT COUNT(*)::int FROM machines WHERE is_deleted = FALSE AND status = 'Hoạt động') AS active_machines
     `);
+    // F3: tổng tồn TÁCH THEO ĐƠN VỊ (không cộng lẫn cái + kg). A5: bỏ tồn của SP / kho / vị trí đã xóa.
+    const byUnit = await db.query(`
+      SELECT UPPER(TRIM(COALESCE(NULLIF(s.unit, ''), p.unit, ''))) AS unit_key,
+             MIN(COALESCE(NULLIF(s.unit, ''), p.unit, '')) AS unit, SUM(s.quantity)::numeric AS qty
+      FROM ${VISIBLE_STOCK}
+      GROUP BY 1 HAVING SUM(s.quantity) <> 0 ORDER BY SUM(s.quantity) DESC`);
+    kpi.rows[0].inventory_by_unit = byUnit.rows.map((r) => ({ unit: upUnit(r.unit) || '(không đơn vị)', qty: Number(r.qty) }));
     const trendQuery = await db.query(`
       WITH dates AS (
         SELECT generate_series(CURRENT_DATE - INTERVAL '6 days', CURRENT_DATE, '1 day'::interval)::date AS d
@@ -38,12 +55,21 @@ exports.kpi = async (req, res) => {
       SELECT p.product_name AS name, SUM(po.quantity) AS plan_qty
       FROM production_orders po JOIN products p ON p.id = po.product_id WHERE po.is_deleted = FALSE GROUP BY p.product_name ORDER BY plan_qty DESC LIMIT 5
     `);
-    const inventoryQuery = await db.query(`SELECT p.product_types->>0 AS name, SUM(s.quantity) AS value FROM inventory_stock s JOIN products p ON p.id = s.product_id GROUP BY p.product_types->>0`);
+    // Biểu đồ tồn theo loại SP — tách theo đơn vị để cột không cộng lẫn cái + kg
+    const inventoryQuery = await db.query(`
+      SELECT p.product_types->>0 AS type, MIN(COALESCE(NULLIF(s.unit, ''), p.unit, '')) AS unit, SUM(s.quantity)::numeric AS value
+      FROM ${VISIBLE_STOCK}
+      GROUP BY p.product_types->>0, UPPER(TRIM(COALESCE(NULLIF(s.unit, ''), p.unit, '')))
+      HAVING SUM(s.quantity) <> 0 ORDER BY 1, 2`);
+    inventoryQuery.rows = inventoryQuery.rows.map((r) => ({
+      name: `${r.type || 'Khác'}${upUnit(r.unit) ? ` (${upUnit(r.unit)})` : ''}`, value: Number(r.value),
+    }));
     const invAlertQuery = await db.query(`
       WITH stock_per_wh AS (
         SELECT s.product_id, l.warehouse_id, SUM(s.quantity) AS qty
         FROM inventory_stock s
         JOIN locations l ON l.id = s.location_id
+        WHERE l.is_deleted = FALSE
         GROUP BY s.product_id, l.warehouse_id
       ),
       product_limits AS (
@@ -79,7 +105,8 @@ exports.kpi = async (req, res) => {
 
 exports.detailed = async (req, res) => {
   try {
-    const { fromDate, toDate, orderCode, productId, status } = req.query;
+    const { orderCode, productId, status } = req.query;
+    const { fromDate, toDate } = periodOf(req.query);
 
     // Build filter conditions
     const params = [];
@@ -384,7 +411,7 @@ async function employeeRows({ fromDate, toDate, stage, shift, team, orderCode } 
 
 exports.employees = async (req, res) => {
   try {
-    res.json({ data: await employeeRows(req.query) });
+    res.json({ data: await employeeRows({ ...req.query, ...periodOf(req.query) }) });
   } catch (err) { console.error(err); res.status(500).json({ message: 'L\u1ed7i khi l\u1ea5y b\u00e1o c\u00e1o nh\u00e2n vi\u00ean' }); }
 };
 
@@ -399,7 +426,8 @@ exports.employeeTasks = async (req, res) => {
       return res.status(403).json({ message: 'Bạn không có quyền xem báo cáo của nhân viên khác' });
     }
     
-    const { fromDate, toDate, stage, shift, team } = req.query;
+    const { stage, shift, team } = req.query;
+    const { fromDate, toDate } = periodOf(req.query);
     const params = [worker]; let i = 2;
     // Match task-level OR order-level assigned_worker
     // Dùng updated_at ưu tiên: để tìm task được hoàn thành trong kỳ dù planned_date có thể lệch
@@ -590,7 +618,7 @@ exports.director = async (req, res) => {
         nvl AS (
           SELECT s.product_id, SUM(s.quantity) AS oh
           FROM inventory_stock s JOIN locations l ON l.id=s.location_id JOIN warehouses w ON w.id=l.warehouse_id
-          WHERE w.warehouse_type='NVL' GROUP BY s.product_id
+          WHERE w.warehouse_type='NVL' AND w.is_deleted=FALSE AND l.is_deleted=FALSE GROUP BY s.product_id
         )
         SELECT p.product_code AS code, p.product_name AS name, COALESCE(n.unit, p.unit) AS unit,
                n.need::numeric AS need, COALESCE(nvl.oh,0)::numeric AS on_hand, n.po_count,
@@ -611,6 +639,7 @@ exports.director = async (req, res) => {
         oh AS (
           SELECT s.product_id, l.warehouse_id, SUM(s.quantity) AS qty
           FROM inventory_stock s JOIN locations l ON l.id=s.location_id
+          WHERE l.is_deleted=FALSE
           GROUP BY s.product_id, l.warehouse_id
         )
         SELECT lim.product_code AS code, lim.product_name AS name, lim.unit, w.name AS warehouse,
@@ -738,7 +767,8 @@ exports.director = async (req, res) => {
         return {
           output: { // sản lượng (kg) — LSX tạo trong kỳ
             plan: r1(plan), actual: r1(actual), remaining: r1(Math.max(0, plan - actual)), over: r1(Math.max(0, actual - plan)),
-            scrap: r1(scrap), scrap_rate: (fin + scrap) > 0 ? Math.round(scrap / (fin + scrap) * 1000) / 10 : 0,
+            // G1: chưa có thành phẩm (fin = 0) thì tỷ lệ phế không có nghĩa → null (web hiện "—"), không báo 100%
+            scrap: r1(scrap), scrap_rate: fin > 0 ? Math.round(scrap / (fin + scrap) * 1000) / 10 : null,
             non_kg_count: live.length - kg.length,
           },
           orders: { total: live.length, done: cnt((x) => x.status === 'Hoàn thành'), running: cnt((x) => x.status === 'Đang sản xuất'),
@@ -761,7 +791,7 @@ exports.director = async (req, res) => {
         // 3 chữ số thập phân — như fmt() của màn Hiệu suất nhân viên, không làm tròn mất số lẻ
         total_output: r3(totActual),
         total_scrap: r3(totScrap),
-        scrap_ratio: totActual > 0 ? r3(totScrap / totActual) : 0, // kg phế / 1 kg thành phẩm (TB toàn xưởng)
+        scrap_ratio: totActual > 0 ? r3(totScrap / totActual) : null, // kg phế / 1 kg thành phẩm (TB toàn xưởng); G1: chưa có SL → null
         // Danh sách người có sản lượng — web tự xếp theo 3 tiêu chí như màn Hiệu suất nhân viên
         workers: perf.map((r) => ({ worker: r.worker, team: r.team, output: r3(r.actual),
           scrap: r3(r.scrap), scrap_ratio: r3(r.actual > 0 ? r.scrap / r.actual : 0),

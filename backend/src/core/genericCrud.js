@@ -1,6 +1,10 @@
 // backend/controllers/genericCrud.js
 // Factory tạo bộ CRUD chuẩn cho các bảng master-data.
 const db = require('./db');
+const { findDependent } = require('./lib/deleteGuard');
+
+// Lỗi dữ liệu đầu vào từ CSDL (sai kiểu, thiếu cột bắt buộc, vi phạm CHECK / trùng khóa) → 400 thay vì 500
+const dbStatus = (err) => (err && /^(22|23)/.test(String(err.code || '')) ? 400 : 500);
 
 /**
  * makeCrud(cfg)
@@ -72,28 +76,35 @@ function makeCrud(cfg) {
     return { cols, vals };
   };
 
+  // F4: kiểm dữ liệu riêng của bảng — cfg.validate(conn, body, id) trả thông báo lỗi hoặc null (id = null khi tạo)
+  const invalid = (conn, body, id) => (cfg.validate ? cfg.validate(conn, body || {}, id) : null);
+
   const create = async (req, res) => {
     try {
       const { cols, vals } = pick(req.body);
       if (!cols.length) return res.status(400).json({ message: 'Thiếu dữ liệu' });
+      const bad = await invalid(db, req.body, null);
+      if (bad) return res.status(400).json({ message: bad });
       const ph = cols.map((_, k) => `$${k + 1}`).join(',');
       const { rows } = await db.query(
         `INSERT INTO ${table} (${cols.join(',')}) VALUES (${ph}) RETURNING *`, vals);
       res.status(201).json(rows[0]);
-    } catch (err) { console.error(err); res.status(500).json({ message: err.detail || `Lỗi khi tạo ${table}` }); }
+    } catch (err) { console.error(err); res.status(dbStatus(err)).json({ message: err.detail || `Lỗi khi tạo ${table}` }); }
   };
 
   const update = async (req, res) => {
     try {
       const { cols, vals } = pick(req.body);
       if (!cols.length) return res.status(400).json({ message: 'Không có trường nào để cập nhật' });
+      const bad = await invalid(db, req.body, req.params.id);
+      if (bad) return res.status(400).json({ message: bad });
       const setSql = cols.map((c, k) => `${c} = $${k + 1}`).join(', ');
       const { rows } = await db.query(
         `UPDATE ${table} SET ${setSql} WHERE id = $${cols.length + 1} RETURNING *`,
         [...vals, req.params.id]);
       if (!rows.length) return res.status(404).json({ message: 'Không tìm thấy bản ghi' });
       res.json(rows[0]);
-    } catch (err) { console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi cập nhật' }); }
+    } catch (err) { console.error(err); res.status(dbStatus(err)).json({ message: err.detail || 'Lỗi khi cập nhật' }); }
   };
 
   const remove = async (req, res) => {
@@ -111,6 +122,14 @@ function makeCrud(cfg) {
               `Không thể xóa khi đang "${r.rows[0].status}". Chỉ xóa được khi đã chuyển sang trạng thái kết thúc (Không hoạt động / Đã nghỉ / Hủy / Ngừng). Vui lòng đổi trạng thái trước.`,
           });
         }
+      }
+      // F2: kiểm phụ thuộc thật (còn tồn, công việc chưa xong…) — cấu hình qua cfg.deleteDependents
+      if (cfg.deleteDependents) {
+        const sd = softDelete ? 'AND is_deleted = FALSE' : '';
+        const r = await db.query(`SELECT 1 FROM ${table} WHERE id = $1 ${sd}`, [req.params.id]);
+        if (!r.rows.length) return res.status(404).json({ message: 'Không tìm thấy bản ghi' });
+        const dep = await findDependent(req.params.id, cfg.deleteDependents);
+        if (dep) return res.status(400).json({ message: dep });
       }
       const q = softDelete
         ? `UPDATE ${table} SET is_deleted = TRUE WHERE id = $1 AND is_deleted = FALSE`
@@ -164,6 +183,9 @@ function makeCrud(cfg) {
         if (!cols.length) { errors.push({ row: idx + 2, message: 'Dòng trống / thiếu dữ liệu' }); continue; }
         await client.query('SAVEPOINT sp_row');
         try {
+          // Kiểm qua client đang giữ transaction → thấy cả các dòng vừa nhập trước trong file (chặn trùng tên trong file)
+          const bad = await invalid(client, row, null);
+          if (bad) throw new Error(bad);
           const ph = cols.map((_, k) => `$${k + 1}`).join(',');
           await client.query(`INSERT INTO ${table} (${cols.join(',')}) VALUES (${ph})`, vals);
           await client.query('RELEASE SAVEPOINT sp_row');

@@ -802,7 +802,7 @@ const PROD_VIEWS = {
   all: { label: "Tất cả lệnh sản xuất", test: () => true },
   total: { label: "Lệnh sản xuất (không tính lệnh hủy)", test: (r) => r.status !== "Đã hủy" },
   plan: { label: "Sản lượng kế hoạch — lệnh tính bằng kg", test: (r) => r.is_kg && r.status !== "Đã hủy" },
-  actual: { label: "Sản lượng thực tế — lệnh đã có sản lượng", test: (r) => r.is_kg && r.status !== "Đã hủy" && r.actual > 0 },
+  actual: { label: "SL thành phẩm (thực tế) — lệnh đã có sản lượng", test: (r) => r.is_kg && r.status !== "Đã hủy" && r.actual > 0 },
   remain: { label: "Sản lượng còn lại — lệnh còn phải sản xuất", test: (r) => r.is_kg && r.status !== "Đã hủy" && r.remaining > 0 },
   done: { label: "Lệnh hoàn thành", test: (r) => r.status === "Hoàn thành" },
   running: { label: "Lệnh đang sản xuất", test: (r) => r.status === "Đang sản xuất" },
@@ -822,7 +822,7 @@ function ProdDetail({ view, rows, isScrap, periodLb }) {
     if (!rows.length) { toast.error("Danh sách đang trống, không có gì để xuất"); return; }
     const data = isScrap
       ? rows.map((d) => ({ "Ngày": fmtDate(d.date), "SL thành phẩm (kg)": d.finished, "SL phế (kg)": d.scrap,
-          "Tỷ lệ phế (%)": d.finished + d.scrap > 0 ? Math.round(d.scrap / (d.finished + d.scrap) * 1000) / 10 : 0 }))
+          "Tỷ lệ phế (%)": d.finished > 0 ? Math.round(d.scrap / (d.finished + d.scrap) * 1000) / 10 : "" }))
       : rows.map((r) => ({ "Mã lệnh SX": r.code, "Mã SP": r.product_code, "Tên sản phẩm": r.product_name,
           "Ngày tạo": fmtDate(r.created), "Hạn chót": fmtDate(r.due) || "", "Quá hạn": r.overdue ? "Có" : "",
           "SL kế hoạch": r.plan, "SL thực tế": r.actual, "SL còn lại": r.remaining, "Đơn vị": r.unit || "", "Trạng thái": r.status }));
@@ -860,7 +860,7 @@ function ProdDetail({ view, rows, isScrap, periodLb }) {
                 <td className={td}>{fmtDate(d.date)}</td>
                 <td className={`${td} text-right tabular-nums`}>{fmt(d.finished)} kg</td>
                 <td className={`${td} text-right font-semibold tabular-nums text-rose-600`}>{fmt(d.scrap)} kg</td>
-                <td className={`${td} text-right tabular-nums`}>{d.finished + d.scrap > 0 ? (d.scrap / (d.finished + d.scrap) * 100).toFixed(1) : "0.0"}%</td>
+                <td className={`${td} text-right tabular-nums`}>{d.finished > 0 ? `${(d.scrap / (d.finished + d.scrap) * 100).toFixed(1)}%` : "—"}</td>
               </tr>
             )) : slice.map((r) => (
               <tr key={r.id} className="hover:bg-slate-50/70">
@@ -907,7 +907,7 @@ function ProdView({ p, period }) {
         <KpiCard icon={ClipboardList} accent="blue" label="Sản lượng kế hoạch" hint={periodLb} onClick={goOutput("plan")} active={view === "plan"}
           value={<Kg value={o.plan} />}
           meta={o.non_kg_count > 0 ? <span title="Chưa quy đổi đơn vị — các lệnh không tính bằng kg chưa được cộng vào">Chưa tính {fmt(o.non_kg_count)} lệnh khác đơn vị kg</span> : "Tổng các lệnh tính bằng kg"} />
-        <KpiCard icon={Factory} accent="emerald" label="Sản lượng thực tế" hint="Đã hoàn thành công đoạn cuối" delay={70} onClick={goOutput("actual")} active={view === "actual"}
+        <KpiCard icon={Factory} accent="emerald" label="SL thành phẩm (thực tế)" hint="Công đoạn cuối của lệnh tạo trong kỳ" delay={70} onClick={goOutput("actual")} active={view === "actual"}
           value={<Kg value={o.actual} />}
           footer={<Meter label="Đạt kế hoạch" value={Math.min(100, achieve)} right={`${achieve}%`} color={C.good} />} />
         <KpiCard icon={Clock} accent="amber" label="Sản lượng còn lại" hint="Còn phải sản xuất" delay={140} onClick={goOutput("remain")} active={view === "remain"}
@@ -915,7 +915,7 @@ function ProdView({ p, period }) {
           meta={o.over > 0 ? <>Vượt kế hoạch <span className="font-semibold text-slate-700">{fmt(o.over)}</span> kg</> : "Kế hoạch − thực tế"} />
         <KpiCard icon={PackageX} accent={o.scrap > 0 ? "rose" : "slate"} label="Phế phẩm" hint="Theo Quản lý phế" delay={210} onClick={goOutput("scrap")} active={view === "scrap"}
           value={<Kg value={o.scrap} />}
-          meta={<>Tỷ lệ phế <span className="font-semibold text-slate-700">{o.scrap_rate ?? 0}%</span></>} />
+          meta={<>Tỷ lệ phế <span className="font-semibold text-slate-700">{o.scrap_rate == null ? "—" : `${o.scrap_rate}%`}</span></>} />
       </div>
 
       {/* Hàng 2 · Lệnh sản xuất */}
@@ -1038,13 +1038,13 @@ function StaffView({ w }) {
         <KpiCard icon={Users} accent="blue" label="Công nhân có sản xuất" hint="Trong kỳ"
           value={<><Count value={w.active_count} /><span className="ml-1.5 text-[15px] font-medium text-slate-400">/ {fmt(w.worker_count)} người</span></>}
           footer={<Meter label="Tỷ lệ tham gia sản xuất" value={pct(w.active_count, w.worker_count)} color={C.intime} />} />
-        <KpiCard icon={Factory} accent="violet" label="Tổng sản lượng" hint="Toàn xưởng" delay={70}
+        <KpiCard icon={Factory} accent="violet" label="SL nhân viên làm ra" hint="Mọi công đoạn (Thổi + Cắt)" delay={70}
           value={<>{fmt(w.total_output ?? 0)}{unit}</>}
           meta={<>TB <span className="font-semibold text-slate-700">{fmt(w.avg_per_hour)}</span> kg / giờ công</>} />
         <KpiCard icon={PackageX} accent={w.total_scrap > 0 ? "rose" : "slate"} label="Tổng phế" hint="Theo Quản lý phế" delay={140}
           value={<>{fmt(w.total_scrap ?? 0)}{unit}</>} />
         <KpiCard icon={Gauge} accent="amber" label="Phế / 1kg (TB)" hint="kg phế / kg thành phẩm" delay={210}
-          value={fmt3(w.scrap_ratio)} />
+          value={w.scrap_ratio == null ? "—" : fmt3(w.scrap_ratio)} />
       </div>
 
       <Panel delay={260} icon={Trophy} title="Bảng xếp hạng nhân viên" subtitle={`Top 5 · ${cr.desc}`}

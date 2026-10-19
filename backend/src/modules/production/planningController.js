@@ -137,11 +137,34 @@ exports.generate = async (req, res) => {
     const ids = list.map((x) => x.item_id);
     const qtyById = Object.fromEntries(list.map((x) => [x.item_id, x.qty]));
 
+    const bail = async (message) => { await client.query('ROLLBACK'); return res.status(400).json({ message }); };
     await client.query('BEGIN');
+    // E6: khóa dòng nhu cầu (2 người cùng lập kế hoạch 1 dòng không vượt SL đơn)
     const items = (await client.query(`
-      SELECT it.*, so.customer_id, so.due_date, so.id AS so_id, so.priority
-      FROM sales_order_items it JOIN sales_orders so ON so.id = it.sales_order_id
-      WHERE it.id = ANY($1::uuid[])`, [ids])).rows;
+      SELECT it.*, so.customer_id, so.due_date, so.id AS so_id, so.priority, so.order_code, so.status AS so_status, so.is_deleted AS so_deleted,
+             p.product_name
+      FROM sales_order_items it JOIN sales_orders so ON so.id = it.sales_order_id JOIN products p ON p.id = it.product_id
+      WHERE it.id = ANY($1::uuid[])
+      FOR UPDATE OF it`, [ids])).rows;
+
+    // E6: kiểm SL trước khi tạo — trước đây SL vượt / dòng đã lập đủ → INSERT SL 0 → lỗi 500
+    for (const it of items) {
+      const label = `${it.order_code} · ${it.product_name}`;
+      if (it.so_deleted || ['Hoàn thành', 'Đã hủy'].includes(it.so_status)) return bail(`Đơn ${it.order_code} đang "${it.so_deleted ? 'đã xóa' : it.so_status}" — không lập kế hoạch được.`);
+      const raw = qtyById[it.id];
+      const remaining = Number(it.quantity) - Number(it.planned_qty || 0);
+      if (raw !== undefined && raw !== null && raw !== '') {
+        const q = Number(raw);
+        if (!Number.isFinite(q) || q < 0) return bail(`${label}: SL lập kế hoạch phải là số không âm.`);
+        if (q > remaining + 1e-6) return bail(`${label}: vượt SL còn lại cần lập kế hoạch (còn ${Math.max(0, remaining)}, nhập ${q}).`);
+      } else if (remaining <= 1e-6) return bail(`${label}: đã lập kế hoạch đủ số lượng.`);
+    }
+    // E2: máy "Bảo trì" không được xếp
+    const machineIds = [machine_id, ...stages.map((s) => s.machine_id)].filter(Boolean);
+    if (machineIds.length) {
+      const bad = (await client.query(`SELECT machine_code, name FROM machines WHERE id = ANY($1::uuid[]) AND status = 'Bảo trì'`, [machineIds])).rows;
+      if (bad.length) return bail(`Máy ${bad.map((m) => `${m.machine_code} ${m.name}`).join(', ')} đang "Bảo trì" — không xếp lịch được.`);
+    }
 
     // Máy/trạng thái cấp lệnh: nếu phân bổ theo công đoạn thì lấy máy của công đoạn đầu để hiển thị
     const headMachine = machine_id || (stages[0] && stages[0].machine_id) || null;
@@ -160,8 +183,7 @@ exports.generate = async (req, res) => {
       const remaining = Number(it.quantity) - Number(it.planned_qty || 0);
       let q = qtyById[it.id];
       q = (q === undefined || q === null || q === '') ? remaining : Number(q);
-      if (!(q > 0)) continue;                 // bỏ qua dòng không nhập SL
-      if (q > remaining) q = remaining;       // không vượt quá số còn lại
+      if (!(q > 0)) continue;                 // bỏ qua dòng không nhập SL (đã kiểm vượt ở trên)
       const gk = [it.product_id, it.spec_key || ''].join('||');
       const r = await client.query(`
         INSERT INTO production_orders
@@ -200,6 +222,7 @@ exports.generate = async (req, res) => {
       await client.query(`UPDATE sales_orders SET status = 'Đang sản xuất' WHERE id = ANY($1::uuid[]) AND status = 'Mới'`, [soIds]);
     }
 
+    if (!created.length) return bail('Không có dòng nào có SL lập kế hoạch lớn hơn 0.');
     await client.query('COMMIT');
     res.status(201).json({ created });
   } catch (err) {

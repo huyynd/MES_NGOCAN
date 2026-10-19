@@ -1,7 +1,10 @@
 // backend/controllers/productController.js
 const db = require('../../core/db');
 const { upUnit } = require('../../core/lib/units');
-const { guardDelete } = require('../../core/lib/deleteGuard');
+const { guardDelete, PRODUCT_DEPENDENTS } = require('../../core/lib/deleteGuard');
+const { duplicateNameMessage } = require('../../core/lib/validate');
+// F4: không cho 2 sản phẩm (chưa xóa) trùng tên
+const PRODUCT_NAME = { table: 'products', nameCol: 'product_name', codeCol: 'product_code', label: 'Sản phẩm' };
 
 // Loại sản phẩm — cho phép chọn nhiều (tên đầy đủ)
 const VALID_TYPES = ['Thành phẩm', 'Bán thành phẩm', 'Nguyên vật liệu'];
@@ -96,9 +99,11 @@ exports.createProduct = async (req, res) => {
     } = req.body;
 
     const { types, primary } = normalizeTypes(req.body);
-    if (!product_name || !primary) {
+    if (!String(product_name || '').trim() || !primary) {
       return res.status(400).json({ message: 'Thiếu Tên sản phẩm hoặc Loại sản phẩm' });
     }
+    const dup = await duplicateNameMessage(db, PRODUCT_NAME, product_name);
+    if (dup) return res.status(400).json({ message: dup });
 
     // Chuẩn hoá attributes: chỉ giữ dòng có name & value
     const attrs = Array.isArray(attributes)
@@ -142,9 +147,11 @@ exports.updateProduct = async (req, res) => {
     } = req.body;
 
     const { types, primary } = normalizeTypes(req.body);
-    if (!product_name || !primary) {
+    if (!String(product_name || '').trim() || !primary) {
       return res.status(400).json({ message: 'Thiếu Tên sản phẩm hoặc Loại sản phẩm' });
     }
+    const dup = await duplicateNameMessage(db, PRODUCT_NAME, product_name, req.params.id);
+    if (dup) return res.status(400).json({ message: dup });
     const attrs = Array.isArray(attributes)
       ? attributes.filter(a => a && a.name && a.value).map(a => ({ name: a.name, value: a.value }))
       : [];
@@ -267,6 +274,7 @@ exports.softDeleteProduct = async (req, res) => {
     const g = await guardDelete('products', req.params.id, {
       blocked: ['Hoạt động'],
       message: 'Không thể xóa sản phẩm đang "Hoạt động" — có thể đang dùng ở đơn hàng / BOM / lệnh SX / tồn kho. Vui lòng chuyển sang "Không hoạt động" trước, rồi mới xóa.',
+      dependents: PRODUCT_DEPENDENTS,
     });
     if (g.notFound) return res.status(404).json({ message: 'Không tìm thấy sản phẩm' });
     if (g.blocked) return res.status(400).json({ message: g.message });

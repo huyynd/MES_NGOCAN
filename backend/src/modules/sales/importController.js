@@ -4,6 +4,7 @@
 const XLSX = require('xlsx');
 const db = require('../../core/db');
 const { buildSpecKey, legacyAttrs } = require('../../core/lib/specs');
+const { vnToday } = require('../../core/lib/dates');
 
 function parseNum(v) {
   if (v === '' || v == null) return 0;
@@ -87,10 +88,38 @@ async function findOrCreateProduct(client, productName) {
   return ins.rows[0].id;
 }
 
+// Thông số từ kích thước Excel — dùng khóa chuẩn 'Chiều ngang (Rộng)' (trước lưu khóa cũ 'Chiều ngang')
+function specsFromDim(dim) {
+  const specs = {};
+  if (dim.length)    specs['Chiều dài']          = dim.length;
+  if (dim.width)     specs['Chiều ngang (Rộng)'] = dim.width;
+  if (dim.thickness) specs['Độ dày']             = dim.thickness;
+  return specs;
+}
+
+// B3: đơn đã tồn tại (trùng Khách, Ngày, SL, thông số chuẩn hoá) — DÙNG CHUNG cho preview và confirm.
+// customerId null (khách chưa có) → không thể trùng.
+async function findDuplicateOrder(client, customerId, orderDate, qty, dim) {
+  if (!customerId) return null;
+  const r = await client.query(`
+    SELECT so.id, so.order_code
+    FROM sales_orders so
+    JOIN sales_order_items soi ON soi.sales_order_id = so.id
+    WHERE so.customer_id = $1 AND so.order_date = $2 AND so.is_deleted = FALSE
+      AND soi.quantity = $3 AND soi.spec_key = $4
+    LIMIT 1`, [customerId, orderDate, qty, buildSpecKey(specsFromDim(dim))]);
+  return r.rows[0] || null;
+}
+
+async function findCustomerId(client, name) {
+  const r = await client.query(`SELECT id FROM customers WHERE LOWER(name) = LOWER($1) AND is_deleted = FALSE LIMIT 1`, [String(name || '').trim()]);
+  return r.rows[0]?.id || null;
+}
+
 async function importRow(client, row, idx, productId) {
   const [dateSerial, customerName, dimStr, kgPO, kgCuon, kgTui, phe, ghiChu, dueDateSerial] = row;
 
-  const orderDate = excelDateToISO(dateSerial) || new Date().toISOString().slice(0, 10);
+  const orderDate = excelDateToISO(dateSerial) || vnToday();
   const dueDate   = excelDateToISO(dueDateSerial) || null;
   const dim       = parseDimensions(dimStr);
   const qtyPO     = parseNum(kgPO);
@@ -102,12 +131,13 @@ async function importRow(client, row, idx, productId) {
   if (!customerName || !String(customerName).trim()) return { skipped: true, reason: 'Thiếu tên khách hàng' };
   if (qtyPO <= 0) return { skipped: true, reason: 'Số KG PO = 0' };
 
+  // B3: chạy lại đúng câu kiểm trùng của preview — bấm xác nhận 2 lần không tạo đơn đôi
+  const dup = await findDuplicateOrder(client, await findCustomerId(client, customerName), orderDate, qtyPO, dim);
+  if (dup) return { skipped: true, row: idx, reason: `Đơn đã tồn tại (${dup.order_code}) — trùng Khách, Ngày, SL, Kích thước` };
+
   const customerId = await findOrCreateCustomer(client, String(customerName));
 
-  const specs   = {};
-  if (dim.length)    specs['Chiều dài']   = dim.length;
-  if (dim.width)     specs['Chiều ngang'] = dim.width;
-  if (dim.thickness) specs['Độ dày']      = dim.thickness;
+  const specs   = specsFromDim(dim);
   const specKey = buildSpecKey(specs);
   const legacy  = legacyAttrs(specs);
 
@@ -177,7 +207,7 @@ exports.previewOrders = async (req, res) => {
       const [dateSerial, customerName, dimStr, kgPO, kgCuon, kgTui, phe, ghiChu, dueDateSerial] = row;
       const sheetName = row.sheetName || '';
       
-      const orderDate = excelDateToISO(dateSerial) || new Date().toISOString().slice(0, 10);
+      const orderDate = excelDateToISO(dateSerial) || vnToday();
       const dueDate = excelDateToISO(dueDateSerial) || null;
       const dim       = parseDimensions(dimStr);
       const qtyPO     = parseNum(kgPO);
@@ -229,30 +259,10 @@ exports.previewOrders = async (req, res) => {
         item.isValid = false;
         item.errors.push('Dòng dữ liệu bị trùng lặp trong chính file Excel này');
       } else if (cName && qtyPO > 0) {
-        // Find customer ID if exists
-        const custRes = await client.query(`SELECT id FROM customers WHERE LOWER(name) = LOWER($1) AND is_deleted = FALSE LIMIT 1`, [cName]);
-        if (custRes.rows.length > 0) {
-          const cId = custRes.rows[0].id;
-          // Check trùng bằng spec_key CHUẨN HOÁ (tránh lệch do "dài x rộng" vs "rộng × dài"),
-          // và so trên sales_order_items (nơi thực sự lưu spec_key) thay vì attr_size của PO.
-          const dupSpecs = {};
-          if (dim.length)    dupSpecs['Chiều dài']   = dim.length;
-          if (dim.width)     dupSpecs['Chiều ngang'] = dim.width;
-          if (dim.thickness) dupSpecs['Độ dày']      = dim.thickness;
-          const dupSpecKey = buildSpecKey(dupSpecs);
-          const dupRes = await client.query(`
-            SELECT so.id
-            FROM sales_orders so
-            JOIN sales_order_items soi ON soi.sales_order_id = so.id
-            WHERE so.customer_id = $1
-              AND so.order_date = $2
-              AND so.is_deleted = FALSE
-              AND soi.quantity = $3
-              AND soi.spec_key = $4
-            LIMIT 1
-          `, [cId, orderDate, qtyPO, dupSpecKey]);
-
-          if (dupRes.rows.length > 0) {
+        const cId = await findCustomerId(client, cName);
+        if (cId) {
+          // Check trùng bằng spec_key CHUẨN HOÁ, so trên sales_order_items (dùng chung với confirm)
+          if (await findDuplicateOrder(client, cId, orderDate, qtyPO, dim)) {
             item.isValid = false;
             item.errors.push('Đơn hàng có thể đã tồn tại (trùng Khách, Ngày, SL, Kích thước)');
           }
@@ -285,11 +295,18 @@ exports.confirmOrders = async (req, res) => {
 
   try {
     await client.query('BEGIN');
+    // B3: 2 lần bấm xác nhận gửi đồng thời → lần sau chờ lần trước COMMIT rồi mới kiểm trùng (thấy đơn vừa tạo)
+    await client.query(`SELECT pg_advisory_xact_lock(hashtext('import_orders_confirm'))`);
     const baoBiId = await findOrCreateProduct(client, 'Bao Bì');
     const cuonPeId = await findOrCreateProduct(client, 'CUỘN PE');
 
     for (let i = 0; i < rows.length; i++) {
       const item = rows[i];
+      // B3: dòng preview đánh dấu không hợp lệ (thiếu dữ liệu / trùng) → bỏ qua, không tạo
+      if (item && item.isValid === false) {
+        results.push({ skipped: true, row: i + 1, reason: (item.errors || []).join('; ') || 'Dòng không hợp lệ' });
+        continue;
+      }
       // SAVEPOINT từng dòng: dòng lỗi chỉ rollback riêng nó, không làm hỏng cả transaction
       // (trước đây 1 dòng lỗi → transaction abort → COMMIT rỗng = 0 đơn, nhưng vẫn báo "N thành công").
       await client.query('SAVEPOINT sp_row');

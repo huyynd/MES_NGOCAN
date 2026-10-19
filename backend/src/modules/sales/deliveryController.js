@@ -2,7 +2,8 @@
 const db = require('../../core/db');
 const { upUnit } = require('../../core/lib/units');
 const { guardDelete } = require('../../core/lib/deleteGuard');
-const { applyStock, stockErrorResponse } = require('../../core/lib/stock');
+const { applyStock, stockErrorResponse, whOutboundOkSql } = require('../../core/lib/stock');
+const { nextSlipCode } = require('../../core/lib/codes');
 const { buildSpecKey } = require('../../core/lib/specs');
 
 const num = (v) => (v === '' || v == null ? 0 : Number(v) || 0);
@@ -48,6 +49,17 @@ const DN_TRANSITIONS = {
   'Đã thanh toán':        [],
   'Đã hủy':               [],
 };
+// "Hôm nay" theo giờ VN (không phụ thuộc timezone của DB/server)
+const VN_TODAY_SQL = `(now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date`;
+// Ngày giao: phải là ngày hợp lệ và không sau hôm nay (ngày tương lai làm sai tuổi nợ / nợ xấu).
+// Trả { error } hoặc { value: 'YYYY-MM-DD' | null }.
+async function checkDeliveryDate(client, v) {
+  if (v === undefined || v === null || v === '') return { value: null };
+  const s = String(v).slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s) || Number.isNaN(Date.parse(s))) return { error: 'Ngày giao không hợp lệ.' };
+  const { future } = (await client.query(`SELECT $1::date > ${VN_TODAY_SQL} AS future`, [s])).rows[0];
+  return future ? { error: 'Ngày giao không được sau hôm nay.' } : { value: s };
+}
 // Thanh toán: khách trả 1 cục qua PHIẾU THANH TOÁN (paymentReceiptController) — tiền tự phân bổ vào
 // các phiếu giao cũ nhất trước (core/lib/receivables.js). Phiếu giao không còn ghi nhận thu lẻ.
 const { allocateCustomer, debtBlockMessage } = require('../../core/lib/receivables');
@@ -179,6 +191,7 @@ exports.deliverable = async (req, res) => {
                        JOIN locations lo ON lo.id = s.location_id
                        JOIN warehouses w ON w.id = lo.warehouse_id
                        WHERE s.product_id = l.product_id AND s.quantity > 0 AND w.warehouse_type IN ('NVL','BTP','TP')
+                         AND ${whOutboundOkSql('w', 'lo')}
                          AND (l.spec_key = $2 OR s.spec_key = l.spec_key)), 0) AS stock
       FROM lines l
       ORDER BY l.due_date NULLS LAST, l.order_code, l.product_code`, [customerId, EMPTY_SPEC, excludeNote]);
@@ -223,6 +236,26 @@ async function updateOrderStatusAfterDelivery(client, salesOrderId) {
     [newStatus, salesOrderId]);
 }
 
+// B7: đơn giá dòng phiếu giao khác đơn giá trên đơn hàng → CẢNH BÁO (vẫn cho lưu). Trả mảng chuỗi.
+async function priceWarnings(client, items) {
+  const list = (Array.isArray(items) ? items : []).filter((x) => x && x.sales_order_item_id && x.unit_price !== undefined && x.unit_price !== '' && x.unit_price !== null);
+  if (!list.length) return [];
+  const { rows } = await client.query(
+    `SELECT it.id, it.unit_price, so.order_code, p.product_name
+       FROM sales_order_items it JOIN sales_orders so ON so.id = it.sales_order_id JOIN products p ON p.id = it.product_id
+      WHERE it.id = ANY($1::uuid[])`, [list.map((x) => x.sales_order_item_id)]);
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const vnd = (n) => Number(n || 0).toLocaleString('vi-VN');
+  const out = [];
+  for (const x of list) {
+    const o = byId.get(x.sales_order_item_id);
+    if (o && Math.abs(num(x.unit_price) - num(o.unit_price)) > 1e-6) {
+      out.push(`${o.product_name} (đơn ${o.order_code}): đơn giá phiếu ${vnd(x.unit_price)}đ khác đơn hàng ${vnd(o.unit_price)}đ`);
+    }
+  }
+  return out;
+}
+
 async function saveItems(client, noteId, items) {
   await client.query('DELETE FROM delivery_note_items WHERE delivery_note_id = $1', [noteId]);
   const list = (Array.isArray(items) ? items : []).filter((x) => x && (x.product_id || x.product_name));
@@ -255,6 +288,8 @@ exports.create = async (req, res) => {
     if (!b.customer_id) return res.status(400).json({ message: 'Vui lòng chọn Khách hàng' });
     // Phiếu mới LUÔN là "Bản nháp" (bỏ qua b.status gửi lên) — mọi trạng thái sau đó phải đi
     // qua đúng luồng: "Giao hàng" bằng nút ship (trừ kho), rồi mới tới hóa đơn/thanh toán.
+    const dd = await checkDeliveryDate(client, b.delivery_date);
+    if (dd.error) return res.status(400).json({ message: dd.error });
     await client.query('BEGIN');
     // Khách nợ vượt hạn mức (app_settings.debt_limit_amount) → không cho tạo phiếu giao mới (kiểm TRONG transaction)
     const blocked = await debtBlockMessage(client, b.customer_id);
@@ -263,13 +298,14 @@ exports.create = async (req, res) => {
     const headOrder = await orderIdOfItems(client, b.items);
     const { rows } = await client.query(
       `INSERT INTO delivery_notes (sales_order_id, customer_id, delivery_date, status, note, paid_amount)
-       VALUES ($1,$2,$3,'Bản nháp',$4,0) RETURNING *`, // đã trả = Σ lần thu (ghi nhận sau khi giao), không nhập tay
-      [headOrder, b.customer_id, b.delivery_date || new Date(), b.note || null]);
+       VALUES ($1,$2,COALESCE($3::date, ${VN_TODAY_SQL}),'Bản nháp',$4,0) RETURNING *`, // đã trả = Σ lần thu (ghi nhận sau khi giao), không nhập tay
+      [headOrder, b.customer_id, dd.value, b.note || null]);
     const total = await saveItems(client, rows[0].id, b.items);
     await client.query(`UPDATE delivery_notes SET total_amount = $1 WHERE id = $2`, [total, rows[0].id]);
     for (const soId of await orderIdsOfNote(client, rows[0].id)) await updateOrderStatusAfterDelivery(client, soId);
+    const warnings = await priceWarnings(client, b.items);
     await client.query('COMMIT');
-    res.status(201).json({ ...rows[0], total_amount: total });
+    res.status(201).json({ ...rows[0], total_amount: total, warnings });
   } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi tạo phiếu' }); }
   finally { client.release(); }
 };
@@ -281,8 +317,19 @@ exports.update = async (req, res) => {
     await client.query('BEGIN');
     // Chặn đổi trạng thái tự do quanh "Giao hàng" (tránh: đánh dấu đã giao mà không trừ kho, hoặc trừ kho 2 lần)
     const cur = (await client.query(
-      `SELECT status, customer_id FROM delivery_notes WHERE id = $1 AND is_deleted = FALSE FOR UPDATE`, [req.params.id])).rows[0];
+      `SELECT status, customer_id, delivery_date FROM delivery_notes WHERE id = $1 AND is_deleted = FALSE FOR UPDATE`, [req.params.id])).rows[0];
     if (!cur) { await client.query('ROLLBACK'); return res.status(404).json({ message: 'Không tìm thấy phiếu' }); }
+    // Ngày giao: hợp lệ, không sau hôm nay. Đã rời "Bản nháp" → ngày giao đã chốt lúc bấm Giao hàng, không sửa
+    // (sửa ngày làm sai tuổi nợ / nợ xấu và thứ tự trừ tiền FIFO). Form luôn gửi kèm ngày → gửi lại đúng ngày cũ thì bỏ qua.
+    if (b.delivery_date !== undefined) {
+      const dd = await checkDeliveryDate(client, b.delivery_date);
+      if (dd.error) { await client.query('ROLLBACK'); return res.status(400).json({ message: dd.error }); }
+      if (dd.value === cur.delivery_date) delete b.delivery_date;
+      else if (cur.status !== 'Bản nháp') {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ message: 'Phiếu đã giao — không sửa được ngày giao (ngày giao được chốt khi bấm "Giao hàng").' });
+      } else b.delivery_date = dd.value || cur.delivery_date;
+    }
     if (b.status !== undefined && b.status !== cur.status) {
       if (b.status === 'Giao hàng') { await client.query('ROLLBACK'); return res.status(400).json({ message: 'Không đặt trạng thái "Giao hàng" thủ công — hãy dùng nút "Giao hàng" để xuất kho + trừ tồn.' }); }
       const allowed = DN_TRANSITIONS[cur.status] || [];
@@ -293,8 +340,15 @@ exports.update = async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(400).json({ message: 'Phiếu đã rời "Bản nháp" — không thể sửa dòng hàng (đã chốt theo lượng xuất kho).' });
     }
-    // Đã giao → khóa khách hàng (công nợ + tiền thanh toán đã phân bổ theo khách)
-    if (b.customer_id !== undefined && cur.status !== 'Bản nháp') delete b.customer_id;
+    // Đã giao → khóa khách hàng (công nợ + tiền thanh toán đã phân bổ theo khách).
+    // B6: gửi đúng khách cũ (form luôn gửi kèm) thì bỏ qua; đổi sang khách khác → báo lỗi rõ, không im lặng bỏ qua.
+    if (b.customer_id !== undefined && cur.status !== 'Bản nháp') {
+      if (b.customer_id && b.customer_id !== cur.customer_id) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ message: 'Phiếu đã giao — không đổi được khách hàng (công nợ đã ghi theo khách này).' });
+      }
+      delete b.customer_id;
+    }
     // Phiếu nháp ĐỔI sang khách khác = lập phiếu mới cho khách đó → cùng chốt chặn hạn mức nợ như khi tạo
     // (không thì lách được: tạo nháp cho khách sạch rồi đổi sang khách vượt hạn mức). Giữ nguyên khách thì không chặn.
     if (b.customer_id && b.customer_id !== cur.customer_id) {
@@ -318,8 +372,9 @@ exports.update = async (req, res) => {
     // Cập nhật trạng thái MỌI đơn liên quan (kể cả đơn vừa bị bỏ khỏi phiếu)
     const ordersAfter = await orderIdsOfNote(client, req.params.id);
     for (const soId of new Set([...ordersBefore, ...ordersAfter])) await updateOrderStatusAfterDelivery(client, soId);
+    const warnings = b.items !== undefined ? await priceWarnings(client, b.items) : [];
     await client.query('COMMIT');
-    res.json({ message: 'Đã cập nhật phiếu' });
+    res.json({ message: 'Đã cập nhật phiếu', warnings });
   } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi cập nhật phiếu' }); }
   finally { client.release(); }
 };
@@ -384,6 +439,7 @@ exports.ship = async (req, res) => {
          JOIN locations lo ON lo.id = s.location_id
          JOIN warehouses w ON w.id = lo.warehouse_id
          WHERE s.product_id = $1 AND s.quantity > 0 AND w.warehouse_type IN ('NVL','BTP','TP')
+           AND ${whOutboundOkSql('w', 'lo')}
            AND (NOT $3::boolean OR s.spec_key = $2)
          ORDER BY (s.lot_code = ANY($4::text[])) DESC, (s.spec_key = $2) DESC, (w.warehouse_type = 'TP') DESC, s.id ASC`,
         [l.product_id, l.spec_key, strict, l.own_lots]);
@@ -412,16 +468,22 @@ exports.ship = async (req, res) => {
     const slipLoc = allocations[0].location_id; // kho đại diện cho phiếu xuất (có thể gồm nhiều kho)
 
     await client.query('BEGIN');
+    // Hạn mức nợ: nợ + giá trị phiếu này − trả trước > hạn mức → chặn. Kiểm TRƯỚC khi chiếm phiếu (sau khi chiếm,
+    // phiếu đã thành "Giao hàng" và bị tính vào nợ). Khóa dòng khách trước khi đọc nợ: 2 phiếu cùng khách giao
+    // đồng thời phải xếp hàng, phiếu sau thấy nợ của phiếu trước (không lọt cả hai).
+    if (dn.customer_id) {
+      await client.query(`SELECT 1 FROM customers WHERE id = $1 FOR UPDATE`, [dn.customer_id]);
+      const blocked = await debtBlockMessage(client, dn.customer_id, dn.total_amount);
+      if (blocked) { await client.query('ROLLBACK'); return res.status(400).json({ message: blocked, code: 'DEBT_LIMIT' }); }
+    }
     // Chống bấm đúp / gọi đồng thời: chỉ MỘT request "chiếm" được phiếu từ Bản nháp (atomic).
     // Request thua sẽ không trừ kho lần 2.
     const claim = await client.query(
-      `UPDATE delivery_notes SET status = 'Giao hàng', updated_at = now()
+      `UPDATE delivery_notes SET status = 'Giao hàng', delivery_date = ${VN_TODAY_SQL}, updated_at = now()
        WHERE id = $1 AND status = 'Bản nháp' AND is_deleted = FALSE RETURNING id`, [req.params.id]);
     if (!claim.rows.length) { await client.query('ROLLBACK'); return res.status(409).json({ message: 'Phiếu đã được giao hoặc đang được xử lý — vui lòng tải lại.' }); }
-    // Sinh mã phiếu xuất kho PXK00001…
-    const slipCode = (await client.query(
-      `SELECT 'PXK' || LPAD((COALESCE(MAX(NULLIF(regexp_replace(slip_code,'\\D','','g'),''))::int,0)+1)::text,5,'0') AS code
-       FROM outbound_slips WHERE slip_code ~ '^PXK[0-9]+$'`)).rows[0].code;
+    // Sinh mã phiếu xuất kho PXK00001… (D1: khóa theo bảng — giao đồng thời không trùng mã)
+    const slipCode = await nextSlipCode(client);
     const slip = (await client.query(
       `INSERT INTO outbound_slips (slip_code, purpose, location_id, status, note, confirmed_at, created_by)
        VALUES ($1,'Giao hàng cho khách',$2,'Đã xuất',$3, now(), $4) RETURNING id, slip_code`,

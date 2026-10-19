@@ -109,7 +109,13 @@ function KpiReport() {
         <KpiCard title="Tổng Lệnh Sản Xuất" value={data.total_production_orders} color="blue" />
         <KpiCard title="Lệnh Đang Sản Xuất" value={data.active_production_orders} color="emerald" />
         <KpiCard title="Máy Đang Hoạt Động" value={data.active_machines} color="amber" />
-        <KpiCard title="Tổng Số Tồn Kho" value={fmt(data.total_inventory_items)} color="purple" />
+        <KpiCard title="Tổng Số Tồn Kho" color="purple" value={
+          (data.inventory_by_unit || []).length
+            ? <span className={data.inventory_by_unit.length > 1 ? 'block text-xl leading-snug' : ''}>
+                {data.inventory_by_unit.map((u) => <span key={u.unit} className="block">{fmt(u.qty)} {u.unit}</span>)}
+              </span>
+            : 0
+        } />
       </div>
 
       {/* Grid 6 Biểu đồ */}

@@ -19,6 +19,47 @@ class StockShortageError extends Error {
   }
 }
 
+// Lỗi vi phạm cấu hình kho (cấm nhập / xuất / chuyển, kho ngừng hoạt động, kho/vị trí đã xóa) — trả 400
+class WarehouseRuleError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'WarehouseRuleError';
+    this.code = 'WAREHOUSE_RULE';
+    this.status = 400;
+  }
+}
+
+const WH_STOPPED = 'Ngừng hoạt động';
+// Điều kiện SQL "kho được phép xuất hàng" — dùng khi CHỌN dòng tồn để trừ (giao hàng, cắt cuộn…),
+// để không phân bổ vào kho bị cấm rồi mới báo lỗi. w = alias warehouses, l = alias locations.
+const whOutboundOkSql = (w = 'w', l = 'l') =>
+  `(${w}.is_deleted = FALSE AND ${l}.is_deleted = FALSE AND ${w}.status <> '${WH_STOPPED}' AND ${w}.allow_outbound IS NOT FALSE)`;
+const whInboundOkSql = (w = 'w', l = 'l') =>
+  `(${w}.is_deleted = FALSE AND ${l}.is_deleted = FALSE AND ${w}.status <> '${WH_STOPPED}' AND ${w}.allow_inbound IS NOT FALSE)`;
+
+// F1: kiểm cấu hình kho của vị trí trước khi cộng/trừ tồn.
+//   transfer = true → xét "Cho phép chuyển kho"; ngược lại delta > 0 xét "Cho phép nhập", delta < 0 xét "Cho phép xuất".
+//   Kho "Ngừng hoạt động" hoặc kho/vị trí đã xóa → chặn mọi giao dịch. Dòng tồn cũ không có vị trí (NULL) → bỏ qua.
+async function checkWarehouseRule(client, locationId, delta, transfer) {
+  if (!locationId || !delta) return;
+  const w = (await client.query(
+    `SELECT l.name AS lname, l.is_deleted AS l_deleted, w.name AS wname, w.is_deleted AS w_deleted, w.status,
+            w.allow_inbound, w.allow_outbound, w.allow_transfer
+       FROM locations l LEFT JOIN warehouses w ON w.id = l.warehouse_id
+      WHERE l.id = $1`, [locationId])).rows[0];
+  if (!w) throw new WarehouseRuleError('Vị trí kho không tồn tại — vui lòng tải lại và chọn lại vị trí.');
+  const label = `kho "${w.wname || '?'}"${w.lname ? ` (vị trí ${w.lname})` : ''}`;
+  if (w.l_deleted || w.w_deleted) throw new WarehouseRuleError(`Không thể nhập/xuất: ${label} đã bị xóa.`);
+  if (w.status === WH_STOPPED) throw new WarehouseRuleError(`Không thể nhập/xuất: ${label} đang "${WH_STOPPED}".`);
+  if (transfer) {
+    if (w.allow_transfer === false) throw new WarehouseRuleError(`Không thể chuyển kho: ${label} đang tắt "Cho phép chuyển kho".`);
+  } else if (delta > 0) {
+    if (w.allow_inbound === false) throw new WarehouseRuleError(`Không thể nhập hàng: ${label} đang tắt "Cho phép nhập kho".`);
+  } else if (w.allow_outbound === false) {
+    throw new WarehouseRuleError(`Không thể xuất hàng: ${label} đang tắt "Cho phép xuất kho".`);
+  }
+}
+
 // Làm tròn đúng thang lưu numeric(14,2) — tránh sai số số thực (0.1 + 0.2…) làm hụt/âm 0.01
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const fmtQty = (n) => Number(n || 0).toLocaleString('vi-VN', { maximumFractionDigits: 2 });
@@ -50,6 +91,8 @@ async function applyStock(client, o) {
   const lot = o.lot_code || '';
   const loc = o.location_id || null;
   let newQty = null;
+
+  await checkWarehouseRule(client, loc, delta, !!o.transfer);
 
   if (delta < 0) {
     // TRỪ: khóa dòng + kiểm đủ + trừ trong 1 câu (atomic). 2 phiếu trừ cùng lúc → phiếu sau chờ phiếu trước
@@ -117,6 +160,10 @@ function stockErrorResponse(res, err) {
     res.status(400).json({ message: err.message, shortage: err.detail });
     return true;
   }
+  if (err && err.code === 'WAREHOUSE_RULE') {
+    res.status(400).json({ message: err.message, code: err.code });
+    return true;
+  }
   // Lưới an toàn ở CSDL: CHECK (quantity >= 0) chặn một đường ghi tồn nào đó lọt qua applyStock
   if (err && err.code === '23514' && err.constraint === 'inventory_stock_quantity_nonneg') {
     res.status(400).json({ message: 'Không đủ tồn kho — thao tác sẽ làm tồn kho âm nên đã bị chặn. Vui lòng tải lại và kiểm tra tồn.' });
@@ -125,4 +172,7 @@ function stockErrorResponse(res, err) {
   return false;
 }
 
-module.exports = { applyStock, StockShortageError, stockErrorResponse };
+module.exports = {
+  applyStock, StockShortageError, WarehouseRuleError, stockErrorResponse,
+  whOutboundOkSql, whInboundOkSql,
+};

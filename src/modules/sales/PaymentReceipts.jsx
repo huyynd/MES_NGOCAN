@@ -72,6 +72,12 @@ function ReceiptForm({ lookups, id, onBack, onSaved }) {
     if (!f.customer_id) return toast.error("Chọn khách hàng");
     if (!f.pay_date) return toast.error("Nhập ngày thanh toán");
     if (isNew && !(Number(f.amount) > 0)) return toast.error("Nhập số tiền thanh toán lớn hơn 0");
+    if (f.pay_date > todayYmd()) return toast.error("Ngày thanh toán không được sau hôm nay");
+    // C1: số tiền vượt số khách đang nợ → phần dư thành tiền trả trước. Xác nhận lại để tránh gõ nhầm thừa số 0.
+    if (isNew && info && Number(f.amount) > (Number(info.debt) || 0)) {
+      const extra = Number(f.amount) - (Number(info.debt) || 0);
+      if (!confirm(`Số tiền ${vnd(f.amount)} đ LỚN HƠN số khách đang nợ (${vnd(info.debt || 0)} đ).\nPhần dư ${vnd(extra)} đ sẽ giữ làm tiền trả trước.\n\nKiểm tra lại số tiền — tiếp tục lưu?`)) return;
+    }
     setBusy(true);
     try {
       if (isNew) {

@@ -184,12 +184,22 @@ async function receivableTotals(conn) {
   };
 }
 
-// Lỗi chặn tạo phiếu giao khi khách vượt hạn mức nợ (trả null nếu được phép)
-async function debtBlockMessage(conn, customerId) {
+// Lỗi chặn khi khách vượt hạn mức nợ (trả null nếu được phép).
+//  - extraAmount = 0 (tạo / đổi khách phiếu nháp): chặn khi khách ĐANG nợ vượt hạn mức.
+//  - extraAmount > 0 (bấm Giao hàng): chặn khi nợ + giá trị phiếu này − tiền trả trước > hạn mức.
+async function debtBlockMessage(conn, customerId, extraAmount = 0) {
   const { rows, settings } = await customerDebts(conn, customerId);
   const d = rows[0];
-  if (!d || !d.over_limit) return null;
+  if (!d) return null;
   const vnd = (x) => Math.round(x).toLocaleString('vi-VN');
+  const extra = num(extraAmount);
+  if (extra > EPS) {
+    const after = d.debt + extra - d.credit;
+    if (after <= settings.limit_amount + EPS) return null;
+    return `Giao phiếu này (${vnd(extra)} đ) thì khách "${d.customer_name}" sẽ nợ ${vnd(after)} đ, vượt hạn mức ${vnd(settings.limit_amount)} đ`
+      + ` (đang nợ ${vnd(d.debt)} đ${d.credit > EPS ? `, trả trước ${vnd(d.credit)} đ` : ''}). Cần thu tiền (Phiếu thanh toán) trước.`;
+  }
+  if (!d.over_limit) return null;
   return `Khách "${d.customer_name}" đang nợ ${vnd(d.debt)} đ, vượt hạn mức ${vnd(settings.limit_amount)} đ — không thể tạo phiếu giao mới. Cần thu tiền (Phiếu thanh toán) trước.`;
 }
 

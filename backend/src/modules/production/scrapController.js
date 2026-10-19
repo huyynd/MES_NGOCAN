@@ -1,4 +1,5 @@
 const db = require('../../core/db');
+const { vnToday } = require('../../core/lib/dates');
 const { applyStock, stockErrorResponse } = require('../../core/lib/stock');
 
 // GET /api/scrap/workers — lấy toàn bộ nhân viên đang hoạt động
@@ -21,7 +22,7 @@ exports.getWorkers = async (req, res) => {
 // Trả về lệnh SX hoàn thành trong ngày ghi nhận.
 exports.getDailyWos = async (req, res) => {
   try {
-    const date = req.query.date || new Date().toISOString().slice(0, 10);
+    const date = req.query.date || vnToday();
     const worker_name = req.query.worker_name;
     if (!worker_name) return res.status(400).json({ message: 'Thiếu worker_name' });
 
@@ -61,7 +62,7 @@ exports.getDailyWos = async (req, res) => {
 // GET /api/scrap/records?worker_name=...&date=...
 exports.getRecords = async (req, res) => {
   try {
-    const date = req.query.date || new Date().toISOString().slice(0, 10);
+    const date = req.query.date || vnToday();
     const worker_name = req.query.worker_name;
     if (!worker_name) return res.status(400).json({ message: 'Thiếu worker_name' });
 
@@ -96,16 +97,21 @@ exports.saveRecords = async (req, res) => {
     if (!worker_name || !record_date) {
       return res.status(400).json({ message: 'Thiếu thông tin bắt buộc' });
     }
+    // E5: SL phế phải là số ≥ 0 (trước đây chữ "abc" bị lưu thành 0). Bỏ trống = 0.
+    if (scrap_qty !== undefined && scrap_qty !== null && scrap_qty !== '') {
+      const q = Number(scrap_qty);
+      if (!Number.isFinite(q) || q < 0) return res.status(400).json({ message: 'Số lượng phế phải là số không âm.' });
+    }
 
     // Cột employee_id / recorder_name đã có trong migration (POST-MIGRATION). Trước đây chạy ALTER TABLE
     // ở đây qua kết nối thứ 2 trong khi đang giữ `client` (M01 — có thể cạn pool) và khoá cả bảng mỗi lần lưu (M45).
     await client.query('BEGIN');
 
     // 1. Get Kho Phế Phẩm and its default location
-    const wRes = await client.query(`SELECT id FROM warehouses WHERE warehouse_type = 'Phế liệu' LIMIT 1`);
+    const wRes = await client.query(`SELECT id FROM warehouses WHERE warehouse_type = 'Phế liệu' AND is_deleted = FALSE ORDER BY created_at LIMIT 1`);
     if (!wRes.rows.length) throw new Error("Chưa có Kho Phế Phẩm trong hệ thống");
     const scrapWarehouseId = wRes.rows[0].id;
-    const lRes = await client.query(`SELECT id FROM locations WHERE warehouse_id = $1 LIMIT 1`, [scrapWarehouseId]);
+    const lRes = await client.query(`SELECT id FROM locations WHERE warehouse_id = $1 AND is_deleted = FALSE ORDER BY created_at LIMIT 1`, [scrapWarehouseId]);
     const scrapLocationId = lRes.rows.length ? lRes.rows[0].id : null;
 
     // 2. Get SP-PHE product
@@ -161,7 +167,7 @@ exports.saveRecords = async (req, res) => {
 // GET /api/scrap/statistics?worker_name=...&end_date=...
 exports.getStats = async (req, res) => {
   try {
-    const end_date = req.query.end_date || new Date().toISOString().slice(0, 10);
+    const end_date = req.query.end_date || vnToday();
     const worker_name = req.query.worker_name;
     if (!worker_name) return res.status(400).json({ message: 'Thiếu worker_name' });
 
@@ -281,7 +287,7 @@ exports.getAllRecords = async (req, res) => {
   try {
     // (Cột employee_id / recorder_name đã có trong migration — không ALTER TABLE mỗi lần xem, M45)
 
-    const date = req.query.date || new Date().toISOString().slice(0, 10);
+    const date = req.query.date || vnToday();
     const { rows } = await db.query(`
       SELECT 
         dsr.id, dsr.worker_name, dsr.record_date, dsr.note, dsr.updated_at, dsr.recorder_name,
@@ -306,8 +312,8 @@ exports.getAllRecords = async (req, res) => {
 // (daily_scrap_records + daily_scrap_items, gộp theo ngày). Dùng cho báo cáo Sản lượng sản xuất.
 exports.getSummary = async (req, res) => {
   try {
-    const to = req.query.to || new Date().toISOString().slice(0, 10);
-    const from = req.query.from || to;
+    const to = req.query.to || req.query.toDate || vnToday(); // G3: nhận cả to/toDate
+    const from = req.query.from || req.query.fromDate || to;
     const { rows } = await db.query(`
       SELECT dsr.record_date::text AS date,
              COALESCE(SUM(dsi.scrap_qty), 0)::numeric    AS scrap_qty,
