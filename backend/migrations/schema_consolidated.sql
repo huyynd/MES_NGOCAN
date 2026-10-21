@@ -2668,3 +2668,21 @@ UPDATE public.production_orders po
 
 DROP VIEW IF EXISTS _spec_fix_map;
 -- ---------------------------------------------------------------------
+
+-- 24) CHUẨN HÓA TÊN THÔNG SỐ (2026-10-21): khóa cũ "Chiều ngang" → "Chiều ngang (Rộng)" trong cột specs.
+--     Chỉ đổi TÊN khóa, giữ nguyên giá trị; spec_key KHÔNG đổi (vị trí chiều ngang trong spec_key đã đúng).
+--     Chạy lại nhiều lần không sao; dòng đã có khóa mới thì giữ khóa mới, chỉ bỏ khóa cũ.
+DO $$
+DECLARE t text;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['inventory_stock','inventory_transactions','sales_order_items',
+                           'production_orders','delivery_note_items','production_roll_usage'] LOOP
+    EXECUTE format($f$
+      UPDATE public.%I
+         SET specs = (specs - 'Chiều ngang')
+                     || CASE WHEN specs ? 'Chiều ngang (Rộng)' THEN '{}'::jsonb
+                             ELSE jsonb_build_object('Chiều ngang (Rộng)', specs->'Chiều ngang') END
+       WHERE specs ? 'Chiều ngang'$f$, t);
+  END LOOP;
+END $$;
+-- ---------------------------------------------------------------------

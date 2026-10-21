@@ -4,7 +4,7 @@ import { processes, resource } from "../../mesApi.js";
 
 const bomApi = resource("boms");
 import {  inputCls, fmt, statusClass , toast } from "../../ui.js";
-import { PageHeader, Section, ListHeader, DataTable, UnitSelect } from "../../components.jsx";
+import { PageHeader, Section, ListHeader, DataTable, UnitSelect, useSaving } from "../../components.jsx";
 import { usePerm } from "../../perm.jsx";
 
 const procApi = processes;
@@ -20,7 +20,7 @@ function FlowChart({ steps, pname, mname }) {
     <div className="flex flex-wrap items-stretch gap-2 overflow-x-auto py-2">
       {steps.map((s, i) => {
         const inputs = (s.inputs || []).map((x) => { const nm = pname(x.material_id); return nm ? `${nm}${x.quantity ? ` (${fmt(x.quantity)}${x.unit ? " " + x.unit : ""})` : ""}` : null; }).filter(Boolean);
-        const place = [s.workshop, mname(s.machine_id), s.duration_minutes ? `${fmt(s.duration_minutes)} phút` : ""].filter(Boolean).join(" · ");
+        const place = [s.workshop, (s.machine_ids?.length ? s.machine_ids : [s.machine_id]).map(mname).filter(Boolean).join(", "), s.duration_minutes ? `${fmt(s.duration_minutes)} phút` : ""].filter(Boolean).join(" · ");
         return (
           <React.Fragment key={s._k ?? i}>
             <div className="min-w-[210px] flex-1 border border-slate-300 rounded-xl bg-white overflow-hidden">
@@ -59,7 +59,7 @@ function ProcessForm({ lookups, editId, copyId, onBack, onSaved }) {
   const [seq, setSeq] = useState(1);
   const [bomList, setBomList] = useState([]);
   const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
-  useEffect(() => { bomApi.list({}).then(setBomList).catch(() => {}); }, []);
+  useEffect(() => { bomApi.list({}).then(setBomList).catch((e) => toast.error("Không tải được danh sách định mức — bấm Làm mới: " + e.message)); }, []);
 
   const products = lookups.products || [];
   const machines = lookups.machines || [];
@@ -69,9 +69,11 @@ function ProcessForm({ lookups, editId, copyId, onBack, onSaved }) {
   const pcode = (id) => products.find((p) => p.id === id)?.product_code;
   const mname = (id) => machines.find((m) => m.id === id)?.name;
 
-  const emptyStep = () => ({ _k: 0, name: "", workshop: "", machine_id: "", duration_minutes: "", inputs: [], output_product_id: "", output_quantity: "", output_unit: "", yield_percent: "", scrap_percent: "" });
+  const emptyStep = () => ({ _k: 0, name: "", workshop: "", machine_id: "", machine_ids: [], duration_minutes: "", inputs: [], output_product_id: "", output_quantity: "", output_unit: "", yield_percent: "", scrap_percent: "" });
   const mapStep = (s, i) => ({
     _k: i + 1, name: s.name, workshop: s.workshop || "", machine_id: s.machine_id || "",
+    // Nhiều máy (cột machine_ids); quy trình cũ chỉ có 1 máy → hiện máy đó
+    machine_ids: Array.isArray(s.machine_ids) && s.machine_ids.length ? s.machine_ids.map(String) : (s.machine_id ? [String(s.machine_id)] : []),
     duration_minutes: s.duration_minutes ?? "",
     inputs: Array.isArray(s.inputs) && s.inputs.length
       ? s.inputs.map((x) => ({ material_id: x.material_id || "", quantity: x.quantity ?? "", unit: x.unit || "" }))
@@ -101,7 +103,13 @@ function ProcessForm({ lookups, editId, copyId, onBack, onSaved }) {
   }, [copyId, editId]); // eslint-disable-line
 
   const addStep = () => { setSteps((a) => [...a, { ...emptyStep(), _k: seq }]); setSeq((s) => s + 1); };
-  const rmStep = (k) => setSteps((a) => a.filter((x) => x._k !== k));
+  // E-03: bước đã có tên / NVL → hỏi trước khi xóa
+  const rmStep = (k) => {
+    const i = steps.findIndex((x) => x._k === k), st = steps[i];
+    const nMat = (st?.inputs || []).filter((it) => it.material_id).length;
+    if (st && (st.name || nMat) && !confirm(`Xóa Bước ${i + 1}${st.name ? ` – ${st.name}` : ""}${nMat ? ` (kèm ${nMat} NVL)` : ""}?`)) return;
+    setSteps((a) => a.filter((x) => x._k !== k));
+  };
   const upStep = (k, fld, v) => setSteps((a) => a.map((x) => {
     if (x._k !== k) return x;
     const nx = { ...x, [fld]: v };
@@ -126,24 +134,25 @@ function ProcessForm({ lookups, editId, copyId, onBack, onSaved }) {
   // đổi xưởng thì bỏ máy nếu máy không thuộc xưởng mới
   const changeWorkshop = (k, ws) => setSteps((a) => a.map((x) => {
     if (x._k !== k) return x;
-    const keep = machines.find((m) => m.id === x.machine_id && (!ws || m.factory === ws));
-    return { ...x, workshop: ws, machine_id: keep ? x.machine_id : "" };
+    const inWs = (id) => machines.some((m) => String(m.id) === String(id) && (!ws || m.factory === ws));
+    return { ...x, workshop: ws, machine_id: inWs(x.machine_id) ? x.machine_id : "", machine_ids: (x.machine_ids || []).filter(inWs) };
   }));
 
+  const [saving, guard] = useSaving();
   const save = async () => {
     if (!f.name) return toast.error("Nhập tên quy trình");
     try {
       const payload = {
         ...f,
         steps: steps.filter((s) => s.name).map((s) => ({
-          name: s.name, workshop: s.workshop, machine_id: s.machine_id, duration_minutes: s.duration_minutes,
+          name: s.name, workshop: s.workshop, machine_ids: s.machine_ids || [], machine_id: (s.machine_ids || [])[0] || null, duration_minutes: s.duration_minutes,
           inputs: (s.inputs || []).filter((it) => it.material_id),
           output_product_id: s.output_product_id, output_quantity: s.output_quantity, output_unit: s.output_unit,
           yield_percent: s.yield_percent, scrap_percent: s.scrap_percent,
         })),
       };
       if (editId) { await procApi.update(editId, payload); toast.success("Đã cập nhật thành công"); loadData(); setEditing(false); }
-      else { await procApi.create(payload); toast.success("Đã lưu thành công"); onSaved(); }
+      else { const created = await procApi.create(payload); toast.success("Đã lưu thành công"); onSaved(created?.id); } // tạo mới → ở lại màn chi tiết của bản ghi vừa tạo
     } catch (e) { toast.error("Lỗi lưu: " + e.message); }
   };
   const del = async () => { if (!confirm("Xóa quy trình này?")) return; try { await procApi.remove(editId); toast.success("Đã xóa thành công"); onSaved(); } catch (e) { toast.error("Lỗi xóa: " + e.message); } };
@@ -156,7 +165,7 @@ function ProcessForm({ lookups, editId, copyId, onBack, onSaved }) {
           {can("process", "delete") && <button onClick={del} className="btn-ghost" style={{ color: "#e11d48" }}><Trash2 size={16} /> Xóa</button>}
         </>) : (<>
           {editId && <button onClick={() => { setEditing(false); loadData(); }} className="btn-ghost">Hủy</button>}
-          <button onClick={save} className="btn-primary"><Save size={16} /> Lưu quy trình</button>
+          <button onClick={() => guard(save)} disabled={saving} className="btn-primary"><Save size={16} /> {saving ? "Đang lưu…" : "Lưu quy trình"}</button>
         </>)} />
 
       <fieldset disabled={!editing} className="space-y-5">
@@ -323,7 +332,7 @@ export default function ProcessModule({ lookups }) {
   useEffect(() => { load(); }, [load]);
   const del = async (id) => { if (!confirm("Xóa quy trình này?")) return; try { await procApi.remove(id); toast.success("Đã xóa thành công"); load(); } catch (e) { toast.error("Lỗi xóa: " + e.message); } };
 
-  if (view === "form") return <ProcessForm lookups={lookups} editId={editId} copyId={copyId} onBack={() => { setView("list"); setEditId(null); setCopyId(null); }} onSaved={() => { setView("list"); setEditId(null); setCopyId(null); load(); }} />;
+  if (view === "form") return <ProcessForm key={editId || "new"} lookups={lookups} editId={editId} copyId={copyId} onBack={() => { setView("list"); setEditId(null); setCopyId(null); }} onSaved={(newId) => { if (newId) { setEditId(newId); setCopyId(null); } else { setView("list"); setEditId(null); setCopyId(null); } load(); }} />;
 
   const columns = [
     { key: "process_code", label: "Mã", filter: "text", render: (r) => <button onClick={() => openForm({ edit: r.id })} className="font-medium text-blue-600 hover:underline">{r.process_code}</button> },

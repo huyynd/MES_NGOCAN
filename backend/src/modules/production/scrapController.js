@@ -295,14 +295,14 @@ exports.getAllRecords = async (req, res) => {
     const date = req.query.date || vnToday();
     const { rows } = await db.query(`
       SELECT 
-        dsr.id, dsr.worker_name, dsr.record_date, dsr.note, dsr.updated_at, dsr.recorder_name,
+        dsr.id, dsr.employee_id, dsr.worker_name, dsr.record_date, dsr.note, dsr.updated_at, dsr.recorder_name,
         e.employee_code, e.name as employee_name,
         COALESCE(SUM(dsi.scrap_qty), 0)::numeric as total_scrap
       FROM daily_scrap_records dsr
       LEFT JOIN employees e ON dsr.employee_id = e.id
       LEFT JOIN daily_scrap_items dsi ON dsi.record_id = dsr.id
       WHERE dsr.record_date = $1
-      GROUP BY dsr.id, dsr.worker_name, dsr.record_date, dsr.note, dsr.updated_at, dsr.recorder_name, e.employee_code, e.name
+      GROUP BY dsr.id, dsr.employee_id, dsr.worker_name, dsr.record_date, dsr.note, dsr.updated_at, dsr.recorder_name, e.employee_code, e.name
       ORDER BY dsr.updated_at DESC
     `, [date]);
     res.json(rows);

@@ -15,7 +15,10 @@ import * as XLSX from "xlsx";
 import { usePerm } from "../../perm.jsx";
 
 /* ─── Màu sắc ─────────────────────────────────────────────────── */
-const DONUT_COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#6366f1", "#ec4899", "#14b8a6"];
+// ĐVT chuẩn để so khớp ("Kg" / "kg " → "kg"); trống → "—"
+const unitOf = (u) => (u || "").trim().toLowerCase() || "—";
+
+const DONUT_COLORS =["#3b82f6", "#10b981", "#f59e0b", "#6366f1", "#ec4899", "#14b8a6"];
 
 /* ─── KPI Card ─────────────────────────────────────────────────── */
 function KpiCard({ label, value, sub, icon: Icon, color = "blue", trend }) {
@@ -78,24 +81,36 @@ const CustomTooltip = ({ active, payload, label }) => {
 };
 
 /* ─── Main InventoryReport ─────────────────────────────────────── */
-export default function InventoryReport({ lookups }) {
+// R-11: kiểm quyền ở component ngoài, phần thân (có hook) ở component con —
+// không gọi hook sau return sớm (đổi quyền giữa phiên không làm sập màn)
+export default function InventoryReport(props) {
   const { can, isAdmin } = usePerm();
   if (!isAdmin && !can('rep_inv', 'view') && !can('reports', 'view')) return (
     <div className="flex items-center justify-center h-64 text-slate-400 text-sm">Bạn không có quyền xem báo cáo kho.</div>
   );
+  return <InventoryReportBody {...props} />;
+}
+
+function InventoryReportBody({ lookups }) {
+  const { can, isAdmin } = usePerm(); // eslint-disable-line no-unused-vars
   const [stockData, setStockData]   = useState([]);
   const [txnData, setTxnData]       = useState([]);
   const [loading, setLoading]       = useState(true);
   const [warehouseFilter, setWarehouseFilter] = useState("");
   const [productFilter, setProductFilter]     = useState("");
   const [days, setDays]             = useState("30");
+  const [unitSel, setUnitSel]       = useState(""); // "" = đơn vị có nhiều sản phẩm nhất
 
+  // Lấy đúng kỳ đang chọn (trước đây chỉ 300 giao dịch mới nhất → kỳ dài bị thiếu)
+  const TXN_LIMIT = 2000;
   const load = useCallback(async () => {
     setLoading(true);
     try {
+      const from = new Date();
+      from.setDate(from.getDate() - Number(days));
       const [tree, txns] = await Promise.all([
         inventory.tree({}),
-        inventory.transactions({}),
+        inventory.transactions({ date_from: from.toLocaleDateString("sv-SE"), limit: TXN_LIMIT }),
       ]);
       setStockData(tree || []);
       setTxnData(txns || []);
@@ -104,7 +119,7 @@ export default function InventoryReport({ lookups }) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [days]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -114,22 +129,24 @@ export default function InventoryReport({ lookups }) {
 
   const recentTxns = txnData.filter(t => new Date(t.created_at) >= cutoff);
 
+  // Gom theo sản phẩm + ĐƠN VỊ — không cộng lẫn kg / cuộn / cái
   const groupedStock = React.useMemo(() => {
     const prods = new Map();
     for (const r of stockData) {
-      if (!prods.has(r.product_id)) {
-        prods.set(r.product_id, {
+      const unit = unitOf(r.unit);
+      const key = `${r.product_id}|${unit}`;
+      if (!prods.has(key)) {
+        prods.set(key, {
           product_id: r.product_id, product_code: r.product_code, product_name: r.product_name,
-          product_type: r.product_type, min_quantity: r.min_quantity, warehouse_limits: r.warehouse_limits || [], 
-          unit: r.unit, total: 0, warehouse_totals: {}
+          product_type: r.product_type, min_quantity: r.min_quantity, warehouse_limits: r.warehouse_limits || [],
+          unit, total: 0, warehouse_totals: {}
         });
       }
-      const P = prods.get(r.product_id);
+      const P = prods.get(key);
       P.total += Number(r.quantity) || 0;
       if (r.warehouse_id) {
         P.warehouse_totals[r.warehouse_id] = (P.warehouse_totals[r.warehouse_id] || 0) + (Number(r.quantity) || 0);
       }
-      if (!P.unit && r.unit) P.unit = r.unit;
     }
     return [...prods.values()];
   }, [stockData]);
@@ -143,10 +160,21 @@ export default function InventoryReport({ lookups }) {
     return matchP;
   });
 
+  /* ── Đơn vị: tổng tồn tách theo từng đơn vị; biểu đồ chỉ cộng 1 đơn vị đang chọn ── */
+  const stockByUnit = new Map();
+  filteredStock.forEach(p => stockByUnit.set(p.unit, (stockByUnit.get(p.unit) || 0) + (Number(p.total) || 0)));
+  const prodCountByUnit = new Map();
+  groupedStock.forEach(p => prodCountByUnit.set(p.unit, (prodCountByUnit.get(p.unit) || 0) + 1));
+  const units = [...prodCountByUnit.keys()].sort((a, b) => prodCountByUnit.get(b) - prodCountByUnit.get(a));
+  const unit = units.includes(unitSel) ? unitSel : (units[0] || "");
+  const unitStock = filteredStock.filter(p => p.unit === unit);
+  const unitTxns  = recentTxns.filter(t => unitOf(t.unit) === unit);
+
   /* ── KPI values ───────────────────────────────────────────────── */
-  const totalStock = filteredStock.reduce((s, p) => s + (Number(p.total) || 0), 0);
-  const totalIn    = recentTxns.filter(t => t.trx_type === "Nhập").reduce((s, t) => s + Number(t.quantity), 0);
-  const totalOut   = recentTxns.filter(t => t.trx_type === "Xuất").reduce((s, t) => s + Number(t.quantity), 0);
+  // Đơn vị nhiều nhất làm số chính, các đơn vị khác ở dòng phụ
+  const [stockMain, ...stockRest] = [...stockByUnit.entries()].sort((a, b) => b[1] - a[1]);
+  const totalIn    = unitTxns.filter(t => t.trx_type === "Nhập").reduce((s, t) => s + Number(t.quantity), 0);
+  const totalOut   = unitTxns.filter(t => t.trx_type === "Xuất").reduce((s, t) => s + Number(t.quantity), 0);
 
   // Low stock items
   const lowStockItems = filteredStock.filter(p => {
@@ -169,7 +197,7 @@ export default function InventoryReport({ lookups }) {
 
   /* ── A. Biến động nhập-xuất-tồn (grouped by day) ─────────────── */
   const trendMap = new Map();
-  recentTxns.forEach(t => {
+  unitTxns.forEach(t => {
     const d = t.created_at?.slice(0, 10) || "";
     if (!trendMap.has(d)) trendMap.set(d, { date: d, nhap: 0, xuat: 0 });
     const e = trendMap.get(d);
@@ -186,7 +214,7 @@ export default function InventoryReport({ lookups }) {
   typeMap.set("Bán thành phẩm", 0);
   typeMap.set("Nguyên vật liệu", 0);
   
-  filteredStock.forEach(p => {
+  unitStock.forEach(p => {
     const t = p.product_type || "Khác";
     typeMap.set(t, (typeMap.get(t) || 0) + (Number(p.total) || 0));
   });
@@ -194,7 +222,7 @@ export default function InventoryReport({ lookups }) {
 
   /* ── C. Tồn kho theo kho (bar) ──────────────────────────────── */
   const whMap = new Map();
-  filteredStock.forEach(p => {
+  unitStock.forEach(p => {
     Object.entries(p.warehouse_totals || {}).forEach(([wid, qty]) => {
       const wh = (lookups?.warehouses || []).find(x => String(x.id) === String(wid));
       const name = wh?.name || `Kho ${wid}`;
@@ -204,7 +232,7 @@ export default function InventoryReport({ lookups }) {
   const warehouseBarData = [...whMap.entries()].map(([name, value]) => ({ name, value }));
 
   /* ── F. Top sản phẩm tồn kho ─────────────────────────────── */
-  const topProducts = [...filteredStock]
+  const topProducts = [...unitStock]
     .sort((a, b) => (Number(b.total) || 0) - (Number(a.total) || 0))
     .slice(0, 8)
     .map(p => ({
@@ -306,24 +334,34 @@ export default function InventoryReport({ lookups }) {
             <option value="90">90 ngày qua</option>
           </select>
         </div>
+        <div>
+          <label className="block text-xs font-medium text-slate-500 mb-1">Đơn vị (biểu đồ, nhập – xuất)</label>
+          <select
+            className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+            value={unit} onChange={e => setUnitSel(e.target.value)}
+          >
+            {units.map(u => <option key={u} value={u}>{u}</option>)}
+          </select>
+        </div>
         <div className="text-xs text-slate-400 self-end pb-1.5 ml-auto">
           {loading ? "Đang tải…" : `${filteredStock.length} sản phẩm · ${recentTxns.length} giao dịch`}
+          {!loading && txnData.length >= TXN_LIMIT && <span className="text-amber-600"> · số liệu có thể chưa đủ, hãy chọn kỳ ngắn hơn</span>}
         </div>
         </div>
       </Section>
 
       {/* KPI row */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-        <KpiCard label="Tổng tồn kho" value={fmt(totalStock)} sub={`${filteredStock.length} sản phẩm`} icon={Warehouse} color="blue" />
-        <KpiCard label="Nhập kho" value={fmt(totalIn)} sub={`${days} ngày qua`} icon={TrendingUp} color="green" />
-        <KpiCard label="Xuất kho" value={fmt(totalOut)} sub={`${days} ngày qua`} icon={TrendingDown} color="amber" />
+        <KpiCard label="Tổng tồn kho" value={stockMain ? `${fmt(stockMain[1])} ${stockMain[0]}` : 0} sub={stockRest.length ? stockRest.map(([u, q]) => `${fmt(q)} ${u}`).join(" · ") : `${filteredStock.length} sản phẩm`} icon={Warehouse} color="blue" />
+        <KpiCard label="Nhập kho" value={`${fmt(totalIn)} ${unit}`} sub={`${days} ngày qua`} icon={TrendingUp} color="green" />
+        <KpiCard label="Xuất kho" value={`${fmt(totalOut)} ${unit}`} sub={`${days} ngày qua`} icon={TrendingDown} color="amber" />
         <KpiCard label="Dưới định mức" value={lowStockItems.length} sub="Cần bổ sung ngay" icon={AlertTriangle} color={lowStockItems.length > 0 ? "rose" : "green"} />
         <KpiCard label="Sắp dưới mức" value={nearMinItems.length} sub="Cảnh báo sớm" icon={CheckCircle2} color={nearMinItems.length > 0 ? "amber" : "green"} />
       </div>
 
       {/* Row 1: Line chart + Donut */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        <ChartCard title="A. Biến động Nhập – Xuất kho">
+        <ChartCard title={`A. Biến động Nhập – Xuất kho (${unit})`}>
           {trendData.length === 0 ? (
             <div className="h-56 flex items-center justify-center text-slate-400 text-sm">
               Chưa có giao dịch trong {days} ngày qua
@@ -345,7 +383,7 @@ export default function InventoryReport({ lookups }) {
           )}
         </ChartCard>
 
-        <ChartCard title="B. Cơ cấu tồn kho theo loại sản phẩm"
+        <ChartCard title={`B. Cơ cấu tồn kho theo loại sản phẩm (${unit})`}
           badge={<span className="text-xs text-slate-400">{donutData.length} loại</span>}>
           {donutData.length === 0 ? (
             <div className="h-56 flex items-center justify-center text-slate-400 text-sm">Chưa có dữ liệu</div>
@@ -382,7 +420,7 @@ export default function InventoryReport({ lookups }) {
 
       {/* Row 2: Bar by warehouse + Bar nhap xuat */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        <ChartCard title="C. Tồn kho theo kho">
+        <ChartCard title={`C. Tồn kho theo kho (${unit})`}>
           {warehouseBarData.length === 0 ? (
             <div className="h-56 flex items-center justify-center text-slate-400 text-sm">
               Chưa có dữ liệu phân theo kho (cần cấu hình vị trí lưu trữ)
@@ -406,7 +444,7 @@ export default function InventoryReport({ lookups }) {
           )}
         </ChartCard>
 
-        <ChartCard title="D. Nhập – Xuất theo ngày (cột)">
+        <ChartCard title={`D. Nhập – Xuất theo ngày (${unit})`}>
           {trendData.length === 0 ? (
             <div className="h-56 flex items-center justify-center text-slate-400 text-sm">
               Chưa có giao dịch trong {days} ngày qua
@@ -504,7 +542,7 @@ export default function InventoryReport({ lookups }) {
       </div>
 
       {/* F. Top sản phẩm tồn kho */}
-      <ChartCard title="F. Top sản phẩm tồn kho cao nhất"
+      <ChartCard title={`F. Top sản phẩm tồn kho cao nhất (${unit})`}
         badge={<span className="text-xs text-slate-400">Top {topProducts.length}</span>}>
         {topProducts.length === 0 ? (
           <div className="h-48 flex items-center justify-center text-slate-400 text-sm">Chưa có dữ liệu</div>

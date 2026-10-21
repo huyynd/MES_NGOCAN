@@ -42,7 +42,7 @@ export default function QrLabelsModule() {
   const [size, setSize] = useState("M");
   const [fields, setFields] = useState(Object.fromEntries(ALL_FIELDS.map((f) => [f.key, DEFAULT_ON.includes(f.key)])));
 
-  useEffect(() => { production.list().then(setOrderList).catch(() => {}); }, []);
+  useEffect(() => { production.list().then(setOrderList).catch((e) => toast.error("Không tải được danh sách lệnh SX — bấm Làm mới: " + e.message)); }, []);
 
   const load = useCallback(async (id) => {
     setOrderId(id);

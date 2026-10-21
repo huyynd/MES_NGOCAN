@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { RotateCcw, Save, RefreshCcw, History, ArrowRight } from "lucide-react";
-import { DataTable, PageHeader, UnitSelect } from "../../components.jsx";
+import { DataTable, PageHeader, UnitSelect, useRemembered } from "../../components.jsx";
 import { inventory } from "../../mesApi.js";
 import { usePerm } from "../../perm.jsx";
 import { inputCls, fmt, toast } from "../../ui.js";
@@ -203,7 +203,7 @@ function TransferForm({ lookups, onSaved }) {
 function TransferHistory() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [range, setRange] = useState(defaultRange());
+  const [range, setRange] = useRemembered("transfer:range", defaultRange);
   const load = useCallback(async () => {
     setLoading(true);
     try {

@@ -11,6 +11,17 @@ const { duplicateNameMessage, isEmail, isTime } = require('../../core/lib/valida
 // Tạo (id = null): tên bắt buộc. Sửa: chỉ kiểm trường có gửi lên.
 const requireName = (label) => (b, id) =>
   ((!id || b.name !== undefined) && !String(b.name || '').trim() ? `Vui lòng nhập ${label}.` : null);
+// D-04: khu vực của vị trí phải thuộc đúng kho (sửa 1 phần → lấy giá trị cũ cho trường không gửi)
+async function zoneInWarehouse(conn, b, id) {
+  if (b.zone_id === undefined && b.warehouse_id === undefined) return null;
+  const cur = id ? (await conn.query('SELECT warehouse_id, zone_id FROM locations WHERE id = $1', [id])).rows[0] || {} : {};
+  const wh = b.warehouse_id !== undefined ? b.warehouse_id : cur.warehouse_id;
+  const zone = b.zone_id !== undefined ? b.zone_id : cur.zone_id;
+  if (!zone) return null;
+  const z = (await conn.query('SELECT warehouse_id FROM zones WHERE id = $1', [zone])).rows[0];
+  return !z || String(z.warehouse_id) !== String(wh) ? 'Khu vực không thuộc kho đã chọn.' : null;
+}
+
 const validators = {
   customers: async (conn, b, id) => requireName('Tên khách hàng')(b, id)
     || (b.email && !isEmail(b.email) ? 'Email không đúng định dạng.' : null)
@@ -18,7 +29,8 @@ const validators = {
   machines: async (conn, b, id) => requireName('Tên máy')(b, id),
   warehouses: async (conn, b, id) => requireName('Tên kho')(b, id),
   zones: async (conn, b, id) => requireName('Tên khu vực')(b, id),
-  locations: async (conn, b, id) => requireName('Tên vị trí')(b, id) || (!id && !b.warehouse_id ? 'Vui lòng chọn Kho.' : null),
+  locations: async (conn, b, id) => requireName('Tên vị trí')(b, id) || (!id && !b.warehouse_id ? 'Vui lòng chọn Kho.' : null)
+    || await zoneInWarehouse(conn, b, id),
   employees: async (conn, b, id) => requireName('Tên nhân viên')(b, id),
   shifts: async (conn, b, id) => requireName('Tên ca')(b, id)
     || (b.start_time && !isTime(b.start_time) ? 'Giờ bắt đầu không hợp lệ (định dạng HH:MM, 00:00–23:59).' : null)

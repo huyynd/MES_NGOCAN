@@ -147,6 +147,24 @@ exports.detailed = async (req, res) => {
       WHERE ${whereClause}
     `, params);
 
+    // R-03: SL kế hoạch / hoàn thành tách theo đơn vị (không cộng lẫn kg + cuộn + cái)
+    const byUnitQuery = await db.query(`
+      SELECT MIN(COALESCE(NULLIF(po.unit, ''), p.unit, '')) AS unit,
+             COALESCE(SUM(po.quantity), 0)::numeric AS plan_qty,
+             COALESCE(SUM(COALESCE(pt.done_qty, 0)), 0)::numeric AS done_qty
+      FROM production_orders po
+      LEFT JOIN products p ON p.id = po.product_id
+      LEFT JOIN (
+        ${DONE_BY_ORDER}
+      ) pt ON pt.production_order_id = po.id
+      WHERE ${whereClause}
+      GROUP BY UPPER(TRIM(COALESCE(NULLIF(po.unit, ''), p.unit, '')))
+      ORDER BY SUM(po.quantity) DESC
+    `, params);
+    summaryQuery.rows[0].qty_by_unit = byUnitQuery.rows.map((r) => ({
+      unit: upUnit(r.unit) || '(không đơn vị)', plan_qty: Number(r.plan_qty), done_qty: Number(r.done_qty),
+    }));
+
     // Chart 1: Quantity by status (bar chart)
     const byStatusQuery = await db.query(`
       SELECT po.status, COALESCE(SUM(po.quantity), 0) AS plan_qty,

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { Wrench, Save, RefreshCcw, History, TrendingUp, TrendingDown, Minus } from "lucide-react";
-import { DataTable, PageHeader, UnitSelect } from "../../components.jsx";
+import { DataTable, PageHeader, UnitSelect, useRemembered } from "../../components.jsx";
 import { inventory } from "../../mesApi.js";
 import { usePerm } from "../../perm.jsx";
 import { inputCls, fmt, toast } from "../../ui.js";
@@ -214,7 +214,7 @@ function AdjustForm({ lookups, onSaved }) {
 function AdjustHistory() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [range, setRange] = useState(defaultRange());
+  const [range, setRange] = useRemembered("adjust:range", defaultRange);
   const load = useCallback(async () => {
     setLoading(true);
     // K-20: lọc ở server (trước đây tải 300 dòng mới nhất rồi lọc → điều chỉnh cũ hơn bị mất khỏi danh sách)

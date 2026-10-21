@@ -44,9 +44,10 @@ const TABS = [
   { k: "staff", label: "Nhân sự & hiệu suất", icon: Users },
 ];
 
+// R-17a: thiếu dữ liệu công nợ → tiền để null (hiện "—"), KHÔNG hiện "0 đ" như số thật
 const EMPTY_R = {
-  overdue_days: 30, total_debt: 0, billed_total: 0, collected_total: 0, customer_count: 0,
-  overdue_amount: 0, intime_amount: 0, overdue_count: 0, buckets: {}, by_customer: [],
+  overdue_days: 30, total_debt: null, billed_total: null, collected_total: null, customer_count: 0,
+  overdue_amount: null, intime_amount: null, overdue_count: 0, buckets: {}, by_customer: [],
 };
 
 /* ───────────────────────── Định dạng số ───────────────────────── */

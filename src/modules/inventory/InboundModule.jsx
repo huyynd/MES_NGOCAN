@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { PackagePlus, Save, Plus, Trash2, RefreshCcw, FileText, History } from "lucide-react";
-import { ListHeader, DataTable, PageHeader, Section, UnitSelect, SearchSelect } from "../../components.jsx";
+import { ListHeader, DataTable, PageHeader, Section, UnitSelect, SearchSelect, useRemembered } from "../../components.jsx";
 import { inventory } from "../../mesApi.js";
 import { usePerm } from "../../perm.jsx";
 import { inputCls, fmt, fmtDate, statusClass, toast, todayYmd } from "../../ui.js";
@@ -15,7 +15,8 @@ const Field = ({ label, required, children }) => (
   </div>
 );
 
-const INBOUND_SOURCES = ["Mua hàng NCC", "Sản xuất hoàn thành", "Trả hàng từ khách", "Chuyển kho", "Khác"];
+const INBOUND_SOURCES = ["Mua hàng NCC", "Sản xuất hoàn thành", "Khác"];
+// K-04: "Chuyển kho" → màn Chuyển kho; "Khách trả hàng" → nút trên phiếu giao (có đối ứng chứng từ)
 
 const newRef = () => `NK${new Date().toISOString().replace(/\D/g, '').slice(2, 14)}${Math.floor(Math.random() * 90 + 10)}`;
 
@@ -25,7 +26,7 @@ const emptyLine = () => ({
 
 function InboundForm({ lookups, onSaved }) {
   const [header, setHeader] = useState({
-    ref_code: "", inbound_date: todayYmd(),
+    ref_code: "",
     location_id: "", source: "Mua hàng NCC", note: ""
   });
   const [lines, setLines] = useState([emptyLine()]);
@@ -93,14 +94,15 @@ function InboundForm({ lookups, onSaved }) {
             <input className={inputCls} placeholder="Tự động nếu trống" value={header.ref_code}
               onChange={e => setH("ref_code", e.target.value)} />
           </Field>
-          <Field label="Ngày nhập" required>
-            <input type="date" className={inputCls} value={header.inbound_date}
-              onChange={e => setH("inbound_date", e.target.value)} />
+          {/* K-03: sổ kho ghi theo ngày giờ lúc lưu (backend không nhận ngày chứng từ) → không cho chọn ngày */}
+          <Field label="Ngày ghi sổ">
+            <div className={`${inputCls} bg-slate-50 text-slate-500`}>Hôm nay ({fmtDate(todayYmd())})</div>
           </Field>
           <Field label="Nguồn nhập" required>
             <select className={inputCls} value={header.source} onChange={e => setH("source", e.target.value)}>
               {INBOUND_SOURCES.map(s => <option key={s}>{s}</option>)}
             </select>
+            <p className="text-[11px] text-slate-400 mt-1">Chuyển kho → màn Chuyển kho; Khách trả hàng → nút trên phiếu giao</p>
           </Field>
           <Field label="Kho / Vị trí nhập" required>
             <select className={inputCls} value={header.location_id} onChange={e => setH("location_id", e.target.value)}>
@@ -190,7 +192,7 @@ function InboundForm({ lookups, onSaved }) {
 function TransactionHistory({ type }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [range, setRange] = useState(defaultRange());
+  const [range, setRange] = useRemembered("inbound:range", defaultRange);
   const load = useCallback(async () => {
     setLoading(true);
     try { setRows(await inventory.transactions({ trx_type: type, ...range, limit: 2000 })); }

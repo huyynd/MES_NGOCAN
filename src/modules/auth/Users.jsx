@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { RotateCcw, Plus, Pencil, Trash2, Save } from "lucide-react";
-import { ListHeader, DataTable, PageHeader, Section } from "../../components.jsx";
+import { ListHeader, DataTable, PageHeader, Section, useSaving } from "../../components.jsx";
 import { users, roles } from "../../mesApi.js";
 import {  inputCls, statusClass , toast } from "../../ui.js";
 
@@ -12,18 +12,19 @@ function UserForm({ record, roleList, teams, employees, onBack, onSaved }) {
   const isEdit = !!record?.id;
   const [f, setF] = useState({ username: record?.username || "", password: "", full_name: record?.full_name || "", role_id: record?.role_id || "", status: record?.status || "Hoạt động", team: record?.team || "", linked_worker: record?.linked_worker || "" });
   const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
+  const [saving, guard] = useSaving();
   const save = async () => {
     if (!f.username) return toast.error("Nhập tài khoản");
     if (!isEdit && !f.password) return toast.error("Nhập mật khẩu");
     try {
       if (isEdit) { await users.update(record.id, f); toast.success("Đã lưu thành công"); } // ở lại form
-      else { await users.create(f); toast.success("Đã lưu thành công"); onSaved(); } // tạo mới → về list
+      else { const r = await users.create(f); toast.success("Đã lưu thành công"); onSaved(r?.id ? { ...f, password: "", id: r.id } : null); } // tạo mới → ở lại màn chi tiết của bản ghi vừa tạo
     } catch (e) { toast.error("Lỗi: " + e.message); }
   };
   return (
     <div className="space-y-5">
       <PageHeader title={isEdit ? "Sửa tài khoản" : "Thêm tài khoản"} onBack={onBack}
-        actions={<button onClick={save} className="btn-primary"><Save size={16} /> Lưu</button>} />
+        actions={<button onClick={() => guard(save)} disabled={saving} className="btn-primary"><Save size={16} /> {saving ? "Đang lưu…" : "Lưu"}</button>} />
       <Section title="Thông tin tài khoản">
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-4">
           <F label="Tài khoản" required><input className={inputCls} value={f.username} onChange={(e) => set("username", e.target.value)} placeholder="tên đăng nhập" /></F>
@@ -64,7 +65,7 @@ export default function UsersModule({ lookups }) {
   const [editing, setEditing] = useState(null);
   const teams = [...new Set(((lookups && lookups.employees) || []).map((e) => e.factory).filter(Boolean))];
   const load = useCallback(async () => { try { setRows(await users.list()); } catch (e) { toast.error("Lỗi tải tài khoản: " + e.message); } }, []);
-  useEffect(() => { load(); roles.list().then(setRoleList).catch(() => {}); }, [load]);
+  useEffect(() => { load(); roles.list().then(setRoleList).catch((e) => toast.error("Không tải được danh sách vai trò — bấm Làm mới: " + e.message)); }, [load]);
   const del = async (id) => { if (!confirm("Xóa tài khoản này?")) return; try { await users.remove(id); toast.success("Đã xóa thành công"); load(); } catch (e) { toast.error("Lỗi xóa: " + e.message); } };
 
   const columns = [
@@ -79,8 +80,8 @@ export default function UsersModule({ lookups }) {
   ];
 
   if (editing)
-    return <UserForm record={editing.id ? editing : null} roleList={roleList} teams={teams} employees={lookups?.employees || []}
-      onBack={() => { setEditing(null); load(); }} onSaved={() => { setEditing(null); load(); }} />;
+    return <UserForm key={editing.id || "new"} record={editing.id ? editing : null} roleList={roleList} teams={teams} employees={lookups?.employees || []}
+      onBack={() => { setEditing(null); load(); }} onSaved={(rec) => { setEditing(rec?.id ? rec : null); load(); }} />;
 
   return (
     <div className="space-y-5">

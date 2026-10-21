@@ -3,7 +3,7 @@ import { RotateCcw, Plus, Trash2, Pencil, ArrowLeft, Save, FlaskConical, Copy, G
 import { resource } from "../../mesApi.js";
 import { usePerm } from "../../perm.jsx";
 import {  inputCls, fmt, statusClass , toast } from "../../ui.js";
-import { PageHeader, Section, ListHeader, DataTable, UnitSelect } from "../../components.jsx";
+import { PageHeader, Section, ListHeader, DataTable, UnitSelect, useSaving } from "../../components.jsx";
 
 const bomApi = resource("boms");
 const procApi = resource("processes");
@@ -39,7 +39,7 @@ function BomForm({ lookups, editId, copyId, onBack, onSaved }) {
   const [procList, setProcList] = useState([]);
   const isLinked = !!f.process_id; // đã gắn Quy trình → dòng NVL lấy từ quy trình (khóa)
   const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
-  useEffect(() => { procApi.list({}).then(setProcList).catch(() => {}); }, []);
+  useEffect(() => { procApi.list({}).then(setProcList).catch((e) => toast.error("Không tải được danh sách quy trình — bấm Làm mới: " + e.message)); }, []);
 
   const loadData = useCallback(() => {
     if (!editId) return;
@@ -78,6 +78,7 @@ function BomForm({ lookups, editId, copyId, onBack, onSaved }) {
   const isColor = f.bom_type === "Công thức pha màu";
   const ratioSum = lines.reduce((s, l) => s + (Number(l.ratio_percent) || 0), 0);
 
+  const [saving, guard] = useSaving();
   const save = async () => {
     if (!f.product_id) return toast.error("Chọn sản phẩm đầu ra");
     if (!f.name) return toast.error("Nhập tên định mức");
@@ -88,8 +89,8 @@ function BomForm({ lookups, editId, copyId, onBack, onSaved }) {
         toast.success("Đã lưu thành công");
         setEditing(false); loadData(); // ở lại màn chi tiết
       } else {
-        await bomApi.create(payload);
-        toast.success("Đã lưu thành công"); onSaved(); // tạo mới → về list
+        const created = await bomApi.create(payload);
+        toast.success("Đã lưu thành công"); onSaved(created?.id); // tạo mới → ở lại màn chi tiết của bản ghi vừa tạo
       }
     } catch (e) { toast.error("Lỗi lưu định mức: " + e.message); }
   };
@@ -107,7 +108,7 @@ function BomForm({ lookups, editId, copyId, onBack, onSaved }) {
           {can("bom", "delete") && <button onClick={del} className="btn-ghost" style={{ color: "#e11d48" }}><Trash2 size={16} /> Xóa</button>}
         </>) : (<>
           {editId && <button onClick={() => { setEditing(false); loadData(); }} className="btn-ghost">Hủy</button>}
-          <button onClick={save} className="btn-primary"><Save size={16} /> Lưu định mức</button>
+          <button onClick={() => guard(save)} disabled={saving} className="btn-primary"><Save size={16} /> {saving ? "Đang lưu…" : "Lưu định mức"}</button>
         </>)} />
 
       {isLinked && (
@@ -223,8 +224,8 @@ export default function BomModule({ lookups }) {
   };
 
   if (view === "form")
-    return <BomForm lookups={lookups} editId={editId} copyId={copyId} onBack={() => { setView("list"); setEditId(null); setCopyId(null); load(); }}
-      onSaved={() => { setView("list"); setEditId(null); setCopyId(null); load(); }} />;
+    return <BomForm key={editId || "new"} lookups={lookups} editId={editId} copyId={copyId} onBack={() => { setView("list"); setEditId(null); setCopyId(null); load(); }}
+      onSaved={(newId) => { if (newId) { setEditId(newId); setCopyId(null); } else { setView("list"); setEditId(null); setCopyId(null); } load(); }} />;
 
   const columns = [
     { key: "bom_code", label: "Mã", filter: "text", render: (r) => <button onClick={() => openForm({ edit: r.id })} className="font-medium text-blue-600 hover:underline">{r.bom_code}</button> },
@@ -241,7 +242,7 @@ export default function BomModule({ lookups }) {
     { key: "_act", label: "", align: "right", render: (r) => (<>
         {can("bom", "create") && <button onClick={() => openForm({ copy: r.id })} title="Sao chép" className="text-slate-400 hover:text-blue-600 p-1"><Copy size={15} /></button>}
         <button onClick={() => openForm({ edit: r.id })} title="Sửa" className="text-slate-400 hover:text-blue-600 p-1"><Pencil size={15} /></button>
-        <button onClick={() => del(r.id)} title="Xóa" className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={15} /></button>
+        {can("bom", "delete") && <button onClick={() => del(r.id)} title="Xóa" className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={15} /></button>}
       </>) },
   ];
 

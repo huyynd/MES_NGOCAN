@@ -4,7 +4,7 @@ import {
   Package, Factory, LayoutDashboard, Calendar, Check, RotateCcw,
   BarChart2, Settings, Save, ArrowLeft, Recycle
 } from "lucide-react";
-import { ListHeader } from "../../components.jsx";
+import { ListHeader, useSaving } from "../../components.jsx";
 import { roles } from "../../mesApi.js";
 import { toast } from "../../ui.js";
 
@@ -515,6 +515,7 @@ function PermTreeEditor({ draft, setDraft, searchQuery = "", inheritedPerms = {}
 ═══════════════════════════════════════════════════════════════ */
 
 export function PermissionEditor({ roleName, initialPerms, onSave, onCancel }) {
+  const [saving, guard] = useSaving();
   const [draft, setDraft] = useState(initialPerms || {});
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -557,8 +558,8 @@ export function PermissionEditor({ roleName, initialPerms, onSave, onCancel }) {
           <button onClick={() => setDraft(initialPerms || {})} className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 font-medium rounded-lg flex items-center gap-2 transition-colors text-sm">
             <RotateCcw size={15} /> Đặt lại
           </button>
-          <button onClick={() => onSave(draft)} className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg flex items-center gap-2 transition-colors text-sm shadow-md">
-            <Save size={15} /> Lưu cấu hình
+          <button onClick={() => guard(() => onSave(draft))} disabled={saving} className="px-5 py-2 disabled:opacity-60 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg flex items-center gap-2 transition-colors text-sm shadow-md">
+            <Save size={15} /> {saving ? "Đang lưu…" : "Lưu cấu hình"}
           </button>
         </div>
       </div>
@@ -591,6 +592,7 @@ export function PermissionEditor({ roleName, initialPerms, onSave, onCancel }) {
 ═══════════════════════════════════════════════════════════════ */
 
 function PermissionDrawer({ open, onClose, roleName, initialPerms, onSave, inheritedPerms = {} }) {
+  const [saving, guard] = useSaving();
   const [draft, setDraft]         = useState(initialPerms || {});
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -701,10 +703,10 @@ function PermissionDrawer({ open, onClose, roleName, initialPerms, onSave, inher
               Hủy
             </button>
             <button
-              onClick={() => onSave(draft)}
-              className="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold rounded-lg flex items-center gap-2 shadow-md transition-colors"
+              onClick={() => guard(() => onSave(draft))} disabled={saving}
+              className="px-6 py-2 disabled:opacity-60 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold rounded-lg flex items-center gap-2 shadow-md transition-colors"
             >
-              <Save size={15} /> Lưu cấu hình
+              <Save size={15} /> {saving ? "Đang lưu…" : "Lưu cấu hình"}
             </button>
           </div>
         </div>
@@ -720,7 +722,9 @@ function PermissionDrawer({ open, onClose, roleName, initialPerms, onSave, inher
 export default function PermissionsModule() {
   const [roleList, setRoleList]         = useState([]);
   const [roleId, setRoleId]             = useState("");
-  const [parentId, setParentId]         = useState("");
+  const [parentId, setParentId]         = useState("");   // bản nháp (chưa lưu)
+  const [savedParentId, setSavedParentId] = useState(""); // giá trị đã lưu trên máy chủ
+  const [savingParent, guardParent] = useSaving();
   const [perms, setPerms]               = useState({});
   const [effectivePerms, setEffectivePerms] = useState({});
   const [inheritedPerms, setInheritedPerms] = useState({});
@@ -737,7 +741,7 @@ export default function PermissionsModule() {
       const res = await roles.list();
       setRoleList(res || []);
       if (res?.length > 0 && !roleId) selectRole(res[0].id, res);
-    } catch (e) { console.error(e); }
+    } catch (e) { toast.error("Không tải được danh sách vai trò: " + e.message); }
   }, [roleId]);
 
   useEffect(() => { fetchRoles(); }, [fetchRoles]);
@@ -746,16 +750,16 @@ export default function PermissionsModule() {
     try {
       const ep = await roles.getEffectivePermissions(id);
       setEffectivePerms(ep || {});
-    } catch (e) { console.error(e); }
+    } catch (e) { toast.error("Không tải được quyền hiệu lực: " + e.message); }
   }, []);
 
   const selectRole = useCallback(async (id, list = roleList) => {
     setRoleId(id);
-    if (!id) { setPerms({}); setParentId(""); setEffectivePerms({}); setInheritedPerms({}); return; }
+    if (!id) { setPerms({}); setParentId(""); setSavedParentId(""); setEffectivePerms({}); setInheritedPerms({}); return; }
     try {
       const r = await roles.get(id);
       setPerms(r.permissions || {});
-      setParentId(r.parent_id || "");
+      setParentId(r.parent_id || ""); setSavedParentId(r.parent_id || "");
       fetchEffective(id);
     } catch (e) { toast.error("Lỗi tải vai trò: " + e.message); }
   }, [roleList, fetchEffective]);
@@ -847,7 +851,7 @@ export default function PermissionsModule() {
         delete newPerms[modKey][actKey];
         if (Object.keys(newPerms[modKey]).length === 0) delete newPerms[modKey];
       }
-      await roles.savePermissions(roleId, newPerms, parentId || null);
+      await roles.savePermissions(roleId, newPerms, savedParentId || null); // không lưu kèm kế thừa đang sửa dở
       toast.success("Đã gỡ quyền");
       selectRole(roleId);
     } catch (e) { toast.error("Lỗi: " + e.message); }
@@ -878,19 +882,28 @@ export default function PermissionsModule() {
               className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm bg-slate-50 text-slate-500 focus:ring-indigo-500 outline-none"
               value={parentId}
               disabled={!roleId}
-              onChange={async (e) => {
-                const newParentId = e.target.value;
-                setParentId(newParentId);
-                try {
-                  await roles.savePermissions(roleId, perms, newParentId || null);
-                  fetchEffective(roleId);
-                  toast.success(newParentId ? "Đã cập nhật kế thừa quyền" : "Đã bỏ kế thừa quyền");
-                } catch (err) { toast.error("Lỗi cập nhật kế thừa: " + err.message); }
-              }}
+              // A-03: đổi chỉ là bản nháp — lưu bằng nút "Lưu kế thừa" (hoặc cùng "Lưu cấu hình")
+              onChange={(e) => setParentId(e.target.value)}
             >
               <option value="">-- Không kế thừa --</option>
               {roleList.filter(r => r.id !== roleId).map(r => <option key={r.id} value={r.id}>{r.role_code} · {r.name}</option>)}
             </select>
+            {parentId !== savedParentId && (
+              <div className="flex items-center gap-2 mt-2 text-xs text-amber-700">
+                Chưa lưu thay đổi kế thừa.
+                <button disabled={savingParent} className="btn-primary py-1 px-3 text-xs" onClick={() => guardParent(async () => {
+                  const name = roleList.find((r) => r.id === parentId)?.name;
+                  if (!confirm(parentId ? `Đặt vai trò này kế thừa quyền từ "${name}"?` : "Bỏ kế thừa quyền của vai trò này?")) return;
+                  try {
+                    // chỉ đổi kế thừa: gửi quyền ĐÃ LƯU (perms), không kèm phần đang sửa dở trong hộp thoại
+                    await roles.savePermissions(roleId, perms, parentId || null);
+                    setSavedParentId(parentId); fetchEffective(roleId);
+                    toast.success(parentId ? "Đã cập nhật kế thừa quyền" : "Đã bỏ kế thừa quyền");
+                  } catch (err) { toast.error("Lỗi cập nhật kế thừa: " + err.message); }
+                })}>{savingParent ? "Đang lưu…" : "Lưu kế thừa"}</button>
+                <button className="btn-ghost py-1 px-3 text-xs" onClick={() => setParentId(savedParentId)}>Hoàn tác</button>
+              </div>
+            )}
           </div>
           <div>
             <button

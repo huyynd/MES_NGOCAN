@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { Upload, Save, Plus, Trash2, RefreshCcw, History, AlertTriangle, PackageCheck, Check, Ban, ChevronRight, ChevronDown, ClipboardList } from "lucide-react";
-import { DataTable, PageHeader, UnitSelect, SearchSelect } from "../../components.jsx";
+import { DataTable, PageHeader, UnitSelect, SearchSelect, useRemembered } from "../../components.jsx";
 import { inventory } from "../../mesApi.js";
 import { usePerm } from "../../perm.jsx";
 import { inputCls, fmt, fmtDate, toast, todayYmd } from "../../ui.js";
@@ -15,7 +15,8 @@ const Field = ({ label, required, children }) => (
   </div>
 );
 
-const OUTBOUND_PURPOSES = ["Giao cho khách hàng", "Xuất cho sản xuất", "Xuất trả NCC", "Hủy / Phế liệu", "Chuyển kho", "Khác"];
+const OUTBOUND_PURPOSES = ["Giao cho khách hàng", "Xuất cho sản xuất", "Xuất trả NCC", "Hủy / Phế liệu", "Khác"];
+// K-04: "Chuyển kho" có màn riêng (trừ nguồn + cộng đích cùng lúc) — không xuất ở đây
 
 const emptyLine = () => ({
   _k: Math.random(), product_id: "", quantity: "", unit: "", lot_code: "", spec_key: "", rows: null, note: ""
@@ -39,7 +40,7 @@ function lineStock(l, locId) {
 
 function OutboundForm({ lookups, onSaved }) {
   const [header, setHeader] = useState({
-    ref_code: "", outbound_date: todayYmd(),
+    ref_code: "",
     location_id: "", purpose: "Giao cho khách hàng", note: ""
   });
   const [lines, setLines] = useState([emptyLine()]);
@@ -166,14 +167,15 @@ function OutboundForm({ lookups, onSaved }) {
             <input className={inputCls} placeholder="Tự động nếu trống" value={header.ref_code}
               onChange={e => setH("ref_code", e.target.value)} />
           </Field>
-          <Field label="Ngày xuất" required>
-            <input type="date" className={inputCls} value={header.outbound_date}
-              onChange={e => setH("outbound_date", e.target.value)} />
+          {/* K-03: sổ kho ghi theo ngày giờ lúc lưu (backend không nhận ngày chứng từ) → không cho chọn ngày */}
+          <Field label="Ngày ghi sổ">
+            <div className={`${inputCls} bg-slate-50 text-slate-500`}>Hôm nay ({fmtDate(todayYmd())})</div>
           </Field>
           <Field label="Mục đích xuất" required>
             <select className={inputCls} value={header.purpose} onChange={e => setH("purpose", e.target.value)}>
               {OUTBOUND_PURPOSES.map(s => <option key={s}>{s}</option>)}
             </select>
+            <p className="text-[11px] text-slate-400 mt-1">Chuyển kho → màn Chuyển kho</p>
           </Field>
           <Field label="Kho / Vị trí xuất" required>
             <select className={inputCls} value={header.location_id} onChange={e => onLocationChange(e.target.value)}>
@@ -423,7 +425,7 @@ function PendingSlips({ canConfirm, onConfirmed }) {
 function OutboundHistory() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [range, setRange] = useState(defaultRange());
+  const [range, setRange] = useRemembered("outbound:range", defaultRange);
   const load = useCallback(async () => {
     setLoading(true);
     try { setRows(await inventory.transactions({ trx_type: "Xuất", ...range, limit: 2000 })); }

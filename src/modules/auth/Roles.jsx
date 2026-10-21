@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { Shield, Plus, Edit, Trash2, Users, AlertCircle, Search, RotateCcw, Save } from "lucide-react";
-import { ListHeader, DataTable, Section } from "../../components.jsx";
+import { ListHeader, DataTable, Section, useSaving, useRemembered } from "../../components.jsx";
 import { roles, users } from "../../mesApi.js";
 import { toast } from "../../ui.js";
 import { PermissionEditor } from "./PermissionEditor.jsx";
@@ -15,6 +15,7 @@ function RoleForm({ record, onBack, onSaved }) {
   });
   const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
   
+  const [saving, guard] = useSaving();
   const save = async () => {
     if (!f.name) return toast.error("Vui lòng nhập tên vai trò");
     try {
@@ -22,9 +23,9 @@ function RoleForm({ record, onBack, onSaved }) {
         await roles.update(record.id, f);
         toast.success("Đã lưu vai trò thành công"); // ở lại form
       } else {
-        await roles.create(f);
+        const created = await roles.create(f);
         toast.success("Đã lưu vai trò thành công");
-        onSaved(); // tạo mới → về list
+        onSaved(created); // tạo mới → ở lại màn chi tiết của bản ghi vừa tạo
       }
     } catch (e) {
       toast.error("Lỗi: " + e.message);
@@ -37,7 +38,7 @@ function RoleForm({ record, onBack, onSaved }) {
         <h2 className="text-xl font-bold text-slate-800">{isEdit ? "Sửa vai trò" : "Thêm vai trò mới"}</h2>
         <div className="flex items-center gap-2">
           <button onClick={onBack} className="px-4 py-2 text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg text-sm font-medium transition-colors">Hủy</button>
-          <button onClick={save} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium flex items-center gap-2 transition-colors"><Save size={16} /> Lưu</button>
+          <button onClick={() => guard(save)} disabled={saving} className="px-4 py-2 disabled:opacity-60 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium flex items-center gap-2 transition-colors"><Save size={16} /> {saving ? "Đang lưu…" : "Lưu"}</button>
         </div>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
@@ -69,7 +70,7 @@ export default function RolesModule() {
   const [list, setList] = useState([]);
   const [userList, setUserList] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [q, setQ] = useState("");
+  const [q, setQ] = useRemembered("roles:q", "");
 
   const [selectedRole, setSelectedRole] = useState(null);
   const [activeTab, setActiveTab] = useState("permissions"); // 'permissions', 'users'
@@ -96,7 +97,7 @@ export default function RolesModule() {
     try {
       const res = await users.list();
       setUserList(Array.isArray(res) ? res : res?.data || []);
-    } catch (e) {}
+    } catch (e) { toast.error("Không tải được danh sách tài khoản — bấm Làm mới: " + e.message); }
   };
 
   useEffect(() => {
@@ -152,7 +153,7 @@ export default function RolesModule() {
   if (editingRole) {
     return (
       <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm max-w-3xl mx-auto mt-6">
-        <RoleForm record={editingRole.id ? editingRole : null} onBack={() => { setEditingRole(null); fetchRoles(); }} onSaved={() => { setEditingRole(null); fetchRoles(); }} />
+        <RoleForm key={editingRole.id || "new"} record={editingRole.id ? editingRole : null} onBack={() => { setEditingRole(null); fetchRoles(); }} onSaved={(rec) => { setEditingRole(rec?.id ? rec : null); fetchRoles(); }} />
       </div>
     );
   }

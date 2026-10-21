@@ -257,7 +257,7 @@ exports.transactions = async (req, res) => {
     const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
     const { rows } = await db.query(`
-      SELECT tr.*, p.product_name, p.product_code,
+      SELECT tr.*, p.product_name, p.product_code, p.unit AS unit, -- sổ cái không lưu ĐVT → lấy ĐVT sản phẩm
              l.name AS location_name, w.name AS warehouse_name
       FROM inventory_transactions tr
       JOIN products p ON p.id = tr.product_id

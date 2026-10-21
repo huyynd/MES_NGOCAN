@@ -3,7 +3,7 @@ import { RotateCcw, Plus, Trash2, Pencil, Save, Upload, Download, FileDown } fro
 import * as XLSX from "xlsx";
 import { resource, customerOrders, machineOrders, nextCode } from "../../mesApi.js";
 import { usePerm } from "../../perm.jsx";
-import { ListHeader, DataTable, PageHeader, Section } from "../../components.jsx";
+import { ListHeader, DataTable, PageHeader, Section, useSaving } from "../../components.jsx";
 import {  inputCls, statusClass, fmt, fmtDate , toast } from "../../ui.js";
 
 const isObjOptions = (f) => f.type === "select" && f.options && typeof f.options[0] === "object";
@@ -25,7 +25,12 @@ function RecordForm({ cfg, record, onBack, onSaved, onOpenOrder, onOpenProductio
     cfg.fields.forEach((fl) => { init[fl.key] = record?.[fl.key] ?? fl.default ?? ""; });
     return init;
   });
-  const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
+  // Trường có resetOn: "x" bị xóa khi đổi trường x (vd đổi Kho → xóa Khu vực cũ)
+  const set = (k, v) => setF((s) => {
+    const n = { ...s, [k]: v };
+    cfg.fields.forEach((fl) => { if (fl.resetOn === k && s[k] !== v) n[fl.key] = ""; });
+    return n;
+  });
   const api = resource(cfg.resource);
 
   // Mã: hiện mã thật khi sửa, mã dự kiến khi thêm mới
@@ -37,16 +42,17 @@ function RecordForm({ cfg, record, onBack, onSaved, onOpenOrder, onOpenProductio
   const showOrders = cfg.resource === "customers" && isEdit;
   const [orders, setOrders] = useState([]);
   useEffect(() => {
-    if (showOrders) customerOrders(record.id).then(setOrders).catch(() => {});
+    if (showOrders) customerOrders(record.id).then(setOrders).catch((e) => toast.error("Không tải được đơn hàng của khách — bấm Làm mới: " + e.message));
   }, [showOrders, record?.id]); // eslint-disable-line
 
   // Dữ liệu liên quan: lệnh sản xuất đã chạy (chỉ với máy móc, chế độ sửa)
   const showMachine = cfg.resource === "machines" && isEdit;
   const [mTasks, setMTasks] = useState([]);
   useEffect(() => {
-    if (showMachine) machineOrders(record.id).then(setMTasks).catch(() => {});
+    if (showMachine) machineOrders(record.id).then(setMTasks).catch((e) => toast.error("Không tải được công việc của máy — bấm Làm mới: " + e.message));
   }, [showMachine, record?.id]); // eslint-disable-line
 
+  const [saving, guard] = useSaving();
   const save = async () => {
     for (const fl of cfg.fields)
       if (fl.required && !f[fl.key]) return toast.error(`Vui lòng nhập ${fl.label}`);
@@ -55,8 +61,8 @@ function RecordForm({ cfg, record, onBack, onSaved, onOpenOrder, onOpenProductio
         await api.update(record.id, f);
         toast.success("Đã lưu thành công"); // ở lại màn chi tiết, không thoát ra list
       } else {
-        await api.create(f);
-        toast.success("Đã lưu thành công"); onSaved(); // tạo mới → về list
+        const created = await api.create(f);
+        toast.success("Đã lưu thành công"); onSaved(created); // tạo mới → ở lại màn chi tiết của bản ghi vừa tạo
       }
     } catch (e) { toast.error("Lỗi lưu: " + e.message); }
   };
@@ -64,7 +70,7 @@ function RecordForm({ cfg, record, onBack, onSaved, onOpenOrder, onOpenProductio
   return (
     <div className="space-y-5">
       <PageHeader title={`${isEdit ? "Sửa" : "Thêm"} ${cfg.title.toLowerCase()}`} onBack={onBack}
-        actions={<button onClick={save} className="btn-primary"><Save size={16} /> Lưu</button>} />
+        actions={<button onClick={() => guard(save)} disabled={saving} className="btn-primary"><Save size={16} /> {saving ? "Đang lưu…" : "Lưu"}</button>} />
       {(() => {
         const groups = {};
         const defaultGroup = cfg.fields.some(f => f.group === "Thông tin chung") ? "Thông tin chung" : "Thông tin";
@@ -254,7 +260,9 @@ function MasterTable({ cfg, onOpenOrder, onOpenProductionOrder }) {
   };
 
   // ---- Import Excel ----
+  const [importing, setImporting] = useState(false);
   const importExcel = async (file) => {
+    if (importing) return;
     try {
       const wb = XLSX.read(await file.arrayBuffer());
       const sheet = wb.Sheets[wb.SheetNames[0]];
@@ -272,12 +280,15 @@ function MasterTable({ cfg, onOpenOrder, onOpenProductionOrder }) {
         return p;
       }).filter((p) => Object.keys(p).filter((k) => k !== (codeCol && codeCol.key)).length);
       if (!payloads.length) return toast.error("Không đọc được dòng dữ liệu hợp lệ. Kiểm tra tiêu đề cột khớp file mẫu.");
+      if (!confirm(`Nhập ${payloads.length} dòng vào ${cfg.title}?`)) return;
+      setImporting(true);
       const res = await api.importRows(payloads);
       let msg = `Đã nhập ${res.inserted}/${payloads.length} dòng.`;
       if (res.failed) msg += `\nLỗi ${res.failed} dòng:\n` + res.errors.map((e) => `· Dòng ${e.row}: ${e.message}`).join("\n");
-      toast.error(msg);
+      (res.failed ? toast.error : toast.success)(msg); // D-03: chỉ báo đỏ khi có dòng lỗi
       load();
     } catch (e) { toast.error("Lỗi đọc file: " + e.message); }
+    finally { setImporting(false); }
   };
 
   const dtCols = [
@@ -301,8 +312,8 @@ function MasterTable({ cfg, onOpenOrder, onOpenProductionOrder }) {
   ];
 
   if (editing)
-    return <RecordForm cfg={cfg} record={editing.id ? editing : null} onOpenOrder={onOpenOrder} onOpenProductionOrder={onOpenProductionOrder}
-      onBack={() => { setEditing(null); load(); }} onSaved={() => { setEditing(null); load(); }} />;
+    return <RecordForm key={editing.id || "new"} cfg={cfg} record={editing.id ? editing : null} onOpenOrder={onOpenOrder} onOpenProductionOrder={onOpenProductionOrder}
+      onBack={() => { setEditing(null); load(); }} onSaved={(rec) => { setEditing(rec?.id ? rec : null); load(); }} />;
 
   return (
     <div className="space-y-4">
@@ -310,9 +321,9 @@ function MasterTable({ cfg, onOpenOrder, onOpenProductionOrder }) {
         <button onClick={load} className="btn-ghost"><RotateCcw size={16} /> Làm mới</button>
         <button onClick={downloadTemplate} className="btn-ghost"><FileDown size={16} /> Tải mẫu</button>
         {can("md_" + cfg.resource, "create") && (
-          <label className="btn-ghost cursor-pointer">
-            <Upload size={16} /> Nhập Excel
-            <input type="file" accept=".xlsx,.xls" className="hidden"
+          <label className={`btn-ghost ${importing ? "opacity-50 pointer-events-none" : "cursor-pointer"}`}>
+            <Upload size={16} /> {importing ? "Đang nhập…" : "Nhập Excel"}
+            <input type="file" accept=".xlsx,.xls" className="hidden" disabled={importing}
               onChange={(e) => { if (e.target.files[0]) importExcel(e.target.files[0]); e.target.value = ""; }} />
           </label>
         )}
@@ -421,7 +432,7 @@ function buildConfigs(lookups) {
       ],
       fields: [
         { key: "warehouse_id", label: "Kho", type: "select", required: true, options: warehouseOptions },
-        { key: "zone_id", label: "Khu vực", type: "select", required: true, options: (f) => (lookups.zones || []).filter(z => z.warehouse_id === f.warehouse_id).map(z => ({ value: z.id, label: z.name })) },
+        { key: "zone_id", label: "Khu vực", type: "select", required: true, resetOn: "warehouse_id", options: (f) => (lookups.zones || []).filter(z => z.warehouse_id === f.warehouse_id).map(z => ({ value: z.id, label: z.name })) },
         { key: "name", label: "Tên vị trí", required: true, full: true },
       ],
     },

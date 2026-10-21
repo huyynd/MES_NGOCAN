@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { Save, RotateCcw, Factory, CalendarClock, Package, Boxes, AlertTriangle, Play, Pause, CheckCircle2 } from "lucide-react";
 import { production } from "../../mesApi.js";
 import { usePerm } from "../../perm.jsx";
-import { ListHeader } from "../../components.jsx";
+import { ListHeader, useRemembered } from "../../components.jsx";
 import {  inputCls, fmt, fmtDate, statusClass , toast } from "../../ui.js";
 
 /* ---- Modal: NVL thực tế sử dụng (gợi ý từ BOM) → trừ tồn kho ---- */
@@ -231,7 +231,7 @@ export default function ExecutionModule({ lookups }) {
   // Người dùng bị giới hạn theo Đội (không phải admin + có gắn đội) → chỉ thấy việc của đội đó
   const lockedTeam = (!user?.is_admin && user?.team) ? user.team : "";
   const [rows, setRows] = useState([]);
-  const [filters, setFilters] = useState({ team: lockedTeam, worker: "", status: "", q: "" });
+  const [filters, setFilters] = useRemembered(`exec:filters:${lockedTeam}`, { team: lockedTeam, worker: "", status: "", q: "" });
   const emps = lookups.employees || [];
   const teams = [...new Set(emps.map((e) => e.factory).filter(Boolean))];
   const workers = emps.filter((e) => !filters.team || e.factory === filters.team);

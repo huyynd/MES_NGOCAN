@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { Layers, CalendarClock, RotateCcw, ShoppingCart, AlertTriangle, ClipboardList, Save, ChevronLeft, ChevronRight, CalendarRange, Star } from "lucide-react";
-import { ListHeader, usePager, DataTable } from "../../components.jsx";
+import { ListHeader, usePager, DataTable, useSaving } from "../../components.jsx";
 import { planning, production } from "../../mesApi.js";
 import { DEFAULT_STAGES, stageFactory } from "../../productionDefaults.js";
 import {  inputCls, fmt, fmtDate, statusClass , toast } from "../../ui.js";
@@ -58,6 +58,7 @@ function AllocateModal({ lookups, batch, onClose, onDone }) {
   // Máy gợi ý theo nhà máy của công đoạn
   const machinesOf = (team) => (lookups.machines || []).filter((m) => !team || m.factory === team);
 
+  const [saving, guard] = useSaving();
   const save = async () => {
     if (!planItems.length) return toast.error("Nhập số lượng sản xuất cho ít nhất 1 dòng.");
     try {
@@ -169,7 +170,7 @@ function AllocateModal({ lookups, batch, onClose, onDone }) {
 
         <div className="flex justify-end gap-2 pt-1">
           <button onClick={onClose} className="btn-ghost">Hủy</button>
-          <button onClick={save} className="btn-primary"><Save size={16} /> Tạo {planItems.length} lệnh</button>
+          <button onClick={() => guard(save)} disabled={saving} className="btn-primary"><Save size={16} /> {saving ? "Đang lưu…" : `Tạo ${planItems.length} lệnh`}</button>
         </div>
       </div>
     </div>
@@ -178,7 +179,8 @@ function AllocateModal({ lookups, batch, onClose, onDone }) {
 
 /* Chiều ngang (số) của lô — lấy từ thông số kỹ thuật */
 function batchWidth(b) {
-  const w = b.specs && b.specs["Chiều ngang"];
+  // "Chiều ngang" = khóa cũ (dữ liệu trước mục 24 migrate) — dự phòng khi PRD chưa migrate
+  const w = b.specs && (b.specs["Chiều ngang (Rộng)"] ?? b.specs["Chiều ngang"]);
   if (w != null) { const m = String(w).match(/[\d.]+/); if (m) return Number(m[0]); }
   return null;
 }

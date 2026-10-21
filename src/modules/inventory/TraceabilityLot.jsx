@@ -160,21 +160,18 @@ export default function TraceabilityLot() {
       let lot = null;
       if (lotTxns.length > 0) {
         const pid = lotTxns[0].product_id;
-        const tree = await inventory.tree({ product_id: pid });
-        const prod = (tree || []).find(p => p.product_id === pid);
-        if (prod) {
-          for (const g of prod.groups || []) {
-            const l = (g.lots || []).find(l => (l.lot_code || "").toLowerCase().includes(query.toLowerCase()));
-            if (l) {
-              lot = { ...l, product_code: prod.product_code, product_name: prod.product_name, product_type: prod.product_type };
-              break;
-            }
-          }
-          if (!lot) {
-            // fallback: use product info
-            lot = { product_code: prod.product_code, product_name: prod.product_name, product_type: prod.product_type, lot_code: query, quantity: prod.total, unit: prod.unit };
-          }
-        }
+        // /inventory/tree trả danh sách PHẲNG (mỗi dòng = 1 lô × vị trí) → lọc theo SP + mã lô rồi cộng
+        const rows = ((await inventory.tree({ product_id: pid })) || []).filter(r => String(r.product_id) === String(pid));
+        const first = rows[0] || lotTxns[0];
+        const lotCode = lotTxns[0].lot_code || query.trim();
+        const lotRows = rows.filter(r => (r.lot_code || "").toLowerCase() === lotCode.toLowerCase());
+        lot = {
+          product_code: first.product_code, product_name: first.product_name, product_type: first.product_type,
+          lot_code: lotCode, specs: lotRows[0]?.specs, unit: lotRows[0]?.unit || first.unit,
+          quantity: lotRows.reduce((s, r) => s + (Number(r.quantity) || 0), 0),
+          warehouse_name: lotRows.length === 1 ? lotRows[0].warehouse_name : lotRows.length > 1 ? `${lotRows.length} vị trí` : undefined,
+          location_name: lotRows.length === 1 ? lotRows[0].location_name : undefined,
+        };
       }
 
       setResult({ lot, transactions: lotTxns.sort((a, b) => new Date(a.created_at) - new Date(b.created_at)) });

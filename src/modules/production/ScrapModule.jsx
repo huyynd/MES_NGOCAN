@@ -4,7 +4,7 @@ import {
   BarChart2, FileText, CheckCircle2, TrendingUp, TrendingDown,
   RefreshCcw, ChevronDown, ChevronRight
 } from "lucide-react";
-import { PageHeader, DataTable } from "../../components.jsx";
+import { PageHeader, DataTable, useRemembered } from "../../components.jsx";
 import { scrap } from "../../mesApi.js";
 import { inputCls, fmt, toast, todayYmd } from "../../ui.js";
 import { usePerm } from "../../perm.jsx";
@@ -320,7 +320,8 @@ function ScrapForm({ worker, workerId, date, setDate, onOpenOrder, cameFromManag
     if (!worker) return toast.error("Vui lòng chọn công nhân");
     if (!productGroups.length) return toast.error("Không có thành phẩm nào để ghi phế");
 
-    if (!scrapQty || Number(scrapQty) < 0) {
+    if (Number(scrapQty) < 0) return toast.error("Số lượng phế không được âm");
+    if (!scrapQty || Number(scrapQty) === 0) {
       if (!window.confirm("Số lượng phế = 0 hoặc chưa nhập. Bạn có chắc chắn muốn lưu?")) return;
     }
 
@@ -519,7 +520,7 @@ function ScrapManagement({ onEdit }) {
   const [date, setDate] = useState(todayYmd());
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useRemembered("scrap:manage:search", "");
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -685,9 +686,12 @@ export default function ScrapModule({ onOpenOrder }) {
           />
         ) : activeTab === "manage" ? (
           <ScrapManagement onEdit={(r) => {
-             // Map worker_name back to worker ID
-             const found = workerList.find(w => w.name === r.worker_name);
-             if (found) setWorker(found.id);
+             // Tìm đúng công nhân của bản ghi (theo mã NV, bản ghi cũ chưa có thì theo tên).
+             // Không thấy → báo lỗi, KHÔNG mở form (tránh ghi phế cho công nhân đang chọn sẵn)
+             const found = (r.employee_id && workerList.find(w => w.id === r.employee_id))
+               || workerList.find(w => w.name === r.worker_name);
+             if (!found) return toast.error(`Không tìm thấy công nhân "${r.worker_name}" trong danh sách — không thể điều chỉnh`);
+             setWorker(found.id);
              setDate(r.record_date.slice(0, 10));
              setCameFromManage(true);
              setActiveTab("record");

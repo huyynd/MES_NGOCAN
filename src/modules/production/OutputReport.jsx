@@ -4,7 +4,7 @@ import {
   X, User, Users, CalendarDays, Factory, ShoppingCart, Tag, ClipboardList, Layers,
   ChevronRight, AlertCircle,
 } from "lucide-react";
-import { ListHeader, Section, DataTable, SearchSelect } from "../../components.jsx";
+import { ListHeader, Section, DataTable, SearchSelect, useRemembered } from "../../components.jsx";
 import { production, scrap as scrapApi } from "../../mesApi.js";
 import { fmt, fmtDate, statusClass, toast, todayYmd, monthStartYmd } from "../../ui.js";
 import * as XLSX from "xlsx";
@@ -325,7 +325,9 @@ function OrderDetailDrawer({ order, onClose }) {
             ) : (
               <div className="divide-y divide-slate-100">
                 {tasks.map((t, i) => {
-                  const tActual  = (t.actual_qty != null && t.actual_qty !== "") ? Number(t.actual_qty) : (Number(t.quantity) || 0);
+                  // Chưa nhập thực tế → hiện "—", không lấy SL kế hoạch thay vào (trước đây hiện 100% dù chưa làm)
+                  const hasActual = t.actual_qty != null && t.actual_qty !== "";
+                  const tActual  = hasActual ? Number(t.actual_qty) : 0;
                   const tPlanned = Number(t.quantity) || 0;
                   const tPct     = tPlanned > 0 ? Math.round(tActual / tPlanned * 100) : 0;
                   const tColor   = tPct >= 100 ? "text-emerald-600" : tPct >= 80 ? "text-amber-600" : "text-rose-600";
@@ -345,8 +347,8 @@ function OrderDetailDrawer({ order, onClose }) {
                       </div>
                       <div className="flex items-center gap-4 text-xs text-slate-500 flex-wrap">
                         <span>KH: <b className="text-slate-700">{fmt(tPlanned)}</b></span>
-                        <span>TT: <b className={tColor}>{fmt(tActual)} ({tPct}%)</b></span>
-                        {tPlanned - tActual > 0
+                        <span>TT: {hasActual ? <b className={tColor}>{fmt(tActual)} ({tPct}%)</b> : <b className="text-slate-400">—</b>}</span>
+                        {!hasActual ? null : tPlanned - tActual > 0
                           ? <span className="text-amber-600">Còn: <b>{fmt(tPlanned - tActual)}</b></span>
                           : tActual > tPlanned && <span className="text-emerald-600">Vượt: <b>+{fmt(tActual - tPlanned)}</b></span>}
                         {t.planned_date && <span className="flex items-center gap-1"><CalendarDays size={11} />{fmtDate(t.planned_date)}</span>}
@@ -388,29 +390,37 @@ function OrderDetailDrawer({ order, onClose }) {
 }
 
 /* ─── Main component ─── */
-export default function OutputReport({ lookups }) {
+// R-11: kiểm quyền ở component ngoài, phần thân (có hook) ở component con —
+// không gọi hook sau return sớm (đổi quyền giữa phiên không làm sập màn)
+export default function OutputReport(props) {
   const { can, isAdmin } = usePerm();
   if (!isAdmin && !can('prod_output', 'view') && !can('production', 'view')) return (
     <div className="flex items-center justify-center h-64 text-slate-400 text-sm">Bạn không có quyền xem báo cáo sản xuất.</div>
   );
+  return <OutputReportBody {...props} />;
+}
+
+function OutputReportBody({ lookups }) {
+  const { can, isAdmin } = usePerm(); // eslint-disable-line no-unused-vars
   const [rows, setRows]               = useState([]);
   const [loading, setLoading]         = useState(false);
-  const [from, setFrom]               = useState(monthStart());
-  const [to, setTo]                   = useState(today());
-  const [productFilter, setProductFilter] = useState("");
-  const [teamFilter, setTeamFilter]   = useState("");
-  const [statusFilter, setStatusFilter] = useState(""); // "" | tên trạng thái | OVERDUE
+  const [from, setFrom]               = useRemembered("output:from", monthStart);
+  const [to, setTo]                   = useRemembered("output:to", today);
+  const [productFilter, setProductFilter] = useRemembered("output:product", "");
+  const [teamFilter, setTeamFilter]   = useRemembered("output:team", "");
+  const [statusFilter, setStatusFilter] = useRemembered("output:status", ""); // "" | tên trạng thái | OVERDUE
   const [showCustomer, setShowCustomer] = useState(false);
   // Góc nhìn của bảng chi tiết: { key: all|actual|remain|running|done|overdue|scrap } hoặc { key: status|date, value }
   const [view, setView] = useState({ key: "all" });
   const [selected, setSelected]       = useState(null); // order được chọn để xem chi tiết
   // Phế KHÔNG ghi theo lệnh — lấy từ module Quản lý phế, gộp theo ngày trong khoảng lọc.
   const [scrapSum, setScrapSum]       = useState({ total_scrap: 0, total_finished: 0, by_day: [] });
+  const [scrapErr, setScrapErr]       = useState(false); // P-20: lỗi tải phế → KPI hiện "—", không hiện 0 như thật
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await production.list({ status: "", page_size: 500 });
+      const data = await production.list({ status: "" }) // API trả đủ mọi lệnh (không giới hạn số dòng);
       setRows(Array.isArray(data) ? data : data?.data || []);
     } catch (e) {
       toast.error("Lỗi tải sản lượng: " + e.message);
@@ -426,8 +436,8 @@ export default function OutputReport({ lookups }) {
     if (!from || !to) return;
     let alive = true;
     scrapApi.summary(from, to)
-      .then((d) => { if (alive) setScrapSum(d || { total_scrap: 0, total_finished: 0, by_day: [] }); })
-      .catch(() => { if (alive) setScrapSum({ total_scrap: 0, total_finished: 0, by_day: [] }); });
+      .then((d) => { if (alive) { setScrapSum(d || { total_scrap: 0, total_finished: 0, by_day: [] }); setScrapErr(false); } })
+      .catch((e) => { if (alive) { setScrapSum({ total_scrap: 0, total_finished: 0, by_day: [] }); setScrapErr(true); toast.error("Không tải được số liệu phế: " + e.message); } });
     return () => { alive = false; };
   }, [from, to]);
 
@@ -754,8 +764,8 @@ export default function OutputReport({ lookups }) {
         <KpiCard label="Quá hạn"     value={overdueCount}
           sub={filtered.length > 0 ? `${Math.round(overdueCount / filtered.length * 100)}% số lệnh` : "Trễ hạn chót"}
           icon={AlertCircle} color={overdueCount > 0 ? "rose" : "green"} {...cardProps("overdue")} />
-        <KpiCard label="Phế phẩm"    value={fmt(totalScrap)}
-          sub={`Tỷ lệ phế ${scrapRate}%`}
+        <KpiCard label="Phế phẩm"    value={scrapErr ? "—" : fmt(totalScrap)}
+          sub={scrapErr ? "Lỗi tải số liệu phế" : `Tỷ lệ phế ${scrapRate}%`}
           icon={AlertTriangle} color={Number(scrapRate) > 5 ? "rose" : "amber"} {...cardProps("scrap")} />
       </div>
 

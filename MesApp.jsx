@@ -40,7 +40,7 @@ import EmployeeReport from "./src/modules/reports/EmployeeReport.jsx";
 import OutputReport from "./src/modules/production/OutputReport.jsx";
 import ScrapModule from "./src/modules/production/ScrapModule.jsx";
 import RecyclingModule from "./src/modules/production/RecyclingModule.jsx";
-import { PageHeader, Section, ListHeader, usePager, DataTable, Logo, UnitSelect } from "./src/components.jsx";
+import { PageHeader, Section, ListHeader, usePager, DataTable, Logo, UnitSelect, useSaving } from "./src/components.jsx";
 
 /* =====================================================================
    MES — Quản lý Sản phẩm & Dashboard (single-file demo)
@@ -403,7 +403,7 @@ function ProductList({ onOpen, onCreate, onCopy }) {
       const res = await api.importRows(payloads);
       let msg = `Đã nhập ${res.inserted}/${payloads.length} sản phẩm.`;
       if (res.failed) msg += `\nBỏ qua ${res.failed} dòng:\n` + res.errors.map((e) => `· Dòng ${e.row}: ${e.message}`).join("\n");
-      toast.error(msg); load();
+      (res.failed ? toast.error : toast.success)(msg); load(); // M-04: chỉ báo đỏ khi có dòng lỗi
     } catch (e) { toast.error("Lỗi đọc file: " + e.message); }
   };
 
@@ -420,7 +420,7 @@ function ProductList({ onOpen, onCreate, onCopy }) {
     {
       key: "_act", label: "Hành động", align: "center", render: (p) => (<>
         {can("products", "create") && <button onClick={() => onCopy(p.id)} title="Sao chép thành SP mới" className="text-slate-400 hover:text-blue-600 transition p-1"><Copy size={16} /></button>}
-        <button onClick={() => del(p.id)} title="Xóa" className="text-slate-400 hover:text-rose-600 transition p-1"><Trash2 size={16} /></button>
+        {can("products", "delete") && <button onClick={() => del(p.id)} title="Xóa" className="text-slate-400 hover:text-rose-600 transition p-1"><Trash2 size={16} /></button>}
       </>)
     },
   ];
@@ -665,6 +665,7 @@ function ProductForm({ productId, copyId, onBack, onSaved, lookups }) {
   const updateAttr = (key, field, val) =>
     setAttributes((a) => a.map((x) => (x._key === key ? { ...x, [field]: val } : x)));
 
+  const [saving, guard] = useSaving();
   const save = async () => {
     if (!form.product_name) return toast.error("Vui lòng nhập Tên sản phẩm");
     const cleanAttrs = attributes
@@ -673,8 +674,8 @@ function ProductForm({ productId, copyId, onBack, onSaved, lookups }) {
     const cleanLimits = warehouseLimits.map(({ warehouse_id, min_quantity, max_quantity }) => ({ warehouse_id, min_quantity, max_quantity }));
     try {
       if (productId) await api.update(productId, { ...form, attributes: cleanAttrs, warehouse_limits: cleanLimits });
-      else await api.create({ ...form, attributes: cleanAttrs, warehouse_limits: cleanLimits });
-      toast.success("Đã lưu thành công"); onSaved();
+      const created = productId ? null : await api.create({ ...form, attributes: cleanAttrs, warehouse_limits: cleanLimits });
+      toast.success("Đã lưu thành công"); onSaved(created?.id); // tạo mới → ở lại màn chi tiết của bản ghi vừa tạo
     } catch (e) {
       toast.error("Lỗi lưu sản phẩm: " + e.message);
     }
@@ -683,7 +684,7 @@ function ProductForm({ productId, copyId, onBack, onSaved, lookups }) {
   return (
     <div className="space-y-5">
       <PageHeader title={productId ? "Sửa sản phẩm" : (copyId ? "Thêm mới sản phẩm (sao chép)" : "Thêm mới sản phẩm")} onBack={onBack}
-        actions={<button onClick={save} className="btn-primary"><Save size={16} /> Lưu sản phẩm</button>} />
+        actions={<button onClick={() => guard(save)} disabled={saving} className="btn-primary"><Save size={16} /> {saving ? "Đang lưu…" : "Lưu sản phẩm"}</button>} />
 
       <ProductFields form={form} set={set} code={code} disabled={false} />
       <WarehouseLimitsList limits={warehouseLimits} setLimits={setWarehouseLimits} lookups={lookups} disabled={false} productUnit={form.unit} />
@@ -755,7 +756,14 @@ function ProductDetail({ id, onBack, onDeleted, onOpenOrder, onOpenProductionOrd
     finally { setUploading(false); }
   };
   const viewFile = async (att) => {
-    try { const f = await productFiles.file(id, att.id); const w = window.open("", "_blank"); if (w) w.document.write(`<title>${f.name}</title><iframe src="${f.data}" style="border:0;position:fixed;inset:0;width:100%;height:100%"></iframe>`); }
+    try { const f = await productFiles.file(id, att.id); const w = window.open("", "_blank"); // M-05: không chèn chuỗi vào HTML — tạo phần tử bằng DOM, chỉ mở dữ liệu dạng data:
+      if (!String(f.data || "").startsWith("data:")) return toast.error("Tệp không hợp lệ");
+      if (w) {
+        w.document.title = f.name || "Tệp đính kèm";
+        const fr = w.document.createElement("iframe");
+        fr.src = f.data; fr.style.cssText = "border:0;position:fixed;inset:0;width:100%;height:100%";
+        w.document.body.appendChild(fr);
+      } }
     catch (e) { toast.error("Lỗi xem tài liệu: " + e.message); }
   };
   const delFile = async (att) => { if (!confirm("Xóa tài liệu này?")) return; try { await productFiles.remove(id, att.id); toast.success("Đã xóa tài liệu"); loadFiles(); } catch (e) { toast.error("Lỗi xóa: " + e.message); } };
@@ -764,6 +772,7 @@ function ProductDetail({ id, onBack, onDeleted, onOpenOrder, onOpenProductionOrd
     if (!confirm("Xóa sản phẩm này?")) return;
     try { await api.remove(id); toast.success("Đã xóa sản phẩm"); onDeleted?.(); } catch (e) { toast.error("Lỗi xóa: " + e.message); }
   };
+  const [saving, guard] = useSaving();
   const save = async () => {
     if (!form.product_name) return toast.error("Vui lòng nhập Tên sản phẩm");
     const cleanAttrs = attributes.filter((a) => a.name && a.value).map(({ name, value }) => ({ name, value }));
@@ -788,7 +797,7 @@ function ProductDetail({ id, onBack, onDeleted, onOpenOrder, onOpenProductionOrd
         badge={<StatusBadge status={p.status} />} subtitle={p.product_code}
         actions={editing ? (<>
           <button onClick={cancel} className="btn-ghost">Hủy</button>
-          <button onClick={save} className="btn-primary"><Save size={16} /> Lưu</button>
+          <button onClick={() => guard(save)} disabled={saving} className="btn-primary"><Save size={16} /> {saving ? "Đang lưu…" : "Lưu"}</button>
         </>) : (<>
           {can("products", "edit") && <button onClick={() => { setTab("info"); setEditing(true); }} className="btn-ghost"><Pencil size={16} /> Sửa</button>}
           {can("products", "delete") && <button onClick={del} className="btn-ghost" style={{ color: "#e11d48" }}><Trash2 size={16} /> Xóa</button>}
@@ -1205,6 +1214,13 @@ function Dashboard({ onNav, onOpenOrder, onOpenProductionOrder }) {
 }
 
 /* =============================== ROOT APP =============================== */
+// Lấy `entity` từ URL cho MasterDataScreen. Định nghĩa NGOÀI MesApp: đặt bên trong thì mỗi lần
+// MesApp vẽ lại sẽ tạo component mới → màn danh mục bị dựng lại, mất chữ đang gõ / vị trí cuộn (M-01)
+function MasterDataWrapper(props) {
+  const { entity } = useParams();
+  return <MasterDataScreen {...props} entity={entity} />;
+}
+
 export default function MesApp() {
   const navigate = useNavigate();
   const [authLoading, setAuthLoading] = useState(true);
@@ -1225,6 +1241,8 @@ export default function MesApp() {
   const [planningTab, setPlanningTab] = useState("orders");
 
   const [lookups, setLookups] = useState(null);
+  const [lookupsErr, setLookupsErr] = useState("");
+  const [lookupsTry, setLookupsTry] = useState(0);
   const [user, setUser] = useState(null);
   const location = useLocation();
 
@@ -1243,8 +1261,12 @@ export default function MesApp() {
   // Nạp dữ liệu lookup (sản phẩm, khách, máy, kho...) sau khi đăng nhập,
   // và làm mới mỗi khi đổi màn để các dropdown luôn có dữ liệu mới nhất.
   useEffect(() => {
-    if (user) getLookups().then(setLookups).catch((e) => console.error("Lookups lỗi:", e.message));
-  }, [user, location.pathname]);
+    if (user) getLookups().then((d) => { setLookups(d); setLookupsErr(""); }).catch((e) => {
+      // G-06: lỗi nạp danh mục → báo (1 thông báo, không lặp mỗi lần đổi màn); chưa có dữ liệu thì màn hiện nút Thử lại
+      setLookupsErr(e.message || "Lỗi máy chủ");
+      toast.error("Không tải được dữ liệu danh mục: " + e.message, { id: "lookups-err" });
+    });
+  }, [user, location.pathname, lookupsTry]);
 
   // Khi đăng nhập: nếu không có quyền xem Dashboard → vào thẳng màn đầu tiên được phép
   useEffect(() => {
@@ -1278,17 +1300,13 @@ export default function MesApp() {
   const goNewDelivery = (id) => { setDeliveryOrderId(id); navigate("/deliveries"); };
 
   const needLookups = (Comp) =>
-    lookups ? <Comp lookups={lookups} /> : <div className="text-slate-400 text-sm py-10">Đang tải dữ liệu…</div>;
-  const loadingEl = <div className="text-slate-400 text-sm py-10">Đang tải dữ liệu…</div>;
+    lookups ? <Comp lookups={lookups} /> : loadingEl;
+  const loadingEl = lookupsErr
+    ? <div className="text-sm py-10 text-rose-600">Không tải được dữ liệu danh mục ({lookupsErr}). <button onClick={() => setLookupsTry((n) => n + 1)} className="btn-ghost ml-2">Thử lại</button></div>
+    : <div className="text-slate-400 text-sm py-10">Đang tải dữ liệu…</div>;
 
   if (authLoading) return <div className="min-h-screen flex items-center justify-center text-slate-400 text-sm">Đang tải…</div>;
   if (!user) return <Login onLogin={setUser} />;
-
-  // Wrapper cho MasterDataScreen để lấy `entity` từ URL
-  const MasterDataWrapper = () => {
-    const { entity } = useParams();
-    return lookups ? <MasterDataScreen lookups={lookups} entity={entity} onOpenOrder={goSalesOrder} onOpenProductionOrder={goProductionOrder} /> : loadingEl;
-  };
 
   return (
     <PermProvider user={user}>
@@ -1319,7 +1337,7 @@ export default function MesApp() {
               />} />
               <Route path="/products/form" element={lookups ? <ProductForm productId={productEditId} copyId={productCopyId} lookups={lookups}
                 onBack={() => { setProductCopyId(null); navigate(productEditId ? "/products/detail" : "/products"); }}
-                onSaved={() => { setProductCopyId(null); navigate(productEditId ? "/products/detail" : "/products"); }}
+                onSaved={(newId) => { setProductCopyId(null); if (newId) { setDetailId(newId); setDetailBack("/products"); } navigate(productEditId || newId ? "/products/detail" : "/products"); }}
               /> : loadingEl} />
               <Route path="/products/detail" element={lookups ? <ProductDetail id={detailId} onBack={() => navigate(detailBack)}
                 onDeleted={() => navigate(detailBack)} onOpenOrder={goSalesOrder} onOpenProductionOrder={goProductionOrder} lookups={lookups}
@@ -1340,7 +1358,7 @@ export default function MesApp() {
               <Route path="/inventory/adjust" element={lookups ? <AdjustModule lookups={lookups} /> : loadingEl} />
               <Route path="/traceability/lot" element={<TraceabilityLot />} />
               <Route path="/master-data/roles" element={<RolesModule />} />
-              <Route path="/master-data/:entity" element={<MasterDataWrapper />} />
+              <Route path="/master-data/:entity" element={lookups ? <MasterDataWrapper lookups={lookups} onOpenOrder={goSalesOrder} onOpenProductionOrder={goProductionOrder} /> : loadingEl} />
               <Route path="/workschedule" element={needLookups(WorkScheduleModule)} />
               <Route path="/qrlabels" element={<QrLabelsModule />} />
               <Route path="/qrscan" element={<QrScanModule />} />

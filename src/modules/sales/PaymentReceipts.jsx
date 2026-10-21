@@ -46,12 +46,17 @@ function ReceiptForm({ lookups, id, onBack, onSaved }) {
   }, [id]);
   useEffect(() => { load(); }, [load]);
 
+  // S-05: lỗi tải công nợ → báo + Thử lại (trước đây im lặng: mất xem trước phân bổ & hỏi trả dư)
+  const [infoErr, setInfoErr] = useState(false);
+  const [infoTry, setInfoTry] = useState(0);
   useEffect(() => {
-    if (!f.customer_id) { setInfo(null); return; }
+    if (!f.customer_id) { setInfo(null); setInfoErr(false); return; }
     let alive = true;
-    api.customer(f.customer_id).then((d) => alive && setInfo(d)).catch(() => alive && setInfo(null));
+    api.customer(f.customer_id)
+      .then((d) => { if (alive) { setInfo(d); setInfoErr(false); } })
+      .catch((e) => { if (alive) { setInfo(null); setInfoErr(true); toast.error("Không tải được công nợ khách: " + e.message); } });
     return () => { alive = false; };
-  }, [f.customer_id, rec?.updated_at]);
+  }, [f.customer_id, rec?.updated_at, infoTry]);
 
   // Xem trước: số tiền sẽ trừ vào phiếu giao nào (cũ nhất trước) — chỉ khi lập phiếu mới
   const preview = useMemo(() => {
@@ -73,6 +78,7 @@ function ReceiptForm({ lookups, id, onBack, onSaved }) {
     if (!f.pay_date) return toast.error("Nhập ngày thanh toán");
     if (isNew && !(Number(f.amount) > 0)) return toast.error("Nhập số tiền thanh toán lớn hơn 0");
     if (f.pay_date > todayYmd()) return toast.error("Ngày thanh toán không được sau hôm nay");
+    if (isNew && infoErr && !confirm("Chưa tải được công nợ của khách — không kiểm được số tiền có vượt nợ hay không.\nVẫn lưu?")) return;
     // C1: số tiền vượt số khách đang nợ → phần dư thành tiền trả trước. Xác nhận lại để tránh gõ nhầm thừa số 0.
     if (isNew && info && Number(f.amount) > (Number(info.debt) || 0)) {
       const extra = Number(f.amount) - (Number(info.debt) || 0);
@@ -83,7 +89,7 @@ function ReceiptForm({ lookups, id, onBack, onSaved }) {
       if (isNew) {
         const r = await api.create(f);
         toast.success(r.message || "Đã lưu phiếu thanh toán", { duration: 6000 });
-        onSaved();
+        onSaved(r?.id); // tạo mới → ở lại màn chi tiết của bản ghi vừa tạo
       } else {
         await api.update(id, f);
         toast.success("Đã cập nhật phiếu");
@@ -122,6 +128,12 @@ function ReceiptForm({ lookups, id, onBack, onSaved }) {
         </div>
       )}
       {isNew && <DebtBanner info={info} context="receipt" />}
+      {isNew && infoErr && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800 flex items-center gap-3">
+          Không tải được công nợ của khách — chưa xem trước được phân bổ.
+          <button onClick={() => setInfoTry((n) => n + 1)} className="btn-ghost py-1 text-sm">Thử lại</button>
+        </div>
+      )}
 
       {/* Bố cục giống các màn khác (Phiếu giao hàng): các khối trải hết chiều ngang, xếp dọc */}
       <div className="space-y-5">
@@ -286,7 +298,8 @@ export default function PaymentReceiptsModule({ lookups }) {
     <div className="flex items-center justify-center h-64 text-slate-400 text-sm">Bạn không có quyền xem số liệu tiền / thanh toán.</div>
   );
   const back = () => { setView("list"); setOpenId(null); load(); };
-  if (view === "form") return <ReceiptForm lookups={lookups} id={openId} onBack={back} onSaved={back} />;
+  if (view === "form") return <ReceiptForm key={openId || "new"} lookups={lookups} id={openId} onBack={back}
+    onSaved={(newId) => { if (newId) { setOpenId(newId); load(); } else back(); }} />;
 
   const open = (id) => { setOpenId(id); setView("form"); };
   const columns = [

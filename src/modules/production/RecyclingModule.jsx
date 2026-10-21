@@ -35,7 +35,7 @@ export default function RecyclingModule() {
       const wRes = await warehousesApi.list();
       setWarehouses(wRes);
     } catch (e) {
-      console.error(e);
+      toast.error("Không tải được danh sách kho — bấm Làm mới: " + e.message);
     }
   };
 
@@ -145,6 +145,22 @@ function TicketModal({ ticket, initialStep, warehouses, onClose, onSuccess }) {
   });
 
   const nextStep = async () => {
+    // P-15: chặn số âm (backend cũng chặn — đây chỉ để báo rõ trước khi gửi)
+    const neg = (step === 1 && Number(s1.expected_qty) < 0) || (step === 2 && (Number(s2.internal_scrap_qty) < 0 || Number(s2.mixed_scrap_qty) < 0))
+      || (step === 3 && rolls.some((r) => Number(r.weight) < 0));
+    if (neg) return toast.error("Số kg không được âm");
+    // Bước 2 trừ tồn phế, bước 4 nhập kho — hỏi rõ mã phiếu + số kg trước khi ghi
+    if (step === 2) {
+      const total = (Number(s2.internal_scrap_qty) || 0) + (Number(s2.mixed_scrap_qty) || 0);
+      if (!confirm(`Phiếu ${ticket.ticket_code}: trừ ${fmt(total)} kg phế phẩm khỏi kho phế. Tiếp tục?`)) return;
+    }
+    if (step === 4 && s4.import_warehouse_id) {
+      const received = rolls.reduce((t, r) => t + (Number(r.weight) || 0), 0);
+      const whName = warehouses.find((w) => String(w.id) === String(s4.import_warehouse_id))?.name || "";
+      const loss = (Number(ticket.expected_qty) || 0) - received;
+      if (!confirm(`Phiếu ${ticket.ticket_code}: nhập ${fmt(received)} kg vào kho ${whName}. Hao hụt dự kiến ${fmt(loss)} kg.
+Hoàn thành phiếu?`)) return;
+    }
     setLoading(true);
     try {
       if (step === 1 && !ticket) {
@@ -237,7 +253,7 @@ function TicketModal({ ticket, initialStep, warehouses, onClose, onSuccess }) {
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-600 mb-1">Số lượng dự kiến (kg)</label>
-              <input type="number" className={inputCls} value={s1.expected_qty} onChange={e => setS1({...s1, expected_qty: e.target.value})} disabled={isCompleted || ticket} />
+              <input type="number" min="0" className={inputCls} value={s1.expected_qty} onChange={e => setS1({...s1, expected_qty: e.target.value})} disabled={isCompleted || ticket} />
             </div>
             <div className="col-span-2">
               <label className="block text-sm font-medium text-slate-600 mb-1">Ghi chú</label>
@@ -254,11 +270,11 @@ function TicketModal({ ticket, initialStep, warehouses, onClose, onSuccess }) {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-slate-600 mb-1">Phế Trong (kg)</label>
-                <input type="number" className={inputCls} value={s2.internal_scrap_qty} onChange={e => setS2({...s2, internal_scrap_qty: e.target.value})} disabled={isCompleted || ticket.status !== 'Chờ cân'} />
+                <input type="number" min="0" className={inputCls} value={s2.internal_scrap_qty} onChange={e => setS2({...s2, internal_scrap_qty: e.target.value})} disabled={isCompleted || ticket.status !== 'Chờ cân'} />
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-600 mb-1">Phế Lẫn (kg)</label>
-                <input type="number" className={inputCls} value={s2.mixed_scrap_qty} onChange={e => setS2({...s2, mixed_scrap_qty: e.target.value})} disabled={isCompleted || ticket.status !== 'Chờ cân'} />
+                <input type="number" min="0" className={inputCls} value={s2.mixed_scrap_qty} onChange={e => setS2({...s2, mixed_scrap_qty: e.target.value})} disabled={isCompleted || ticket.status !== 'Chờ cân'} />
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-600 mb-1">Người thực hiện cân</label>
@@ -302,7 +318,7 @@ function TicketModal({ ticket, initialStep, warehouses, onClose, onSuccess }) {
                       <input type="text" className={`${inputCls} py-1`} value={r.pe_type} onChange={e => { const nr=[...rolls]; nr[i].pe_type = e.target.value; setRolls(nr); }} disabled={isCompleted || ticket.status !== 'Đang tái chế'} />
                     </td>
                     <td className="px-3 py-2">
-                      <input type="number" className={`${inputCls} py-1 text-emerald-600 font-bold`} value={r.weight} onChange={e => { const nr=[...rolls]; nr[i].weight = e.target.value; setRolls(nr); }} disabled={isCompleted || ticket.status !== 'Đang tái chế'} />
+                      <input type="number" min="0" className={`${inputCls} py-1 text-emerald-600 font-bold`} value={r.weight} onChange={e => { const nr=[...rolls]; nr[i].weight = e.target.value; setRolls(nr); }} disabled={isCompleted || ticket.status !== 'Đang tái chế'} />
                     </td>
                     <td className="px-3 py-2">
                       <input type="text" className={`${inputCls} py-1`} value={r.note} onChange={e => { const nr=[...rolls]; nr[i].note = e.target.value; setRolls(nr); }} disabled={isCompleted || ticket.status !== 'Đang tái chế'} />
@@ -373,7 +389,7 @@ function TicketModal({ ticket, initialStep, warehouses, onClose, onSuccess }) {
           (step === 4 && ticket.status === 'Đang tái chế')
         )) && (
           <button onClick={nextStep} disabled={loading} className="btn-primary flex items-center gap-2">
-            {loading ? "Đang xử lý..." : step === 4 ? <><CheckCircle2 size={16}/> Hoàn thành phiếu</> : "Lưu & Tiếp tục"}
+            {loading ? "Đang xử lý..." : step === 4 ? <><CheckCircle2 size={16}/> Hoàn thành & nhập kho</> : step === 2 ? "Lưu cân & trừ phế" : step === 3 ? "Lưu cuộn" : "Tạo phiếu"}
           </button>
         )}
       </div>

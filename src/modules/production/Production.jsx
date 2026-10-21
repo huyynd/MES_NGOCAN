@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Plus, Trash2, ArrowLeft, Save, CalendarClock, Factory, List, GanttChartSquare, Pencil, Printer, GitBranch, Copy, ChevronDown, ChevronRight } from "lucide-react";
 import { production } from "../../mesApi.js";
-import { DEFAULT_STAGES, stageFactory } from "../../productionDefaults.js";
+import { DEFAULT_STAGES, stageFactory, machinesForStage } from "../../productionDefaults.js";
 import { usePerm } from "../../perm.jsx";
 import { inputCls, fmt, fmtDate, statusClass, toast } from "../../ui.js";
 import { PageHeader, Section, ListHeader, DataTable, UnitSelect, SearchSelect } from "../../components.jsx";
@@ -83,8 +83,13 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
     });
     setTaskSeq((s) => s + 1);
   };
-  const addTask = () => addTaskFor("Thổi");
-  const rmTask = (k) => setTasks((a) => withAutoOutputs(a.filter((x) => x._k !== k), f.product_id));
+  // P-07: dòng đã lưu (có mã) / đã có SL thực → hỏi trước khi xóa
+  const rmTask = (k) => {
+    const t = tasks.find((x) => x._k === k);
+    if (t && (t.task_code || Number(t.actual_qty) > 0)
+      && !confirm(`Xóa lần ${t.stage}${t.task_code ? ` ${t.task_code}` : ""}${Number(t.actual_qty) > 0 ? ` (đã có SL thực ${fmt(Number(t.actual_qty))})` : ""}?`)) return;
+    setTasks((a) => withAutoOutputs(a.filter((x) => x._k !== k), f.product_id));
+  };
   const upTask = (k, field, v) => setTasks((a) => a.map((x) => (x._k === k
     ? { ...x, [field]: v, ...(field === "output_product_id" ? { _auto: false } : {}) } : x)));
   // Đổi SP của lệnh → tính lại đầu ra cho các dòng đang tự động
@@ -268,7 +273,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
             defaults: { shift: d.shift, assigned_team: d.assigned_team, assigned_worker: d.assigned_worker, assigned_worker_id: d.assigned_worker_id, machine_id: d.machine_id, planned_date: d.planned_date?.slice(0, 10) },
           });
         }
-      }).catch(() => {});
+      }).catch((e) => toast.error("Không tải được phân công của lệnh — bấm Làm mới: " + e.message));
       // NVL cần cung cấp + trạng thái đã xuất kho
       production.plannedMaterials(editId).then((pm) => {
         setMatsIssued(!!pm.materials_issued);
@@ -294,7 +299,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
           setPlannedMats([]); // dòng NVL gợi ý chỉ thêm khi bấm Sửa (xem effect bên dưới), không hiện ở chế độ xem
           setPmSeq(2);
         }
-      }).catch(() => {});
+      }).catch((e) => toast.error("Không tải được NVL của lệnh — bấm Làm mới: " + e.message));
     }).catch((e) => toast.error("Lỗi tải lệnh sản xuất: " + e.message));
   }, [editId]); // eslint-disable-line
   useEffect(() => { loadData(); }, [loadData]);
@@ -328,7 +333,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
             });
         const finalRows = rows.length ? rows : defaultMatRows();
         setPlannedMats(finalRows); setPmSeq(finalRows.length + 1);
-      }).catch(() => {});
+      }).catch((e) => toast.error("Không tải được NVL của lệnh nguồn — bấm Làm mới: " + e.message));
     }).catch((e) => toast.error("Lỗi tải lệnh nguồn: " + e.message));
   }, [copyId, editId]); // eslint-disable-line
 
@@ -403,7 +408,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
         const created = await production.create({ ...f, mix_ratio: mixRatio, finishing });
         if (created?.id && matLines.length) await production.savePlannedMaterials(created.id, matLines);
         toast.success("Tạo lệnh sản xuất mới thành công");
-        onSaved(); // tạo mới → về list
+        onSaved(created?.id); // tạo mới → ở lại màn chi tiết của bản ghi vừa tạo
       }
     } catch (e) { toast.error("Lỗi lưu lệnh sản xuất: " + e.message); }
     finally { savingRef.current = false; setSaving(false); }
@@ -781,13 +786,14 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
               <tbody>
                 {(() => {
                   const order = ["Thổi", "Cắt"];
-                  const present = [...new Set(tasks.map((t) => t.stage))].sort(
+                  // P-08: đang sửa → luôn hiện dòng cha của công đoạn mặc định (kể cả 0 dòng) để còn nút "Thêm lần …"
+                  const present = [...new Set([...(editing && !fdis("tasks") ? DEFAULT_STAGES : []), ...tasks.map((t) => t.stage)])].sort(
                     (a, b) => (order.indexOf(a) < 0 ? 99 : order.indexOf(a)) - (order.indexOf(b) < 0 ? 99 : order.indexOf(b))
                   );
                   return present.map((stg) => {
                     const rows = tasks.filter((t) => t.stage === stg);
-                    const factory = stg === "Thổi" ? "Nhà máy thổi" : "Nhà máy cắt";
-                    const machinesForStage = lookups.machines.filter((m) => m.factory === factory);
+                    const factory = stageFactory(stg); // nhóm công nhân theo nhà máy của công đoạn
+                    const stageMachines = machinesForStage(lookups.machines, stg);
                     const sumQty = rows.reduce((s, t) => s + (Number(t.quantity) || 0), 0);
                     const sumAct = rows.reduce((s, t) => s + (Number(t.actual_qty) || 0), 0);
                     const qtyReq = Number(f.quantity);
@@ -844,7 +850,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
                                 );
                               })()}
                             </td>
-                            <td className="py-1.5 pr-2"><select disabled={dis} className={cellCls} value={t.machine_id} onChange={(e) => upTask(t._k, "machine_id", e.target.value)}><option value="">-- Chọn máy --</option>{machinesForStage.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</select></td>
+                            <td className="py-1.5 pr-2"><select disabled={dis} className={cellCls} value={t.machine_id} onChange={(e) => upTask(t._k, "machine_id", e.target.value)}><option value="">-- Chọn máy --</option>{stageMachines.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</select></td>
                             <td className="py-1.5 pr-2"><input disabled={dis} type="date" className={cellCls} value={t.planned_date} onChange={(e) => upTask(t._k, "planned_date", e.target.value)} /></td>
                             {/* Cột Đội đã ẨN (dữ liệu assigned_team vẫn giữ). Công nhân: người của nhà máy theo
                                 công đoạn xếp trên, người khác xếp dưới — không chặn ai. */}
@@ -887,7 +893,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
                     );
                   });
                 })()}
-                {!tasks.length && <tr><td colSpan={10} className="py-4 text-center text-slate-400 text-sm">Chưa có phân công. Bấm "＋ Thổi" hoặc "＋ Cắt" để thêm lần làm.</td></tr>}
+                {!tasks.length && !editing && <tr><td colSpan={10} className="py-4 text-center text-slate-400 text-sm">Chưa có phân công. Bấm Sửa rồi "Thêm lần …" ở dòng công đoạn để thêm.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -982,13 +988,14 @@ const Field = ({ label, required, children }) => (
 export function ScheduleModal({ lookups, order, onClose, onSaved }) {
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
+  const onCloseRef = useRef(onClose); onCloseRef.current = onClose;
 
   useEffect(() => {
     production.getTasks(order.id).then((d) => {
       setTasks(d);
       setLoading(false);
-    }).catch(e => { toast.error("Lỗi tải phân công: " + e.message); onClose(); });
-  }, [order.id, onClose]);
+    }).catch(e => { toast.error("Lỗi tải phân công: " + e.message); onCloseRef.current(); });
+  }, [order.id]); // P-09: KHÔNG phụ thuộc onClose (hàm mới mỗi lần cha vẽ lại → tải lại, mất phần đang sửa)
 
   const [saving, setSaving] = useState(false); // M40: chống bấm "Lưu thay đổi" 2 lần
   const savingRef = useRef(false);
@@ -1038,7 +1045,7 @@ export function ScheduleModal({ lookups, order, onClose, onSaved }) {
                         <td className="px-3 py-2">
                           <select disabled={dis} className={inputCls} value={t.machine_id || ""} onChange={e => setTask(t.id, "machine_id", e.target.value)}>
                             <option value="">- Chọn máy -</option>
-                            {(lookups.machines || []).filter(m => !t.stage || m.machine_type?.toLowerCase().includes(t.stage.toLowerCase())).map(m => (
+                            {machinesForStage(lookups.machines, t.stage).map(m => (
                               <option key={m.id} value={m.id}>{m.name}</option>
                             ))}
                           </select>
@@ -1107,9 +1114,9 @@ export default function ProductionModule({ lookups, focusId, onFocusConsumed, on
   };
 
   if (view === "form")
-    return <ProductionForm lookups={lookups} editId={editId} copyId={copyId}
+    return <ProductionForm key={editId || "new"} lookups={lookups} editId={editId} copyId={copyId}
       onBack={backFromForm}
-      onSaved={() => { setView("list"); setEditId(null); setCopyId(null); load(); }} />;
+      onSaved={(newId) => { if (newId) { setEditId(newId); setCopyId(null); } else { setView("list"); setEditId(null); setCopyId(null); } load(); }} />;
 
   const columns = [
     { key: "order_code", label: "Mã lệnh", filter: "text", minWidth: "120px", render: (r) => <button onClick={() => openForm({ edit: r.id })} className="font-medium text-blue-600 hover:underline">{r.order_code}</button> },
@@ -1148,7 +1155,7 @@ export default function ProductionModule({ lookups, focusId, onFocusConsumed, on
     { key: "_act", label: "", align: "right", render: (r) => (<>
         <button onClick={() => setScheduling(r)} disabled={!can("production", "update")} className="text-slate-400 hover:text-blue-600 p-1" title="Lập lịch / xếp máy"><CalendarClock size={16} /></button>
         {can("production", "create") && <button onClick={() => openForm({ copy: r.id })} title="Sao chép" className="text-slate-400 hover:text-blue-600 p-1"><Copy size={16} /></button>}
-        <button onClick={() => del(r.id)} title="Xóa" className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={16} /></button>
+        {can("production", "delete") && <button onClick={() => del(r.id)} title="Xóa" className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={16} /></button>}
       </>) },
   ];
 

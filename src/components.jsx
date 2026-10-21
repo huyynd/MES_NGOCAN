@@ -84,6 +84,19 @@ export function SearchSelect({ value, onChange, options = [], placeholder = "-- 
  * Dropdown chọn Đơn vị tính (thay ô nhập tự do). Luôn giữ giá trị cũ ngoài danh mục
  * (vd dữ liệu cũ) để không mất dữ liệu.
  */
+/* Chống bấm Lưu nhiều lần: const [saving, guard] = useSaving(); <button onClick={() => guard(save)} disabled={saving}>
+   ref chặn ngay lần bấm thứ 2 (state chưa kịp cập nhật), state để đổi nhãn "Đang lưu…" */
+export function useSaving() {
+  const busy = useRef(false);
+  const [saving, setSaving] = useState(false);
+  const guard = async (fn) => {
+    if (busy.current) return;
+    busy.current = true; setSaving(true);
+    try { return await fn(); } finally { busy.current = false; setSaving(false); }
+  };
+  return [saving, guard];
+}
+
 export function UnitSelect({ value, onChange, disabled = false, className }) {
   const v = value || "";
   const opts = v && !UNITS.includes(v) ? [v, ...UNITS] : UNITS;
@@ -222,12 +235,28 @@ export function Pagination({ total, page, size, pageCount, start, onPage, onSize
  * Hook phân trang: nhận mảng dữ liệu, trả về `slice` (dòng của trang hiện tại)
  * và `Pager` (component thanh phân trang đã gắn sẵn state). Mặc định 10 dòng/trang.
  */
-export function usePager(rows, initialSize = 10, sizes) {
-  const [size, setSize] = useState(initialSize);
-  const [page, setPage] = useState(1);
+/* Nhớ bộ lọc / trang của màn danh sách khi mở chi tiết rồi Quay lại (kể cả sang module khác rồi về).
+   Lưu trong bộ nhớ của tab trình duyệt (tải lại trang F5 thì về mặc định). Dùng như useState:
+   const [q, setQ] = useRemembered("orders:q", "");   key = null → như useState thường */
+const _remembered = new Map();
+export function useRemembered(key, initial) {
+  const [v, setV] = useState(() => (key && _remembered.has(key)) ? _remembered.get(key)
+    : (typeof initial === "function" ? initial() : initial));
+  const set = React.useCallback((next) => setV((prev) => {
+    const val = typeof next === "function" ? next(prev) : next;
+    if (key) _remembered.set(key, val);
+    return val;
+  }), [key]);
+  return [v, set];
+}
+
+export function usePager(rows, initialSize = 10, sizes, stateKey = null) {
+  const [size, setSize] = useRemembered(stateKey && stateKey + ":size", initialSize);
+  const [page, setPage] = useRemembered(stateKey && stateKey + ":page", 1);
   const total = rows.length;
   const pageCount = Math.max(1, Math.ceil(total / size));
-  useEffect(() => { if (page > pageCount) setPage(pageCount); }, [pageCount]); // eslint-disable-line
+  // rows rỗng lúc đang tải lại → đừng kéo trang đã nhớ về 1
+  useEffect(() => { if (total > 0 && page > pageCount) setPage(pageCount); }, [pageCount]); // eslint-disable-line
   const start = (page - 1) * size;
   const slice = rows.slice(start, start + size);
   const Pager = () => (
@@ -274,8 +303,10 @@ export function DateInput({ value, onChange, placeholder = "dd/mm/yyyy", classNa
  *             render?(row), align?, tdClass? }]
  * Lọc nhiều cột cùng lúc (AND), text = gần đúng (bỏ dấu), tự cập nhật danh sách.
  */
-export function DataTable({ columns, rows, rowKey, pageSize = 10, emptyText = "Không có dữ liệu", dense = false }) {
-  const [filters, setFilters] = useState({});
+export function DataTable({ columns, rows, rowKey, pageSize = 10, emptyText = "Không có dữ liệu", dense = false, stateKey }) {
+  // Bộ lọc + trang được nhớ theo màn hình (đường dẫn + bộ cột) → Quay lại từ chi tiết vẫn giữ lọc
+  const memKey = stateKey ?? `dt:${window.location.pathname}:${columns.map((c) => c.key).join(",")}`;
+  const [filters, setFilters] = useRemembered(memKey + ":filters", {});
   const setF = (k, v) => setFilters((s) => ({ ...s, [k]: v }));
   const cellValue = (c, r) => c.filterValue ? c.filterValue(r) : r[c.filterKey || c.key];
 
@@ -296,7 +327,7 @@ export function DataTable({ columns, rows, rowKey, pageSize = 10, emptyText = "K
     return stripAccent(cell).includes(stripAccent(fv));
   }));
 
-  const { slice, Pager, Filler } = usePager(filtered, pageSize);
+  const { slice, Pager, Filler } = usePager(filtered, pageSize, undefined, memKey);
   const pad = dense ? "px-3 py-2" : "px-4 py-3";
   const inputCls = "w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs text-slate-700 placeholder:text-slate-400 disabled:placeholder-transparent focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none";
 

@@ -8,7 +8,7 @@ const ordersApi = resource("sales-orders");
 import { usePerm } from "../../perm.jsx";
 import {  inputCls, fmt, fmtDate, statusClass , toast, todayYmd } from "../../ui.js";
 import { specShort } from "../../specs.js";
-import { PageHeader, Section, ListHeader, DataTable, Logo, UnitSelect, SearchSelect } from "../../components.jsx";
+import { PageHeader, Section, ListHeader, DataTable, Logo, UnitSelect, SearchSelect, useSaving } from "../../components.jsx";
 
 // Bảng chuyển trạng thái (khớp backend). "Giao hàng" chỉ đặt qua nút Giao hàng (trừ tồn).
 // Bản nháp chỉ được Hủy; sau khi đã giao không cho Hủy — hàng trả lại dùng nút "Khách trả hàng" (nhập lại kho).
@@ -201,14 +201,19 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
   const isDraft = f.status === "Bản nháp";
   const picking = editing && isDraft; // đang chọn / sửa dòng hàng
 
-  useEffect(() => { inventory.list().then(setStock).catch(() => {}); }, []);
+  useEffect(() => { inventory.list().then(setStock).catch((e) => toast.error("Không tải được tồn kho — cột tồn của dòng không theo đơn sẽ trống: " + e.message)); }, []);
+  // S-05: lỗi tải công nợ → báo + nút Thử lại (trước đây im lặng, mất cảnh báo nợ xấu)
+  const [debtErr, setDebtErr] = useState(false);
+  const [debtTry, setDebtTry] = useState(0);
   // Công nợ của khách: chỉ cần khi đang lập phiếu (Bản nháp) — cảnh báo nợ xấu, chặn khi vượt hạn mức
   useEffect(() => {
-    if (!f.customer_id || !isDraft) { setDebtInfo(null); return; }
+    if (!f.customer_id || !isDraft) { setDebtInfo(null); setDebtErr(false); return; }
     let alive = true;
-    paymentReceipts.customer(f.customer_id).then((d) => alive && setDebtInfo(d)).catch(() => alive && setDebtInfo(null));
+    paymentReceipts.customer(f.customer_id)
+      .then((d) => { if (alive) { setDebtInfo(d); setDebtErr(false); } })
+      .catch((e) => { if (alive) { setDebtInfo(null); setDebtErr(true); toast.error("Không tải được công nợ khách: " + e.message); } });
     return () => { alive = false; };
-  }, [f.customer_id, isDraft]);
+  }, [f.customer_id, isDraft, debtTry]);
   // Hạn mức chỉ chặn TẠO phiếu mới; phiếu nháp đã có vẫn sửa / giao được
   // Chặn khi TẠO phiếu, hoặc khi ĐỔI phiếu nháp sang khách khác — khớp chốt chặn backend (create + update).
   // Phiếu nháp giữ nguyên khách cũ thì vẫn sửa / giao được.
@@ -351,8 +356,10 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
   const total = !editing && noteTotal != null ? Number(noteTotal) || 0 : rows.reduce((s, r) => s + amountOf(r), 0);
   const debt = total - (Number(f.paid_amount) || 0);
 
+  const [saving, guard] = useSaving();
   const save = async () => {
     if (!f.customer_id) return toast.error("Chọn khách hàng");
+    if (editId && f.status === "Đã hủy" && !confirm(`Hủy phiếu giao ${noteCode || ""}?\nPhiếu đã hủy không khôi phục được.`)) return;
     if (blockedNew) return toast.error(editId
       ? "Khách mới chọn đang nợ vượt hạn mức — không thể chuyển phiếu sang khách này. Cần lập Phiếu thanh toán thu bớt nợ trước."
       : "Khách nợ vượt hạn mức — không thể tạo phiếu giao mới. Cần lập Phiếu thanh toán thu bớt nợ trước.");
@@ -378,8 +385,8 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
         toast.success("Đã lưu thành công");
         setEditing(false); load(); // ở lại màn chi tiết
       } else {
-        warnPrice(await api.create(body));
-        toast.success("Đã lưu thành công"); onSaved(); // tạo mới → về list
+        const created = await api.create(body); warnPrice(created);
+        toast.success("Đã lưu thành công"); onSaved(created?.id); // tạo mới → ở lại màn chi tiết của bản ghi vừa tạo
       }
     } catch (e) { toast.error("Lỗi lưu phiếu: " + e.message); }
   };
@@ -397,7 +404,7 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
       <PageHeader title={!editId ? "Tạo phiếu giao hàng" : editing ? "Sửa phiếu giao hàng" : "Chi tiết phiếu giao hàng"} onBack={onBack}
         actions={editId && !editing ? (<>
           {isDraft && can("deliveries", "approve") &&
-            <button onClick={ship} className="btn-primary"><Truck size={16} /> Giao hàng</button>}
+            <button onClick={() => guard(ship)} disabled={saving} className="btn-primary"><Truck size={16} /> {saving ? "Đang xử lý…" : "Giao hàng"}</button>}
           {PAYABLE_STATUSES.includes(f.status) && can("deliveries", "approve") &&
             <button onClick={() => setReturning(true)} className="btn-ghost"><RotateCcw size={16} /> Khách trả hàng</button>}
           <button onClick={() => onPrint?.(editId)} className="btn-ghost"><Printer size={16} /> In phiếu</button>
@@ -405,14 +412,20 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
           {can("deliveries", "delete") && f.status === "Đã hủy" && <button onClick={del} className="btn-ghost" style={{ color: "#e11d48" }}><Trash2 size={16} /> Xóa</button>}
         </>) : (<>
           {editId && <button onClick={() => { setEditing(false); load(); }} className="btn-ghost">Hủy</button>}
-          <button onClick={save} disabled={blockedNew} className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
-            title={blockedNew ? "Khách nợ vượt hạn mức" : undefined}><Save size={16} /> Lưu phiếu</button>
+          <button onClick={() => guard(save)} disabled={blockedNew || saving} className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
+            title={blockedNew ? "Khách nợ vượt hạn mức" : undefined}><Save size={16} /> {saving ? "Đang lưu…" : "Lưu phiếu"}</button>
         </>)} />
 
       {returning && <ReturnModal id={editId} noteCode={noteCode} lookups={lookups}
         onClose={() => setReturning(false)} onSaved={() => { setReturning(false); load(); }} />}
 
       {isDraft && <DebtBanner info={debtInfo} context="delivery" />}
+      {isDraft && debtErr && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800 flex items-center gap-3">
+          Không tải được công nợ của khách — chưa kiểm được nợ xấu / hạn mức.
+          <button onClick={() => setDebtTry((n) => n + 1)} className="btn-ghost py-1 text-sm">Thử lại</button>
+        </div>
+      )}
 
       <fieldset disabled={!editing} className="space-y-5">
         <Section title="Thông tin phiếu">
@@ -720,8 +733,8 @@ export default function DeliveriesModule({ lookups, focusOrderId, onFocusConsume
   const del = async (id) => { if (!confirm("Xóa phiếu này?")) return; try { await api.remove(id); toast.success("Đã xóa thành công"); load(); } catch (e) { toast.error("Lỗi xóa: " + e.message); } };
 
   const resetToList = () => { setView("list"); setEditId(null); setNewOrderId(null); };
-  if (view === "form") return <DeliveryForm lookups={lookups} editId={editId} initialOrderId={newOrderId}
-    onBack={() => { resetToList(); load(); }} onSaved={() => { resetToList(); load(); }}
+  if (view === "form") return <DeliveryForm key={editId || "new"} lookups={lookups} editId={editId} initialOrderId={newOrderId}
+    onBack={() => { resetToList(); load(); }} onSaved={(newId) => { if (newId) { setEditId(newId); setNewOrderId(null); } else resetToList(); load(); }}
     onPrint={(id) => { setVoucherId(id); setView("voucher"); }} />;
   if (view === "voucher") return <DeliveryVoucher id={voucherId} onBack={() => setView("list")} />;
 

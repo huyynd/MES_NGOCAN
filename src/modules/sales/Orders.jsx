@@ -5,7 +5,7 @@ import { resource, salesOrders as salesOrdersApi, planning } from "../../mesApi.
 import { DEFAULT_STAGES, stageFactory } from "../../productionDefaults.js";
 import { usePerm } from "../../perm.jsx";
 import {  inputCls, fmt, fmtDate, fmtDateTime, statusClass, dueTone , toast, todayYmd } from "../../ui.js";
-import { PageHeader, ListHeader, Section, usePager, DataTable, UnitSelect, DateInput, Logo, SearchSelect } from '../../components.jsx';
+import { PageHeader, ListHeader, Section, usePager, DataTable, UnitSelect, DateInput, Logo, SearchSelect, useSaving } from '../../components.jsx';
 import { SPEC_NAMES, specShort } from "../../specs.js";
 import { SpecFields } from "../../SpecFields.jsx";
 import * as XLSX from "xlsx";
@@ -175,6 +175,7 @@ function QuickAllocateModal({ orderId, orderItems, lookups, onClose, onDone }) {
     return nx;
   }));
 
+  const [saving, guard] = useSaving();
   const save = async () => {
     const planItems = batchItems.map((i) => ({ item_id: i.item_id, qty: qty[i.item_id] })).filter((x) => Number(x.qty) > 0);
     if (!planItems.length) return toast.error('Nhập số lượng sản xuất cho ít nhất 1 dòng.');
@@ -290,7 +291,7 @@ function QuickAllocateModal({ orderId, orderItems, lookups, onClose, onDone }) {
 
             <div className="flex justify-end gap-2 pt-1">
               <button onClick={onClose} className="btn-ghost">Hủy</button>
-              <button onClick={save} className="btn-primary"><Save size={16} /> Tạo {batchItems.map(i => qty[i.item_id]).filter(q => Number(q) > 0).length} lệnh</button>
+              <button onClick={() => guard(save)} disabled={saving} className="btn-primary"><Save size={16} /> {saving ? "Đang lưu…" : <>Tạo {batchItems.map(i => qty[i.item_id]).filter(q => Number(q) > 0).length} lệnh</>}</button>
             </div>
           </>
         )}
@@ -355,6 +356,7 @@ function OrderForm({ lookups, editId, copyId, onBack, onSaved, onPrint, onCreate
     return nx;
   }));
 
+  const [saving, guard] = useSaving();
   const save = async () => {
     if (!f.customer_id) return toast.error("Chọn khách hàng");
     const valid = items.filter((it) => it.product_id && it.quantity);
@@ -365,8 +367,8 @@ function OrderForm({ lookups, editId, copyId, onBack, onSaved, onPrint, onCreate
         toast.success("Đã lưu thành công");
         setEditing(false); loadData(); // ở lại màn chi tiết, không thoát ra list
       } else {
-        await ordersApi.create({ ...f, items: valid });
-        toast.success("Đã lưu thành công"); onSaved(); // tạo mới → về list
+        const created = await ordersApi.create({ ...f, items: valid });
+        toast.success("Đã lưu thành công"); onSaved(created?.id); // tạo mới → ở lại màn chi tiết của bản ghi vừa tạo
       }
     } catch (e) { toast.error("Lỗi lưu đơn hàng: " + e.message); }
   };
@@ -389,7 +391,7 @@ function OrderForm({ lookups, editId, copyId, onBack, onSaved, onPrint, onCreate
           {can("orders", "delete") && <button onClick={del} className="btn-ghost" style={{ color: "#e11d48" }}><Trash2 size={16} /> Xóa</button>}
         </>) : (<>
           {editId && <button onClick={() => { setEditing(false); loadData(); }} className="btn-ghost">Hủy</button>}
-          <button onClick={save} className="btn-primary"><Save size={16} /> Lưu đơn hàng</button>
+          <button onClick={() => guard(save)} disabled={saving} className="btn-primary"><Save size={16} /> {saving ? "Đang lưu…" : "Lưu đơn hàng"}</button>
         </>)} />
 
       <fieldset disabled={!editing} className="space-y-5">
@@ -1096,9 +1098,9 @@ export default function OrdersModule({ lookups, focusId, onFocusConsumed, onCrea
       </div>
 
       {view === "form" && (
-        <OrderForm lookups={lookups} editId={editId} copyId={copyId}
+        <OrderForm key={editId || "new"} lookups={lookups} editId={editId} copyId={copyId}
           onBack={() => { setView("list"); setEditId(null); setCopyId(null); load(); }} 
-          onSaved={() => { setView("list"); setEditId(null); setCopyId(null); load(); }}
+          onSaved={(newId) => { if (newId) { setEditId(newId); setCopyId(null); } else { setView("list"); setEditId(null); setCopyId(null); } load(); }}
           onPrint={(id) => { setVoucherId(id); setView("voucher"); }} 
           onCreateDelivery={onCreateDelivery} 
           onOpenProductionOrder={onOpenProductionOrder} 

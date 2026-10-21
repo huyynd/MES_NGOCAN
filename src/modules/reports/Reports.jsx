@@ -157,7 +157,7 @@ function KpiReport() {
 
         {/* C. Sản lượng theo sản phẩm */}
         <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-          <h3 className="text-base font-semibold mb-4 text-slate-800">C. Top Sản lượng theo Sản phẩm</h3>
+          <h3 className="text-base font-semibold mb-4 text-slate-800">C. Top SL kế hoạch theo Sản phẩm</h3>
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={charts.products} layout="vertical">
@@ -165,7 +165,7 @@ function KpiReport() {
                 <XAxis type="number" fontSize={12} />
                 <YAxis dataKey="name" type="category" width={100} fontSize={11} />
                 <Tooltip />
-                <Bar dataKey="plan_qty" name="Sản lượng" fill="#10b981" radius={[0,4,4,0]} barSize={20} />
+                <Bar dataKey="plan_qty" name="SL kế hoạch" fill="#10b981" radius={[0,4,4,0]} barSize={20} />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -508,11 +508,11 @@ function DetailedReport() {
             />
             <SummaryCard
               icon={<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#10b981" strokeWidth="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>}
-              label="Tổng SL kế hoạch" value={fmt(summary.total_plan_qty ?? 0)} unit="Kg" color="emerald"
+              label="Tổng SL kế hoạch" {...qtyByUnitProps(summary.qty_by_unit, "plan_qty")} color="emerald"
             />
             <SummaryCard
               icon={<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#10b981" strokeWidth="2"><polyline points="20 6 9 17 4 12"/></svg>}
-              label="Tổng SL hoàn thành" value={fmt(summary.total_done_qty ?? 0)} unit="Kg" color="teal"
+              label="Tổng SL hoàn thành" {...qtyByUnitProps(summary.qty_by_unit, "done_qty")} color="teal"
             />
             <SummaryCard
               icon={<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>}
@@ -681,6 +681,17 @@ function DetailedReport() {
   );
 }
 
+// R-03: SL tách theo đơn vị — đơn vị lớn nhất làm số chính, các đơn vị khác ở dòng phụ
+function qtyByUnitProps(rows, key) {
+  const list = (rows || []).filter((r) => r[key] > 0);
+  if (!list.length) return { value: 0 };
+  const [main, ...rest] = list;
+  return {
+    value: fmt(main[key]), unit: main.unit,
+    subValue: rest.length ? rest.map((r) => `${fmt(r[key])} ${r.unit}`).join(" · ") : undefined, subColor: "text-slate-500",
+  };
+}
+
 function SummaryCard({ icon, label, value, unit, subValue, subColor, color }) {
   const bg = {
     blue:    'bg-blue-50',
@@ -751,7 +762,7 @@ function MachineReport() {
         </Section>
 
         <Section className="p-6">
-          <h3 className="text-lg font-bold text-slate-800 mb-6">Dự Đoán Sản Lượng (7 Ngày Tới)</h3>
+          <h3 className="text-lg font-bold text-slate-800 mb-6">Công suất lý thuyết 7 ngày tới (8h/ngày)</h3>
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={predData}>
@@ -759,7 +770,7 @@ function MachineReport() {
                 <XAxis dataKey="date" tick={{fontSize: 12}} />
                 <YAxis tick={{fontSize: 12}} />
                 <Tooltip />
-                <Line type="monotone" dataKey="output" stroke="#3b82f6" strokeWidth={3} dot={{r: 4}} name="Dự đoán (SP)" />
+                <Line type="monotone" dataKey="output" stroke="#3b82f6" strokeWidth={3} dot={{r: 4}} name="Công suất lý thuyết" />
               </LineChart>
             </ResponsiveContainer>
           </div>

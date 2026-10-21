@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { ChevronLeft, ChevronRight, RotateCcw, Pencil, Check, X } from "lucide-react";
-import { ListHeader } from "../../components.jsx";
+import { ListHeader, useSaving } from "../../components.jsx";
 import { workSchedules } from "../../mesApi.js";
 import {  inputCls , toast } from "../../ui.js";
 import { usePerm } from "../../perm.jsx";
@@ -21,6 +21,15 @@ export default function WorkScheduleModule({ lookups }) {
   const [map, setMap] = useState({}); // `${emp}|${date}` -> shift_id
   const [isEditing, setIsEditing] = useState(false);
   const [pendingChanges, setPendingChanges] = useState({});
+  const pendingRef = React.useRef(pendingChanges); pendingRef.current = pendingChanges;
+  const pendingCount = Object.keys(pendingChanges).length;
+  const [saving, guard] = useSaving();
+  // P-13: đổi tuần khi còn thay đổi chưa lưu → hỏi (thay đổi được giữ, Lưu sẽ lưu cả các tuần)
+  const goWeek = (a) => {
+    if (pendingCount && !confirm(`Đang có ${pendingCount} ô đã đổi chưa lưu. Các thay đổi vẫn được giữ và sẽ lưu cùng khi bấm Lưu.
+Chuyển tuần?`)) return;
+    setAnchor(a);
+  };
   const { can } = usePerm();
   const canEdit = can("workschedule", "edit");
   const employees = lookups.employees || [];
@@ -37,6 +46,8 @@ export default function WorkScheduleModule({ lookups }) {
           has_attendance: !!(r.check_in_at || r.check_out_at)
         }; 
       });
+      // giữ hiển thị các ô đã đổi chưa lưu (khi quay lại tuần đã sửa)
+      Object.entries(pendingRef.current).forEach(([k, c]) => { m[k] = { ...m[k], shift_id: c.shift_id || undefined }; });
       setMap(m);
     } catch (e) { toast.error("Lỗi tải lịch: " + e.message); }
   }, [days]);
@@ -84,7 +95,7 @@ export default function WorkScheduleModule({ lookups }) {
         <div className="flex items-center gap-2">
           <div className="flex items-center border border-slate-200 rounded-lg overflow-hidden bg-white shadow-sm">
             <button 
-              onClick={() => setAnchor(addDays(anchor, -7))} 
+              onClick={() => goWeek(addDays(anchor, -7))}
               className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-50 transition"
               title="Tuần trước"
             >
@@ -94,7 +105,7 @@ export default function WorkScheduleModule({ lookups }) {
               Tuần {d(days[0]).getDate()}/{d(days[0]).getMonth() + 1} – {d(days[6]).getDate()}/{d(days[6]).getMonth() + 1}
             </span>
             <button 
-              onClick={() => setAnchor(addDays(anchor, 7))} 
+              onClick={() => goWeek(addDays(anchor, 7))}
               className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-50 transition"
               title="Tuần sau"
             >
@@ -102,7 +113,7 @@ export default function WorkScheduleModule({ lookups }) {
             </button>
           </div>
           <button 
-            onClick={() => setAnchor(mondayOf(new Date()))} 
+            onClick={() => goWeek(mondayOf(new Date()))}
             className={`px-4 py-1.5 text-sm font-medium rounded-lg border transition ${anchor === mondayOf(new Date()) ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}
           >
             Tuần này
@@ -120,8 +131,8 @@ export default function WorkScheduleModule({ lookups }) {
             <button onClick={handleCancel} className="btn-ghost text-slate-500 hover:text-slate-700">
               <X size={16} /> Hủy
             </button>
-            <button onClick={handleSave} className="btn-primary flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 border-emerald-600">
-              <Check size={16} /> Lưu
+            <button onClick={() => guard(handleSave)} disabled={saving} className="btn-primary flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 border-emerald-600">
+              <Check size={16} /> {saving ? "Đang lưu…" : pendingCount ? `Lưu (${pendingCount} thay đổi)` : "Lưu"}
             </button>
           </div>
         ))}
