@@ -143,7 +143,12 @@ exports.saveRecords = async (req, res) => {
       DO UPDATE SET scrap_qty = EXCLUDED.scrap_qty
     `, [recordId, pId, 0, newQty]);
 
-    if (diff !== 0 && scrapLocationId) {
+    if (diff !== 0) {
+      // K-06: kho phế chưa có vị trí → KHÔNG lưu (trước đây bỏ qua cập nhật tồn mà vẫn lưu phiếu → tồn phế lệch âm thầm)
+      if (!scrapLocationId) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ message: 'Kho phế phẩm chưa có vị trí kho — hãy tạo vị trí cho kho phế trước khi ghi phế.' });
+      }
       // Qua applyStock (sổ cái khớp tồn, không đi vòng qua inventory_stock)
       await applyStock(client, {
         product_id: pId, location_id: scrapLocationId, delta: diff, unit,

@@ -4,6 +4,7 @@ import { PageHeader } from "../../components.jsx";
 import { inventory, production } from "../../mesApi.js";
 import { fmt, fmtDate, statusClass, toast } from "../../ui.js";
 import { inputCls } from "../../ui.js";
+import { TRX_COLOR, trxIsIn } from "./trxHistory.jsx";
 
 function TimelineItem({ icon: Icon, color, title, subtitle, date, badge }) {
   const colors = {
@@ -37,7 +38,6 @@ function TimelineItem({ icon: Icon, color, title, subtitle, date, badge }) {
 }
 
 function LotResult({ lot, transactions }) {
-  const TRX_COLOR = { "Nhập": "bg-emerald-50 text-emerald-700", "Xuất": "bg-rose-50 text-rose-700", "Điều chỉnh": "bg-amber-50 text-amber-700" };
   return (
     <div className="space-y-5">
       {/* Product info */}
@@ -72,8 +72,8 @@ function LotResult({ lot, transactions }) {
               <TimelineItem
                 key={t.id}
                 icon={t.trx_type === "Nhập" ? Package : t.trx_type === "Xuất" ? ShoppingCart : Warehouse}
-                color={t.trx_type === "Nhập" ? "green" : t.trx_type === "Xuất" ? "rose" : "amber"}
-                title={`${t.trx_type} kho · ${fmt(t.quantity)} ${t.unit || ""}`}
+                color={t.trx_type === "Nhập" ? "green" : t.trx_type === "Xuất" ? "rose" : t.trx_type === "Chuyển kho" ? "blue" : "amber"}
+                title={`${t.trx_type === "Chuyển kho" ? (trxIsIn(t) ? "Chuyển đến" : "Chuyển đi") : t.trx_type + " kho"} · ${fmt(t.quantity)} ${t.unit || ""}`}
                 subtitle={t.warehouse_name ? `${t.warehouse_name}${t.location_name ? " → " + t.location_name : ""}` : undefined}
                 date={new Date(t.created_at).toLocaleString("vi-VN")}
                 badge={{ text: t.trx_type, cls: TRX_COLOR[t.trx_type] || "" }}
@@ -119,12 +119,10 @@ function LotResult({ lot, transactions }) {
                 <tr key={t.id} className="hover:bg-slate-50/60">
                   <td className="px-4 py-2.5 text-slate-500">{new Date(t.created_at).toLocaleString("vi-VN")}</td>
                   <td className="px-4 py-2.5">
-                    <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                      t.trx_type === "Nhập" ? "bg-emerald-50 text-emerald-700" : t.trx_type === "Xuất" ? "bg-rose-50 text-rose-700" : "bg-amber-50 text-amber-700"
-                    }`}>{t.trx_type}</span>
+                    <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${TRX_COLOR[t.trx_type] || "bg-amber-50 text-amber-700"}`}>{t.trx_type}</span>
                   </td>
-                  <td className={`px-4 py-2.5 text-right font-semibold ${t.trx_type === "Xuất" ? "text-rose-600" : "text-emerald-600"}`}>
-                    {t.trx_type === "Xuất" ? "−" : "+"}{fmt(t.quantity)}
+                  <td className={`px-4 py-2.5 text-right font-semibold ${trxIsIn(t) ? "text-emerald-600" : "text-rose-600"}`}>
+                    {trxIsIn(t) ? "+" : "−"}{fmt(t.quantity)}
                   </td>
                   <td className="px-4 py-2.5 text-slate-600">{t.warehouse_name ? `${t.warehouse_name}${t.location_name ? " · " + t.location_name : ""}` : "—"}</td>
                   <td className="px-4 py-2.5 text-slate-400 text-xs">{t.note || "—"}</td>

@@ -2532,3 +2532,81 @@ BEGIN
   RETURN NEW;
 END
 $$;
+
+-- ---------------------------------------------------------------------
+-- [mobile-api] Thu hồi phiên đăng nhập (JWT) — cần chạy `npm run migrate` khi đưa lên PRD
+--  - users.token_version: tăng khi đổi mật khẩu → mọi phiên cũ của tài khoản đó hết hiệu lực ngay.
+--  - revoked_tokens: phiên (jti) đã đăng xuất; giữ tới lúc token tự hết hạn rồi dọn.
+-- ---------------------------------------------------------------------
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS token_version integer NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS public.revoked_tokens (
+  jti        text PRIMARY KEY,
+  user_id    uuid,
+  expires_at timestamptz NOT NULL,
+  revoked_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS revoked_tokens_expires_idx ON public.revoked_tokens (expires_at);
+
+-- ---------------------------------------------------------------------
+-- 20) QA KHO (K-05): dòng phiếu xuất ghi THÔNG SỐ đã chọn (màu / kích thước…) để lúc xác nhận trừ đúng
+--     dòng tồn. NULL = không chỉ định (phiếu cũ, phiếu NVL của lệnh SX). Cần `npm run migrate` khi đưa lên PRD.
+-- ---------------------------------------------------------------------
+ALTER TABLE public.outbound_slip_lines ADD COLUMN IF NOT EXISTS spec_key text;
+
+-- ---------------------------------------------------------------------
+-- 21) QA KHO đợt P2/P3. Cần `npm run migrate` khi đưa lên PRD.
+--  a) K-16: sổ cái ghi NGƯỜI THỰC HIỆN (applyStock tự lấy từ phiên đăng nhập).
+ALTER TABLE public.inventory_transactions ADD COLUMN IF NOT EXISTS created_by uuid;
+ALTER TABLE public.inventory_transactions ADD COLUMN IF NOT EXISTS created_by_name character varying(150);
+--  b) K-19: chuyển kho có loại giao dịch RIÊNG 'Chuyển kho' (delta có dấu: − kho nguồn, + kho đích)
+--     → báo cáo nhập-xuất không bị thổi phồng. Đổi luôn dữ liệu chuyển kho cũ (ghi chú "Chuyển kho →/←").
+ALTER TABLE public.inventory_transactions DROP CONSTRAINT IF EXISTS inventory_transactions_trx_type_check;
+ALTER TABLE public.inventory_transactions ADD CONSTRAINT inventory_transactions_trx_type_check
+  CHECK (trx_type IN ('Nhập', 'Xuất', 'Điều chỉnh', 'Chuyển kho'));
+UPDATE public.inventory_transactions
+   SET delta = COALESCE(delta, CASE WHEN trx_type = 'Xuất' THEN -quantity ELSE quantity END),
+       trx_type = 'Chuyển kho'
+ WHERE trx_type IN ('Nhập', 'Xuất') AND (note LIKE 'Chuyển kho →%' OR note LIKE 'Chuyển kho ←%');
+--  c) K-11: dòng phiếu xuất ghi ĐÚNG vị trí đã trừ (giao hàng lấy từ nhiều vị trí / nhiều lô).
+ALTER TABLE public.outbound_slip_lines ADD COLUMN IF NOT EXISTS location_id uuid REFERENCES public.locations(id);
+--  d) K-10: dòng phân công ghi vị trí kho ĐÃ NHẬP đầu ra → "Hủy hoàn thành" hoàn đúng chỗ dù cấu hình kho đã đổi.
+ALTER TABLE public.production_tasks ADD COLUMN IF NOT EXISTS posted_location_id uuid REFERENCES public.locations(id);
+-- ---------------------------------------------------------------------
+
+-- ---------------------------------------------------------------------
+-- 22) K-12: KHÁCH TRẢ HÀNG — phiếu trả (TH00001…) gắn phiếu giao; mỗi dòng trả trỏ về đúng giao dịch xuất
+--     (sản phẩm · lô · thông số · vị trí) đã trừ khi giao, nhập lại vào vị trí người nhập chọn (mặc định chỗ đã xuất).
+--     Cần `npm run migrate` khi đưa lên PRD.
+ALTER TABLE public.outbound_slips ADD COLUMN IF NOT EXISTS delivery_note_id uuid REFERENCES public.delivery_notes(id);
+-- Phiếu xuất cũ của giao hàng: nối theo ghi chú "Giao hàng phiếu <mã>" / "Giao hàng phiếu <mã> · <khách>"
+UPDATE public.outbound_slips s SET delivery_note_id = d.id
+  FROM public.delivery_notes d
+ WHERE s.delivery_note_id IS NULL AND s.purpose = 'Giao hàng cho khách'
+   AND (s.note = 'Giao hàng phiếu ' || d.note_code OR s.note LIKE 'Giao hàng phiếu ' || d.note_code || ' · %');
+CREATE INDEX IF NOT EXISTS idx_os_delivery_note ON public.outbound_slips (delivery_note_id);
+
+CREATE TABLE IF NOT EXISTS public.delivery_returns (
+  id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  return_code      character varying(30) NOT NULL UNIQUE,
+  delivery_note_id uuid NOT NULL REFERENCES public.delivery_notes(id),
+  return_date      date NOT NULL DEFAULT CURRENT_DATE,
+  note             text,
+  created_by       uuid,
+  created_by_name  character varying(150),
+  created_at       timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_dr_delivery_note ON public.delivery_returns (delivery_note_id);
+CREATE TABLE IF NOT EXISTS public.delivery_return_items (
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  return_id    uuid NOT NULL REFERENCES public.delivery_returns(id) ON DELETE CASCADE,
+  source_trx_id uuid NOT NULL REFERENCES public.inventory_transactions(id),
+  product_id   uuid NOT NULL REFERENCES public.products(id),
+  quantity     numeric(14,2) NOT NULL CHECK (quantity > 0),
+  unit         character varying(30),
+  lot_code     character varying DEFAULT '' NOT NULL,
+  spec_key     text,
+  location_id  uuid NOT NULL REFERENCES public.locations(id)
+);
+CREATE INDEX IF NOT EXISTS idx_dri_return ON public.delivery_return_items (return_id);
+CREATE INDEX IF NOT EXISTS idx_dri_source ON public.delivery_return_items (source_trx_id);
+-- ---------------------------------------------------------------------

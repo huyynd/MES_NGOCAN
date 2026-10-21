@@ -71,6 +71,8 @@ export const deliveries = {
   deliverable: (customerId, excludeNote) =>
     http(`/deliveries/deliverable?customer_id=${customerId}${excludeNote ? `&exclude_note=${excludeNote}` : ""}`).then((r) => r.data),
   ship: (id) => http(`/deliveries/${id}/ship`, body("POST", {})),
+  returns: (id) => http(`/deliveries/${id}/returns`),
+  createReturn: (id, data) => http(`/deliveries/${id}/returns`, body("POST", data)),
 };
 
 // Phiếu thanh toán: khách trả 1 cục → backend tự trừ vào phiếu giao cũ nhất trước (FIFO)

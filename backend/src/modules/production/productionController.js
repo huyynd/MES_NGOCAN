@@ -152,8 +152,16 @@ async function resolveCutRollProduct(client, po) {
   return roll;
 }
 
-// Location đầu tiên của một loại kho
+// Vị trí nhập đầu ra sản xuất theo loại kho.
+// K-10: ưu tiên vị trí cấu hình ở app_settings.prod_location_<LOẠI> (vd prod_location_BTP, prod_location_TP;
+// jsonb chứa chuỗi uuid vị trí) nếu vị trí đó còn hoạt động; không cấu hình → vị trí đầu tiên của loại kho như cũ.
 async function locOf(client, whType) {
+  const cfg = (await client.query(
+    `SELECT l.id FROM app_settings a
+       JOIN locations l ON l.id::text = a.value #>> '{}' AND l.is_deleted = FALSE
+       JOIN warehouses w ON w.id = l.warehouse_id AND w.is_deleted = FALSE AND w.warehouse_type = $2
+      WHERE a.key = $1`, [`prod_location_${whType}`, whType])).rows[0]?.id;
+  if (cfg) return cfg;
   return (await client.query(
     // Ưu tiên vị trí thuộc kho đang cho nhập; nếu không có thì vẫn trả vị trí đầu để applyStock báo lỗi rõ tên kho
     `SELECT l.id FROM locations l JOIN warehouses w ON w.id = l.warehouse_id
@@ -189,6 +197,7 @@ async function postTaskStock(client, po, task, finishLots = []) {
       specs, lot_code: po.order_code, prod_order_id: po.id, clampZero: false,
       trx_type: 'Nhập', ref_code: po.order_code, note: `Nhập cuộn — Thổi (LSX ${po.order_code})`,
     });
+    await client.query(`UPDATE production_tasks SET posted_location_id = $2 WHERE id = $1`, [task.id, btpLoc]); // K-10
     return q;
   }
 
@@ -255,6 +264,7 @@ async function postTaskStock(client, po, task, finishLots = []) {
       specs, lot_code: po.order_code, prod_order_id: po.id, clampZero: false,
       trx_type: 'Nhập', ref_code: po.order_code, note: `Nhập bao bì — Cắt (LSX ${po.order_code})`,
     });
+    await client.query(`UPDATE production_tasks SET posted_location_id = $2 WHERE id = $1`, [task.id, tpLoc]); // K-10
     return q;
   }
 
@@ -1194,12 +1204,22 @@ exports.reopenTask = async (req, res) => {
     const q = Number(row.posted_qty) || 0;
     const specs = row.specs || {};
     const specKey = buildSpecKey(specs);
-    const btpLoc = await locOf(client, 'BTP');
-    const tpLoc = await locOf(client, 'TP');
     const rollId = await getRollProductId(client);
+    // K-10: hoàn kho ở ĐÚNG vị trí đã nhập lúc hoàn thành (posted_location_id), không phải vị trí mặc định hiện tại.
+    // Dữ liệu cũ chưa ghi vị trí → tìm vị trí (đúng loại kho) đang giữ lô của lệnh, đủ số lượng; cuối cùng mới về mặc định.
+    const postedLoc = async (productId, whType) => {
+      if (row.posted_location_id) return row.posted_location_id;
+      const hit = (await client.query(
+        `SELECT s.location_id FROM inventory_stock s
+           JOIN locations l ON l.id = s.location_id JOIN warehouses w ON w.id = l.warehouse_id
+          WHERE s.product_id = $1 AND s.spec_key = $2 AND s.lot_code = $3 AND w.warehouse_type = $4 AND s.quantity >= $5
+          ORDER BY s.quantity DESC LIMIT 1`, [productId, specKey, row.order_code, whType, q - 1e-6])).rows[0]?.location_id;
+      return hit || locOf(client, whType);
+    };
 
     if (row.stage === 'Thổi') {
       const outProduct = row.output_product_id || (row.product_type === 'Bán thành phẩm' ? row.product_id : rollId);
+      const btpLoc = await postedLoc(outProduct, 'BTP');
       const cur = (await client.query(
         `SELECT COALESCE(quantity,0) AS q FROM inventory_stock
          WHERE product_id = $1 AND location_id = $2 AND spec_key = $3 AND lot_code = $4`,
@@ -1214,6 +1234,7 @@ exports.reopenTask = async (req, res) => {
       });
     } else if (row.stage === 'Cắt') {
       const cutOutput = row.output_product_id || row.product_id; // bao bì đầu ra đã nhập TP
+      const tpLoc = await postedLoc(cutOutput, 'TP');
       const cur = (await client.query(
         `SELECT COALESCE(quantity,0) AS q FROM inventory_stock
          WHERE product_id = $1 AND location_id = $2 AND spec_key = $3 AND lot_code = $4`,
@@ -1242,7 +1263,7 @@ exports.reopenTask = async (req, res) => {
         [row.production_order_id, row.task_code]);
     }
 
-    await client.query(`UPDATE production_tasks SET status = 'Đang sản xuất', posted_qty = 0 WHERE id = $1`, [taskId]);
+    await client.query(`UPDATE production_tasks SET status = 'Đang sản xuất', posted_qty = 0, posted_location_id = NULL WHERE id = $1`, [taskId]);
     await recomputeOrder(client, row.production_order_id);
     await client.query('COMMIT');
     res.json({ message: 'Đã hủy hoàn thành dòng và hoàn kho.' });

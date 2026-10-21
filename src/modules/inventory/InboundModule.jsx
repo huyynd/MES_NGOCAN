@@ -4,6 +4,7 @@ import { ListHeader, DataTable, PageHeader, Section, UnitSelect, SearchSelect } 
 import { inventory } from "../../mesApi.js";
 import { usePerm } from "../../perm.jsx";
 import { inputCls, fmt, fmtDate, statusClass, toast, todayYmd } from "../../ui.js";
+import { TRX_COLOR, defaultRange, TrxRange, byColumn } from "./trxHistory.jsx";
 
 const Field = ({ label, required, children }) => (
   <div>
@@ -16,6 +17,8 @@ const Field = ({ label, required, children }) => (
 
 const INBOUND_SOURCES = ["Mua hàng NCC", "Sản xuất hoàn thành", "Trả hàng từ khách", "Chuyển kho", "Khác"];
 
+const newRef = () => `NK${new Date().toISOString().replace(/\D/g, '').slice(2, 14)}${Math.floor(Math.random() * 90 + 10)}`;
+
 const emptyLine = () => ({
   _k: Math.random(), product_id: "", quantity: "", unit: "", lot_code: "", note: ""
 });
@@ -27,6 +30,9 @@ function InboundForm({ lookups, onSaved }) {
   });
   const [lines, setLines] = useState([emptyLine()]);
   const [saving, setSaving] = useState(false);
+  // K-03: số phiếu tự sinh cố định cho mỗi lần lập phiếu → gửi trùng (bấm đúp) bị backend từ chối
+  const autoRef = React.useRef(newRef());
+  const busy = React.useRef(false);
 
   const setH = (k, v) => setHeader(s => ({ ...s, [k]: v }));
   const setLine = (k, field, v) => setLines(a => a.map(l => l._k === k ? { ...l, [field]: v } : l));
@@ -41,29 +47,34 @@ function InboundForm({ lookups, onSaved }) {
     if (!header.location_id) return toast.error("Chọn kho / vị trí nhập hàng");
     const validLines = lines.filter(l => l.product_id && Number(l.quantity) > 0);
     if (!validLines.length) return toast.error("Nhập ít nhất 1 sản phẩm với số lượng > 0");
+    if (busy.current) return;
+    busy.current = true;
     setSaving(true);
-    const finalRef = header.ref_code.trim() || `NK${new Date().toISOString().replace(/\D/g, '').slice(2, 14)}`;
+    const finalRef = header.ref_code.trim() || autoRef.current;
+    const lotBase = new Date().toISOString().replace(/\D/g, "").slice(2, 12);
     try {
-      await Promise.all(validLines.map((l, idx) => {
-        const finalLot = (l.lot_code || "").trim() || `LO${new Date().toISOString().replace(/\D/g, '').slice(2, 12)}${String(idx + 1).padStart(2, '0')}`;
-        return inventory.adjust({
+      // K-03: cả phiếu là MỘT request / MỘT transaction — 1 dòng lỗi thì không dòng nào được ghi
+      await inventory.adjust({
+        trx_type: "Nhập",
+        location_id: header.location_id,
+        ref_code: finalRef,
+        lines: validLines.map((l, idx) => ({
           product_id: l.product_id,
           quantity: Number(l.quantity),
           unit: l.unit,
-          location_id: header.location_id,
-          lot_code: finalLot,
-          trx_type: "Nhập",
-          ref_code: finalRef,
+          lot_code: (l.lot_code || "").trim() || `LO${lotBase}${String(idx + 1).padStart(2, "0")}`,
           note: [header.source, header.note, l.note].filter(Boolean).join(" | "),
-        });
-      }));
+        })),
+      });
       toast.success(`Đã nhập kho ${validLines.length} dòng sản phẩm thành công!`);
       setLines([emptyLine()]);
       setHeader(h => ({ ...h, ref_code: "" }));
+      autoRef.current = newRef();
       onSaved();
     } catch (e) {
       toast.error("Lỗi: " + e.message);
     } finally {
+      busy.current = false;
       setSaving(false);
     }
   };
@@ -179,15 +190,15 @@ function InboundForm({ lookups, onSaved }) {
 function TransactionHistory({ type }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [range, setRange] = useState(defaultRange());
   const load = useCallback(async () => {
     setLoading(true);
-    try { setRows(await inventory.transactions({ trx_type: type })); }
+    try { setRows(await inventory.transactions({ trx_type: type, ...range, limit: 2000 })); }
     catch (e) { toast.error("Lỗi: " + e.message); }
     finally { setLoading(false); }
-  }, [type]);
+  }, [type, range]);
   useEffect(() => { load(); }, [load]);
 
-  const TRX_COLOR = { "Nhập": "bg-emerald-50 text-emerald-700", "Xuất": "bg-rose-50 text-rose-700", "Điều chỉnh": "bg-amber-50 text-amber-700", "Chuyển": "bg-blue-50 text-blue-700" };
   const columns = [
     { key: "created_at", label: "Thời gian", render: r => new Date(r.created_at).toLocaleString("vi-VN") },
     { key: "trx_type", label: "Loại", render: r => <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${TRX_COLOR[r.trx_type] || ""}`}>{r.trx_type}</span> },
@@ -197,6 +208,7 @@ function TransactionHistory({ type }) {
     { key: "warehouse_name", label: "Kho/Vị trí", render: r => r.warehouse_name ? `${r.warehouse_name}${r.location_name ? " · " + r.location_name : ""}` : "—" },
     { key: "lot_code", label: "Lô", render: r => r.lot_code || "—" },
     { key: "ref_code", label: "Số phiếu", filter: "text", render: r => r.ref_code || "—" },
+    byColumn,
     { key: "note", label: "Ghi chú", tdClass: "text-slate-400 text-xs" },
   ];
   return (
@@ -205,6 +217,8 @@ function TransactionHistory({ type }) {
         <div className="flex items-center gap-2 font-semibold text-slate-700">
           <History size={16} /> Lịch sử phiếu nhập
         </div>
+        <div className="flex-1" />
+        <div className="mr-3"><TrxRange value={range} onChange={setRange} /></div>
         <button onClick={load} className="btn-ghost text-sm flex items-center gap-1.5">
           <RefreshCcw size={14} className={loading ? "animate-spin" : ""} /> Làm mới
         </button>

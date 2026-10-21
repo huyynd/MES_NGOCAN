@@ -7,6 +7,7 @@
 //         trong cùng 1 bước), thiếu thì ném StockShortageError → transaction rollback.
 const { buildSpecKey, legacyAttrs } = require('./specs');
 const { upUnit } = require('./units');
+const { currentUser } = require('../requestContext');
 
 // Lỗi thiếu tồn — nơi gọi trả 400 kèm thông báo dễ hiểu (xem stockErrorResponse)
 class StockShortageError extends Error {
@@ -75,7 +76,7 @@ const fmtQty = (n) => Number(n || 0).toLocaleString('vi-VN', { maximumFractionDi
  *   lot_code = '',
  *   prod_order_id = null,
  *   log = true,          // ghi inventory_transactions
- *   trx_type,            // 'Nhập'|'Xuất'|'Điều chỉnh'; mặc định suy từ dấu delta
+ *   trx_type,            // 'Nhập'|'Xuất'|'Điều chỉnh'|'Chuyển kho'; mặc định suy từ dấu delta
  *   ref_code = null, note = null,
  *   clampZero            // ĐÃ BỎ: trước đây true = ép về 0 khi thiếu (sổ cái vẫn ghi đủ → lệch sổ cái),
  *                        //        false = cho âm. Nay thiếu tồn LUÔN báo lỗi; tham số được bỏ qua.
@@ -98,9 +99,10 @@ async function applyStock(client, o) {
     // TRỪ: khóa dòng + kiểm đủ + trừ trong 1 câu (atomic). 2 phiếu trừ cùng lúc → phiếu sau chờ phiếu trước
     // xong rồi mới đánh giá điều kiện trên số tồn MỚI → không thể cùng lọt.
     const r = await client.query(
+      // K-15: TRỪ không đổi đơn vị của dòng tồn (trước đây xuất 'Cái' ghi đè dòng 'Cuộn'); chỉ điền khi dòng chưa có
       `UPDATE inventory_stock
           SET quantity = quantity + $5::numeric,
-              unit = COALESCE($6, unit),
+              unit = COALESCE(NULLIF(unit, ''), $6),
               updated_at = now()
         WHERE product_id = $1 AND location_id IS NOT DISTINCT FROM $2 AND spec_key = $3 AND lot_code = $4
           AND quantity + $5::numeric >= 0
@@ -130,7 +132,7 @@ async function applyStock(client, o) {
        DO UPDATE SET quantity = inventory_stock.quantity + EXCLUDED.quantity,
                      -- Không ghi đè specs đã có bằng {} (trường hợp chỉ biết spec_key)
                      specs = CASE WHEN inventory_stock.specs = '{}'::jsonb THEN EXCLUDED.specs ELSE inventory_stock.specs END,
-                     unit = COALESCE(EXCLUDED.unit, inventory_stock.unit),
+                     unit = COALESCE(NULLIF(inventory_stock.unit, ''), EXCLUDED.unit), -- K-15: giữ đơn vị dòng tồn đã có
                      -- FIFO (M50): dòng đã hết hàng nay nhập lại → coi như lô mới vào kho
                      created_at = CASE WHEN inventory_stock.quantity <= 0 AND EXCLUDED.quantity > 0
                                        THEN now() ELSE inventory_stock.created_at END,
@@ -143,13 +145,16 @@ async function applyStock(client, o) {
 
   if (o.log !== false && delta !== 0) {
     // quantity: giữ giá trị TUYỆT ĐỐI như cũ (tương thích); delta: CÓ DẤU — để biết "Điều chỉnh" là tăng hay giảm
+    // K-16: người thực hiện lấy từ phiên đăng nhập của request (requestContext)
+    const who = currentUser();
     await client.query(
       `INSERT INTO inventory_transactions
-         (product_id, location_id, trx_type, quantity, delta, specs, spec_key, lot_code, attr_size, attr_thickness, attr_color, ref_code, note)
-       VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11,$12,$13)`,
+         (product_id, location_id, trx_type, quantity, delta, specs, spec_key, lot_code, attr_size, attr_thickness, attr_color, ref_code, note,
+          created_by, created_by_name)
+       VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
       [o.product_id, loc, o.trx_type || (delta > 0 ? 'Nhập' : 'Xuất'), Math.abs(delta), delta,
        JSON.stringify(specs), spec_key, lot, a.size || '', a.thickness || '', a.color || '',
-       o.ref_code || null, o.note || null]);
+       o.ref_code || null, o.note || null, who?.id || null, who?.name || null]);
   }
   return newQty;
 }

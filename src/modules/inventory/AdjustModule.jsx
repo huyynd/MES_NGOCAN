@@ -4,6 +4,7 @@ import { DataTable, PageHeader, UnitSelect } from "../../components.jsx";
 import { inventory } from "../../mesApi.js";
 import { usePerm } from "../../perm.jsx";
 import { inputCls, fmt, toast } from "../../ui.js";
+import { trxIsIn, defaultRange, TrxRange, byColumn } from "./trxHistory.jsx";
 
 const Field = ({ label, required, children }) => (
   <div>
@@ -19,60 +20,73 @@ const ADJUST_REASONS = [
   "Chuyển đổi đơn vị", "Điều chỉnh ban đầu", "Lý do khác"
 ];
 
+const NEW_LINE = "__new__";
+const specLabel = (k) => (String(k || "").split("|").filter(Boolean).join(" · ") || "Không thông số");
+const lineKey = (r) => `${r.spec_key}§${r.lot_code || ""}`;
+const emptyForm = () => ({
+  product_id: "", location_id: "", line: "", new_lot: "", actual_qty: "", unit: "",
+  reason: "Kiểm kê định kỳ", note: ""
+});
+
 function AdjustForm({ lookups, onSaved }) {
-  const [form, setForm] = useState({
-    product_id: "", system_qty: null, actual_qty: "", unit: "",
-    location_id: "", lot_code: "", reason: "Kiểm kê định kỳ", note: ""
-  });
+  const [form, setForm] = useState(emptyForm());
+  const [rows, setRows] = useState(null); // các dòng tồn của SP (mọi vị trí)
   const [saving, setSaving] = useState(false);
   const set = (k, v) => setForm(s => ({ ...s, [k]: v }));
 
-  const onProductChange = async (id) => {
-    const p = (lookups.products || []).find(x => x.id === id);
-    set("product_id", id);
-    if (p) set("unit", p.unit || "");
-    set("system_qty", null);
-    if (id) {
-      try {
-        const tree = await inventory.tree({ product_id: id });
-        // tree trả về mảng phẳng — cộng dồn quantity của tất cả dòng thuộc sản phẩm này
-        const total = (tree || []).filter(x => x.product_id === id).reduce((s, r) => s + Number(r.quantity || 0), 0);
-        setForm(s => ({ ...s, product_id: id, system_qty: total, unit: p?.unit || s.unit }));
-      } catch { /* ignore */ }
-    }
+  const loadRows = async (id) => {
+    setRows(null);
+    if (!id) return;
+    try {
+      const tree = await inventory.tree({ product_id: id });
+      setRows((tree || []).filter(x => x.product_id === id));
+    } catch { /* ignore */ }
   };
 
-  const delta = form.system_qty !== null && form.actual_qty !== ""
-    ? Number(form.actual_qty) - Number(form.system_qty)
+  const onProductChange = (id) => {
+    const p = (lookups.products || []).find(x => x.id === id);
+    setForm(s => ({ ...s, product_id: id, unit: p?.unit || "", line: "", actual_qty: "" }));
+    loadRows(id);
+  };
+
+  // K-01: so sánh trên ĐÚNG 1 dòng tồn (vị trí + thông số + lô) — trước đây lấy tổng mọi kho/lô/thông số
+  // rồi áp chênh lệch vào 1 vị trí → chênh lệch sai hoàn toàn.
+  const locLines = rows && form.location_id ? rows.filter(r => r.location_id === form.location_id) : [];
+  const selected = form.line && form.line !== NEW_LINE ? locLines.find(r => lineKey(r) === form.line) : null;
+  const system_qty = form.line === NEW_LINE ? 0 : selected ? Number(selected.quantity || 0) : null;
+
+  const delta = system_qty !== null && form.actual_qty !== ""
+    ? Number(form.actual_qty) - system_qty
     : null;
 
   const save = async () => {
     if (!form.product_id) return toast.error("Chọn sản phẩm cần điều chỉnh");
     if (!form.location_id) return toast.error("Chọn kho / vị trí cần điều chỉnh");
+    if (!form.line) return toast.error("Chọn dòng tồn (thông số / lô) cần kiểm kê");
     if (form.actual_qty === "" || Number(form.actual_qty) < 0) return toast.error("Nhập số lượng thực tế (≥ 0)");
     if (delta === 0) return toast.error("Số lượng thực tế bằng hệ thống, không cần điều chỉnh");
 
     setSaving(true);
     try {
-      // Ghi 1 giao dịch Điều chỉnh với delta (âm hoặc dương)
-      await inventory.adjust({
+      // Đặt tồn TUYỆT ĐỐI cho đúng dòng; backend khóa dòng + so với số hệ thống đang xem (đổi giữa chừng → 409)
+      await inventory.addStock({
         product_id: form.product_id,
-        quantity: Math.abs(delta),
+        location_id: form.location_id,
+        spec_key: selected ? selected.spec_key : null,
+        specs: selected ? (selected.specs || {}) : {},
+        lot_code: selected ? (selected.lot_code || "") : form.new_lot.trim(),
+        quantity: Number(form.actual_qty),
+        expected_qty: system_qty,
         unit: form.unit,
-        location_id: form.location_id || null,
-        lot_code: form.lot_code || "",
-        trx_type: delta > 0 ? "Nhập" : "Xuất",
-        ref_code: null,
-        note: `[Điều chỉnh] ${form.reason}${form.note ? " – " + form.note : ""} (HT: ${fmt(form.system_qty)} → TT: ${fmt(form.actual_qty)})`,
+        note: `[Điều chỉnh] ${form.reason}${form.note ? " – " + form.note : ""} (HT: ${fmt(system_qty)} → TT: ${fmt(form.actual_qty)})`,
       });
       toast.success(`Đã điều chỉnh tồn kho thành công! (${delta > 0 ? "+" : ""}${fmt(delta)} ${form.unit})`);
-      setForm({
-        product_id: "", system_qty: null, actual_qty: "", unit: "",
-        location_id: "", lot_code: "", reason: "Kiểm kê định kỳ", note: ""
-      });
+      setForm(emptyForm());
+      setRows(null);
       onSaved();
     } catch (e) {
       toast.error("Lỗi điều chỉnh: " + e.message);
+      loadRows(form.product_id); // tồn có thể vừa đổi → nạp lại số hệ thống
     } finally {
       setSaving(false);
     }
@@ -96,17 +110,30 @@ function AdjustForm({ lookups, onSaved }) {
               ))}
             </select>
           </Field>
-          <Field label="Kho / Vị trí">
-            <select className={inputCls} value={form.location_id} onChange={e => set("location_id", e.target.value)}>
-              <option value="">-- Tất cả vị trí --</option>
+          <Field label="Kho / Vị trí" required>
+            <select className={inputCls} value={form.location_id}
+              onChange={e => setForm(s => ({ ...s, location_id: e.target.value, line: "", actual_qty: "" }))}>
+              <option value="">-- Chọn kho/vị trí --</option>
               {(lookups.locations || []).map(l => (
                 <option key={l.id} value={l.id}>{l.warehouse_name} · {l.name}</option>
               ))}
             </select>
           </Field>
-          <Field label="Số lô">
-            <input className={inputCls} placeholder="Mã lô (nếu có)" value={form.lot_code}
-              onChange={e => set("lot_code", e.target.value)} />
+          <Field label="Dòng tồn (thông số · lô)" required>
+            <select className={inputCls} value={form.line} disabled={!form.product_id || !form.location_id || !rows}
+              onChange={e => setForm(s => ({ ...s, line: e.target.value, actual_qty: "" }))}>
+              <option value="">{!form.product_id || !form.location_id ? "-- Chọn SP và vị trí trước --" : !rows ? "Đang tải…" : "-- Chọn dòng tồn --"}</option>
+              {locLines.map(r => (
+                <option key={lineKey(r)} value={lineKey(r)}>
+                  {specLabel(r.spec_key)} · lô {r.lot_code || "—"} — tồn {fmt(r.quantity)}
+                </option>
+              ))}
+              <option value={NEW_LINE}>+ Dòng mới (vị trí này chưa có tồn)</option>
+            </select>
+            {form.line === NEW_LINE && (
+              <input className={inputCls + " mt-2"} placeholder="Mã lô (nếu có)" value={form.new_lot}
+                onChange={e => set("new_lot", e.target.value)} />
+            )}
           </Field>
         </div>
 
@@ -116,8 +143,8 @@ function AdjustForm({ lookups, onSaved }) {
           <div className="grid grid-cols-3 gap-4 items-end">
             <div className="text-center">
               <div className="text-xs text-slate-500 mb-1.5">Tồn kho Hệ thống</div>
-              <div className={`text-3xl font-bold ${form.system_qty !== null ? "text-slate-700" : "text-slate-300"}`}>
-                {form.system_qty !== null ? fmt(form.system_qty) : "—"}
+              <div className={`text-3xl font-bold ${system_qty !== null ? "text-slate-700" : "text-slate-300"}`}>
+                {system_qty !== null ? fmt(system_qty) : "—"}
               </div>
               <div className="text-xs text-slate-400 mt-1">{form.unit}</div>
             </div>
@@ -187,24 +214,25 @@ function AdjustForm({ lookups, onSaved }) {
 function AdjustHistory() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [range, setRange] = useState(defaultRange());
   const load = useCallback(async () => {
     setLoading(true);
-    try {
-      const all = await inventory.transactions({});
-      setRows((all || []).filter(r => (r.note || "").startsWith("[Điều chỉnh]")));
-    } catch (e) { toast.error("Lỗi: " + e.message); }
+    // K-20: lọc ở server (trước đây tải 300 dòng mới nhất rồi lọc → điều chỉnh cũ hơn bị mất khỏi danh sách)
+    try { setRows(await inventory.transactions({ note_prefix: "[Điều chỉnh]", ...range, limit: 2000 })); }
+    catch (e) { toast.error("Lỗi: " + e.message); }
     finally { setLoading(false); }
-  }, []);
+  }, [range]);
   useEffect(() => { load(); }, [load]);
 
-  const TRX_COLOR = { "Nhập": "bg-emerald-50 text-emerald-700", "Xuất": "bg-rose-50 text-rose-700" };
+  const isUp = trxIsIn;
   const columns = [
     { key: "created_at", label: "Thời gian", render: r => new Date(r.created_at).toLocaleString("vi-VN") },
-    { key: "trx_type", label: "Hướng", render: r => <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${TRX_COLOR[r.trx_type] || ""}`}>{r.trx_type === "Nhập" ? "Tăng +" : "Giảm −"}</span> },
+    { key: "trx_type", label: "Hướng", render: r => <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${isUp(r) ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"}`}>{isUp(r) ? "Tăng +" : "Giảm −"}</span> },
     { key: "product_code", label: "Mã SP", filter: "text", tdClass: "font-medium text-blue-600" },
     { key: "product_name", label: "Sản phẩm", filter: "select" },
-    { key: "quantity", label: "Chênh lệch", align: "right", render: r => <span className={`font-semibold ${r.trx_type === "Nhập" ? "text-emerald-600" : "text-rose-600"}`}>{r.trx_type === "Nhập" ? "+" : "−"}{fmt(r.quantity)}</span> },
+    { key: "quantity", label: "Chênh lệch", align: "right", render: r => <span className={`font-semibold ${isUp(r) ? "text-emerald-600" : "text-rose-600"}`}>{isUp(r) ? "+" : "−"}{fmt(r.quantity)}</span> },
     { key: "warehouse_name", label: "Kho/Vị trí", render: r => r.warehouse_name ? `${r.warehouse_name}${r.location_name ? " · " + r.location_name : ""}` : "—" },
+    byColumn,
     { key: "note", label: "Lý do / Chi tiết", tdClass: "text-slate-500 text-xs" },
   ];
 
@@ -214,6 +242,8 @@ function AdjustHistory() {
         <div className="flex items-center gap-2 font-semibold text-slate-700">
           <History size={16} /> Lịch sử điều chỉnh
         </div>
+        <div className="flex-1" />
+        <div className="mr-3"><TrxRange value={range} onChange={setRange} /></div>
         <button onClick={load} className="btn-ghost text-sm flex items-center gap-1.5">
           <RefreshCcw size={14} className={loading ? "animate-spin" : ""} /> Làm mới
         </button>

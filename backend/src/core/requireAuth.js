@@ -1,7 +1,8 @@
 // backend/middleware/requireAuth.js — xác thực Bearer token cho mọi request
-const { verifyToken } = require('../modules/auth/authController');
+const { decodeToken, isSessionActive } = require('../modules/auth/authController');
 const { calculateEffectivePermissions } = require('../modules/auth/roleController');
 const db = require('./db');
+const { runWithUser } = require('./requestContext');
 
 /**
  * Middleware xác thực phiên đăng nhập.
@@ -12,10 +13,15 @@ module.exports = async function requireAuth(req, res, next) {
   const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
   if (!token) return res.status(401).json({ message: 'Cần đăng nhập để thực hiện thao tác này' });
 
-  const userId = verifyToken(token);
-  if (!userId) return res.status(401).json({ message: 'Phiên đăng nhập hết hạn, vui lòng đăng nhập lại' });
+  const payload = decodeToken(token);
+  if (!payload) return res.status(401).json({ message: 'Phiên đăng nhập hết hạn, vui lòng đăng nhập lại' });
+  const userId = payload.userId;
 
   try {
+    // Phiên đã đăng xuất / tài khoản đã đổi mật khẩu → hết hiệu lực ngay
+    if (!(await isSessionActive(payload))) {
+      return res.status(401).json({ message: 'Phiên đăng nhập đã kết thúc, vui lòng đăng nhập lại' });
+    }
     const { rows } = await db.query(
       `SELECT u.id, u.username, u.full_name, u.status, u.team, u.linked_worker,
               COALESCE(u.permissions, '{}'::jsonb) AS user_permissions,
@@ -48,7 +54,8 @@ module.exports = async function requireAuth(req, res, next) {
     });
     
     req.user.permissions = merged;
-    next();
+    // K-16: phần còn lại của request chạy trong ngữ cảnh user → sổ cái kho ghi được người thực hiện
+    runWithUser({ id: req.user.id, name: req.user.full_name || req.user.username }, next);
   } catch (err) {
     console.error('[requireAuth]', err);
     res.status(500).json({ message: 'Lỗi xác thực, vui lòng thử lại' });
@@ -125,4 +132,25 @@ module.exports.requirePerm = (permString) => {
     if (hasPerm) return next();
     res.status(403).json({ message: 'Bạn không có quyền thực hiện thao tác này' });
   };
+};
+
+/**
+ * Có quyền `action` trên đúng app key của web (vd 'md_customers', 'orders') không — cùng cách
+ * frontend `can(app, action)` trong src/perm.jsx (admin luôn có; 'ALLOW' | true | {status:'ALLOW'}).
+ */
+function hasAppPerm(req, app, action) {
+  if (req.user?.is_admin) return true;
+  const v = req.user?.permissions?.[app]?.[action];
+  return v === 'ALLOW' || v === true || v?.status === 'ALLOW';
+}
+module.exports.hasAppPerm = hasAppPerm;
+
+/**
+ * Middleware: cho qua nếu có ÍT NHẤT MỘT cặp [app, action]. Dùng app key của web (khớp menu / nút).
+ * vd requireAnyPerm(['orders', 'view'], ['deliveries', 'view'])
+ */
+module.exports.requireAnyPerm = (...pairs) => (req, res, next) => {
+  if (!req.user) return res.status(401).json({ message: 'Chưa xác thực' });
+  if (pairs.some(([app, action]) => hasAppPerm(req, app, action))) return next();
+  res.status(403).json({ message: 'Bạn không có quyền thực hiện thao tác này' });
 };

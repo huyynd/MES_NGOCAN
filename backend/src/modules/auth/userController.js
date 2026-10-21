@@ -72,7 +72,16 @@ exports.update = async (req, res) => {
       add('password_hash', hashPassword(password));
     }
     if (!cols.length) return res.status(400).json({ message: 'Không có trường để cập nhật' });
-    const { rows } = await db.query(`UPDATE users SET ${cols.join(', ')} WHERE id = $${i} AND is_deleted = FALSE RETURNING id`, [...vals, req.params.id]);
+    // Đổi mật khẩu → tăng token_version: mọi phiên đang đăng nhập của tài khoản này (web + điện thoại) hết hiệu lực ngay.
+    const bump = password ? ', token_version = token_version + 1' : '';
+    const sql = (extra) => `UPDATE users SET ${cols.join(', ')}${extra} WHERE id = $${i} AND is_deleted = FALSE RETURNING id`;
+    let rows;
+    try {
+      ({ rows } = await db.query(sql(bump), [...vals, req.params.id]));
+    } catch (e) {
+      if (e.code !== '42703' || !bump) throw e; // chưa migrate cột token_version → cập nhật như cũ
+      ({ rows } = await db.query(sql(''), [...vals, req.params.id]));
+    }
     if (!rows.length) return res.status(404).json({ message: 'Không tìm thấy tài khoản' });
     res.json({ message: 'Đã cập nhật tài khoản' });
   } catch (e) {

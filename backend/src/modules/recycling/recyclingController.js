@@ -138,23 +138,35 @@ exports.weigh = async (req, res) => {
       return res.status(400).json({ message: 'Chưa chọn kho phế phẩm cho phiếu — không thể trừ tồn phế. Hãy tạo phiếu mới có chọn kho phế phẩm.' });
     }
 
-    // Tìm location mặc định của kho phế phẩm
-    const locRes = await client.query(`SELECT id FROM locations WHERE warehouse_id = $1 LIMIT 1`, [ticket.scrap_warehouse_id]);
-    const locationId = locRes.rows[0]?.id || null;
-    if (!locationId) {
+    // K-13: trừ ở các vị trí THỰC CÓ tồn phế trong kho phế (vị trí còn hoạt động), nhiều hàng nhất trước —
+    // trước đây lấy 1 vị trí bất kỳ (có thể trống / đã xóa) → báo "tồn 0 — thiếu" dù kho có hàng.
+    const { rows: stockRows } = await client.query(
+      `SELECT s.location_id, s.spec_key, s.specs, s.lot_code, s.quantity
+         FROM inventory_stock s JOIN locations l ON l.id = s.location_id
+        WHERE l.warehouse_id = $1 AND l.is_deleted = FALSE AND s.product_id = $2 AND s.quantity > 0
+        ORDER BY s.quantity DESC, s.created_at, s.id FOR UPDATE OF s`,
+      [ticket.scrap_warehouse_id, ticket.product_id]);
+    const onHand = stockRows.reduce((sum, r) => sum + Number(r.quantity), 0);
+    if (actualTotal > onHand + 1e-9) {
       await client.query('ROLLBACK');
-      return res.status(400).json({ message: 'Kho phế phẩm chưa có vị trí — hãy tạo vị trí kho trước.' });
+      return res.status(400).json({ message: `Không đủ tồn phế phẩm trong kho phế — tồn ${onHand.toLocaleString('vi-VN')} kg, cần xuất ${actualTotal.toLocaleString('vi-VN')} kg, thiếu ${(actualTotal - onHand).toLocaleString('vi-VN')} kg.` });
     }
 
     // Trừ tồn kho phế phẩm QUA applyStock (sổ cái khớp tồn, không đi vòng qua inventory_stock)
     if (actualTotal > 0) {
-      const pxCount = await client.query(`SELECT count(*) FROM inventory_transactions WHERE trx_type = 'Xuất'`);
-      const pxCode = `PX-${String(parseInt(pxCount.rows[0].count) + 1).padStart(5, '0')}`;
-      await applyStock(client, {
-        product_id: ticket.product_id, location_id: locationId, delta: -actualTotal, unit: 'Kg',
-        specs: {}, lot_code: '', clampZero: false, trx_type: 'Xuất',
-        ref_code: pxCode, note: `Xuất phế phẩm đi tái chế (Phiếu ${ticket.ticket_code})`,
-      });
+      // K-14: mã PX- = MAX + 1 có khóa (trước đây COUNT(*)+1 không khóa → cân đồng thời trùng mã)
+      const pxCode = await nextCode(client, { table: 'inventory_transactions', col: 'ref_code', prefix: 'PX-', width: 5 });
+      let remain = actualTotal;
+      for (const r of stockRows) {
+        if (remain <= 1e-9) break;
+        const take = Math.min(remain, Number(r.quantity));
+        await applyStock(client, {
+          product_id: ticket.product_id, location_id: r.location_id, delta: -take, unit: 'Kg',
+          specs: r.specs || {}, spec_key: r.spec_key, lot_code: r.lot_code || '', clampZero: false, trx_type: 'Xuất',
+          ref_code: pxCode, note: `Xuất phế phẩm đi tái chế (Phiếu ${ticket.ticket_code})`,
+        });
+        remain -= take;
+      }
     }
 
     await client.query('COMMIT');
@@ -292,8 +304,8 @@ exports.complete = async (req, res) => {
 
     // Nhập kho PE QUA applyStock (sổ cái khớp tồn, không đi vòng qua inventory_stock)
     if (Number(ticket.total_received_qty) > 0) {
-      const pnCount = await client.query(`SELECT count(*) FROM inventory_transactions WHERE trx_type = 'Nhập'`);
-      const pnCode = `PN-${String(parseInt(pnCount.rows[0].count) + 1).padStart(5, '0')}`;
+      // K-14: MAX + 1 có khóa (trước đây COUNT(*)+1 → trùng mã khi đồng thời)
+      const pnCode = await nextCode(client, { table: 'inventory_transactions', col: 'ref_code', prefix: 'PN-', width: 5 });
       await applyStock(client, {
         product_id: pe_product_id, location_id: locationId, delta: Number(ticket.total_received_qty), unit: 'Kg',
         specs: {}, lot_code: '', clampZero: false, trx_type: 'Nhập',

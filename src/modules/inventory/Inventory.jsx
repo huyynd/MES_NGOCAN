@@ -5,6 +5,7 @@ import { inventory } from "../../mesApi.js";
 import { usePerm } from "../../perm.jsx";
 import {  inputCls, fmt, fmtDate, statusClass , toast } from "../../ui.js";
 import { PRODUCT_SPECS, splitNU, specShort } from "../../specs.js";
+import { TRX_COLOR, trxIsIn, defaultRange, TrxRange, byColumn } from "./trxHistory.jsx";
 
 const Field = ({ label, required, children }) => (
   <div>
@@ -511,12 +512,12 @@ function TreeTab({ lookups }) {
 
 
 /* ---- Tab: Lịch sử giao dịch kho ---- */
-const TRX_COLOR = { "Nhập": "bg-emerald-50 text-emerald-700", "Xuất": "bg-rose-50 text-rose-700", "Điều chỉnh": "bg-amber-50 text-amber-700" };
 function TransactionsTab() {
   const [rows, setRows] = useState([]);
+  const [range, setRange] = useState(defaultRange());
   const load = useCallback(async () => {
-    try { setRows(await inventory.transactions({})); } catch (e) { toast.error("Lỗi tải lịch sử: " + e.message); }
-  }, []);
+    try { setRows(await inventory.transactions({ ...range, limit: 2000 })); } catch (e) { toast.error("Lỗi tải lịch sử: " + e.message); }
+  }, [range]);
   useEffect(() => { load(); }, [load]);
 
   const columns = [
@@ -528,13 +529,19 @@ function TransactionsTab() {
       filterValue: (t) => specShort(t.specs),
       render: (t) => specShort(t.specs) || "—" },
     { key: "lot_code", label: "Lô", filter: "text", tdClass: "text-slate-600", render: (t) => t.lot_code || "—" },
-    { key: "quantity", label: "Số lượng", align: "right", render: (t) => <span className={`font-semibold ${t.trx_type === "Xuất" ? "text-rose-600" : "text-emerald-600"}`}>{t.trx_type === "Xuất" ? "−" : "+"}{fmt(t.quantity)}</span> },
+    { key: "quantity", label: "Số lượng", align: "right", render: (t) => <span className={`font-semibold ${trxIsIn(t) ? "text-emerald-600" : "text-rose-600"}`}>{trxIsIn(t) ? "+" : "−"}{fmt(t.quantity)}</span> },
     { key: "warehouse_name", label: "Kho/Vị trí", filter: "select", tdClass: "text-slate-600", render: (t) => t.warehouse_name ? `${t.warehouse_name} · ${t.location_name}` : "—" },
     { key: "ref_code", label: "Chứng từ", filter: "text", tdClass: "text-slate-600", render: (t) => t.ref_code || "—" },
+    byColumn,
     { key: "note", label: "Ghi chú", filter: "text", tdClass: "text-slate-400", render: (t) => t.note || "" },
   ];
 
-  return <DataTable dense columns={columns} rows={rows} rowKey={(t) => t.id} emptyText="Chưa có giao dịch" />;
+  return (
+    <div className="space-y-3">
+      <div className="flex justify-end"><TrxRange value={range} onChange={setRange} /></div>
+      <DataTable dense columns={columns} rows={rows} rowKey={(t) => t.id} emptyText="Chưa có giao dịch" />
+    </div>
+  );
 }
 
 /* ---- Hub Kho ---- */

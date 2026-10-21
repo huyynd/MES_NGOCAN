@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
-const { requirePerm } = require('../../core/requireAuth');
+const { requirePerm, requireAnyPerm } = require('../../core/requireAuth');
+const { hideCustomerContact } = require('../../core/lib/visibility');
 const { makeCrud } = require('../../core/genericCrud');
 const production = require('../production/productionController');
 const { WAREHOUSE_DEPENDENTS, LOCATION_DEPENDENTS, EMPLOYEE_DEPENDENTS } = require('../../core/lib/deleteGuard');
@@ -25,13 +26,22 @@ const validators = {
 };
 
 // ---- Master data ----
+// Ghi danh mục kiểm đúng quyền như nút trên web: can('md_<danh mục>', 'create' | 'edit' | 'delete')
+// (MasterData.jsx). Trước đây không kiểm → tài khoản nào cũng thêm/sửa/xóa được qua API.
+// Đọc: mặc định để mở (dropdown, app mobile cần); riêng khách hàng có cổng đọc riêng (readGuards).
+const readGuards = {
+  '/customers': [requireAnyPerm(['md_customers', 'view'], ['orders', 'view'], ['deliveries', 'view']), hideCustomerContact],
+};
 function mountCrud(path, crud) {
-  router.get(`${path}`, crud.list);
-  router.post(`${path}`, crud.create);
-  router.post(`${path}/import`, crud.bulkCreate);
-  router.get(`${path}/:id`, crud.getById);
-  router.put(`${path}/:id`, crud.update);
-  router.delete(`${path}/:id`, crud.remove);
+  const app = 'md_' + path.slice(1);
+  const can = (action) => requireAnyPerm([app, action]);
+  const read = readGuards[path] || [];
+  router.get(`${path}`, ...read, crud.list);
+  router.post(`${path}`, can('create'), crud.create);
+  router.post(`${path}/import`, can('create'), crud.bulkCreate);
+  router.get(`${path}/:id`, ...read, crud.getById);
+  router.put(`${path}/:id`, can('edit'), crud.update);
+  router.delete(`${path}/:id`, can('delete'), crud.remove);
 }
 
 mountCrud('/customers', makeCrud({

@@ -11,7 +11,7 @@ import { specShort } from "../../specs.js";
 import { PageHeader, Section, ListHeader, DataTable, Logo, UnitSelect, SearchSelect } from "../../components.jsx";
 
 // Bảng chuyển trạng thái (khớp backend). "Giao hàng" chỉ đặt qua nút Giao hàng (trừ tồn).
-// Bản nháp chỉ được Hủy; sau khi đã giao không cho Hủy (chưa có luồng hoàn kho).
+// Bản nháp chỉ được Hủy; sau khi đã giao không cho Hủy — hàng trả lại dùng nút "Khách trả hàng" (nhập lại kho).
 // "Đã thanh toán 1 phần" / "Đã thanh toán" tự nhảy theo các lần thu ở mục Thanh toán — không chọn tay.
 const DN_TRANSITIONS = {
   "Bản nháp":             ["Đã hủy"],
@@ -92,6 +92,89 @@ function PaymentHistory({ payments }) {
  */
 const NO_ORDER = ""; // giá trị cột Đơn hàng = "không theo đơn"
 
+// K-12: Khách trả hàng — liệt kê đúng phần đã xuất khi giao (SP · lô · thông số · vị trí),
+// nhập lại vào vị trí người nhập chọn (mặc định chỗ đã xuất). Không đổi công nợ.
+const specLabel = (k) => (String(k || "").split("|").filter(Boolean).join(" · ") || "—");
+function ReturnModal({ id, noteCode, lookups, onClose, onSaved }) {
+  const [data, setData] = useState(null);
+  const [qty, setQty] = useState({});   // trx_id → SL trả
+  const [loc, setLoc] = useState({});   // trx_id → vị trí nhận
+  const [head, setHead] = useState({ return_date: today(), note: "" });
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    api.returns(id).then((d) => {
+      setData(d);
+      setLoc(Object.fromEntries((d.lines || []).map((l) => [l.trx_id, l.location_id || ""])));
+    }).catch((e) => toast.error("Lỗi: " + e.message));
+  }, [id]);
+  const left = (l) => Number(l.shipped_qty) - Number(l.returned_qty);
+  const save = async () => {
+    const items = (data?.lines || []).filter((l) => Number(qty[l.trx_id]) > 0)
+      .map((l) => ({ trx_id: l.trx_id, quantity: Number(qty[l.trx_id]), location_id: loc[l.trx_id] }));
+    if (!items.length) return toast.error("Nhập số lượng trả cho ít nhất 1 dòng");
+    const over = (data.lines || []).find((l) => Number(qty[l.trx_id]) > left(l) + 1e-6);
+    if (over) return toast.error(`${over.product_code}: chỉ còn trả được ${fmt(left(over))}`);
+    if (items.some((x) => !x.location_id)) return toast.error("Chọn kho / vị trí nhận hàng trả");
+    setSaving(true);
+    try { const r = await api.createReturn(id, { ...head, items }); toast.success(r?.message || "Đã lập phiếu trả hàng"); onSaved(); }
+    catch (e) { toast.error("Không trả được: " + e.message); }
+    finally { setSaving(false); }
+  };
+  return (
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-5xl p-6 space-y-4 max-h-[90vh] overflow-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <h3 className="text-lg font-bold text-slate-800">Khách trả hàng — phiếu giao {noteCode}</h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
+        </div>
+        {!data ? <div className="text-sm text-slate-400">Đang tải…</div> : !data.lines.length ? (
+          <div className="text-sm text-slate-500">Phiếu này chưa có dữ liệu xuất kho để trả.</div>
+        ) : (<>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <Field label="Ngày trả"><input type="date" className={inputCls} value={head.return_date} onChange={(e) => setHead((h) => ({ ...h, return_date: e.target.value }))} /></Field>
+            <div className="md:col-span-2"><Field label="Lý do / ghi chú"><input className={inputCls} value={head.note} placeholder="VD: giao nhầm màu, hàng lỗi…" onChange={(e) => setHead((h) => ({ ...h, note: e.target.value }))} /></Field></div>
+          </div>
+          <div className="rounded-lg border border-slate-200 overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+                <th className="px-3 py-2 text-left">Sản phẩm</th><th className="px-3 py-2 text-left">Thông số · Lô</th>
+                <th className="px-3 py-2 text-right">Đã giao</th><th className="px-3 py-2 text-right">Đã trả</th>
+                <th className="px-3 py-2 text-right w-28">SL trả</th><th className="px-3 py-2 text-left w-56">Nhập về kho / vị trí</th>
+              </tr></thead>
+              <tbody className="divide-y divide-slate-100">
+                {data.lines.map((l) => (
+                  <tr key={l.trx_id}>
+                    <td className="px-3 py-2"><span className="text-blue-600 font-medium">{l.product_code}</span> · {l.product_name}</td>
+                    <td className="px-3 py-2 text-slate-500 text-xs">{specLabel(l.spec_key)} · lô {l.lot_code || "—"}</td>
+                    <td className="px-3 py-2 text-right">{fmt(l.shipped_qty)} <span className="text-xs text-slate-400">{l.unit || ""}</span></td>
+                    <td className="px-3 py-2 text-right text-slate-500">{fmt(l.returned_qty)}</td>
+                    <td className="px-3 py-2"><input type="number" min="0" step="any" disabled={left(l) <= 0} className={inputCls + " text-right no-spin"}
+                      value={qty[l.trx_id] ?? ""} placeholder={left(l) > 0 ? `≤ ${fmt(left(l))}` : "đã trả hết"}
+                      onChange={(e) => setQty((s) => ({ ...s, [l.trx_id]: e.target.value }))} /></td>
+                    <td className="px-3 py-2"><select className={inputCls} value={loc[l.trx_id] || ""} disabled={left(l) <= 0}
+                      onChange={(e) => setLoc((s) => ({ ...s, [l.trx_id]: e.target.value }))}>
+                      <option value="">-- Chọn vị trí --</option>
+                      {(lookups.locations || []).map((x) => <option key={x.id} value={x.id}>{x.warehouse_name} · {x.name}</option>)}
+                    </select></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {data.returns.length > 0 && (
+            <div className="text-xs text-slate-500">Đã trả trước đó: {data.returns.map((r) => `${r.return_code} (${fmtDate(r.return_date)}, ${fmt(r.total_qty)})`).join(" · ")}</div>
+          )}
+          <div className="text-xs text-amber-700 bg-amber-50 rounded-lg px-3 py-2">Trả hàng chỉ nhập lại kho — công nợ của phiếu giao không tự thay đổi.</div>
+          <div className="flex justify-end gap-2">
+            <button onClick={onClose} className="btn-ghost">Đóng</button>
+            <button onClick={save} disabled={saving} className="btn-primary"><RotateCcw size={16} /> {saving ? "Đang lưu…" : "Xác nhận trả hàng"}</button>
+          </div>
+        </>)}
+      </div>
+    </div>
+  );
+}
+
 function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrint }) {
   const { can, fpermSecret } = usePerm();
   const moneyPerm = fpermSecret("deliveries", "amounts");
@@ -112,6 +195,7 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
   const [noteCode, setNoteCode] = useState("");
   const [savedCustomer, setSavedCustomer] = useState(""); // khách ĐÃ LƯU của phiếu (để biết người dùng có đổi khách không)
   const [stock, setStock] = useState([]);         // tồn kho cho dòng không theo đơn
+  const [returning, setReturning] = useState(false); // hộp thoại Khách trả hàng (K-12)
   const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
 
   const isDraft = f.status === "Bản nháp";
@@ -314,6 +398,8 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
         actions={editId && !editing ? (<>
           {isDraft && can("deliveries", "approve") &&
             <button onClick={ship} className="btn-primary"><Truck size={16} /> Giao hàng</button>}
+          {PAYABLE_STATUSES.includes(f.status) && can("deliveries", "approve") &&
+            <button onClick={() => setReturning(true)} className="btn-ghost"><RotateCcw size={16} /> Khách trả hàng</button>}
           <button onClick={() => onPrint?.(editId)} className="btn-ghost"><Printer size={16} /> In phiếu</button>
           {can("deliveries", "edit") && <button onClick={() => setEditing(true)} className="btn-ghost"><Pencil size={16} /> Sửa</button>}
           {can("deliveries", "delete") && f.status === "Đã hủy" && <button onClick={del} className="btn-ghost" style={{ color: "#e11d48" }}><Trash2 size={16} /> Xóa</button>}
@@ -322,6 +408,9 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
           <button onClick={save} disabled={blockedNew} className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
             title={blockedNew ? "Khách nợ vượt hạn mức" : undefined}><Save size={16} /> Lưu phiếu</button>
         </>)} />
+
+      {returning && <ReturnModal id={editId} noteCode={noteCode} lookups={lookups}
+        onClose={() => setReturning(false)} onSaved={() => { setReturning(false); load(); }} />}
 
       {isDraft && <DebtBanner info={debtInfo} context="delivery" />}
 

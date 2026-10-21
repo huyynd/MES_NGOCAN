@@ -4,6 +4,7 @@ import { DataTable, PageHeader, UnitSelect } from "../../components.jsx";
 import { inventory } from "../../mesApi.js";
 import { usePerm } from "../../perm.jsx";
 import { inputCls, fmt, toast } from "../../ui.js";
+import { trxIsIn, defaultRange, TrxRange, byColumn } from "./trxHistory.jsx";
 
 const Field = ({ label, required, children }) => (
   <div>
@@ -14,34 +15,38 @@ const Field = ({ label, required, children }) => (
   </div>
 );
 
+const specLabel = (k) => (String(k || "").split("|").filter(Boolean).join(" · ") || "Không thông số");
+
 function TransferForm({ lookups, onSaved }) {
   const [form, setForm] = useState({
-    product_id: "", quantity: "", unit: "", lot_code: "",
+    product_id: "", quantity: "", unit: "", lot_code: "", spec_key: "",
     from_location_id: "", to_location_id: "", note: ""
   });
-  const [available, setAvailable] = useState(null);
-  const [availableLocations, setAvailableLocations] = useState(null);
+  const [stockRows, setStockRows] = useState(null);
   const [saving, setSaving] = useState(false);
   const set = (k, v) => setForm(s => ({ ...s, [k]: v }));
 
   const onProductChange = async (id) => {
     const p = (lookups.products || []).find(x => x.id === id);
-    set("product_id", id);
-    if (p) set("unit", p.unit || "");
-    setAvailable(null);
-    setAvailableLocations(null);
+    setForm(s => ({ ...s, product_id: id, unit: p?.unit || s.unit, spec_key: "", lot_code: "" }));
+    setStockRows(null);
     if (id) {
       try {
         const tree = await inventory.tree({ product_id: id });
-        // tree trả về mảng phẳng — cộng dồn quantity của tất cả dòng thuộc sản phẩm này
-        const filtered = (tree || []).filter(x => x.product_id === id);
-        const total = filtered.reduce((s, r) => s + Number(r.quantity || 0), 0);
-        const locs = [...new Set(filtered.filter(x => x.quantity > 0).map(x => x.location_id))];
-        setAvailable(total);
-        setAvailableLocations(locs);
+        setStockRows((tree || []).filter(x => x.product_id === id && Number(x.quantity) > 0));
       } catch { /* ignore */ }
     }
   };
+
+  // K-05: tồn tại KHO NGUỒN, tách theo thông số (không gộp lẫn màu / kích thước); chưa chọn nguồn = tổng mọi kho
+  const srcRows = stockRows ? stockRows.filter(r => !form.from_location_id || r.location_id === form.from_location_id) : null;
+  const specOptions = srcRows ? [...new Set(srcRows.map(r => r.spec_key))] : [];
+  const spec = form.spec_key || (specOptions.length === 1 ? specOptions[0] : "");
+  const available = srcRows
+    ? srcRows.filter(r => (!spec || r.spec_key === spec) && (!form.lot_code || r.lot_code === form.lot_code))
+        .reduce((s, r) => s + Number(r.quantity || 0), 0)
+    : null;
+  const availableLocations = stockRows ? [...new Set(stockRows.map(r => r.location_id))] : null;
 
   const save = async () => {
     if (!form.product_id) return toast.error("Chọn sản phẩm cần chuyển");
@@ -49,6 +54,7 @@ function TransferForm({ lookups, onSaved }) {
     if (!form.from_location_id) return toast.error("Chọn kho/vị trí nguồn");
     if (!form.to_location_id) return toast.error("Chọn kho/vị trí đích");
     if (form.from_location_id === form.to_location_id) return toast.error("Kho nguồn và đích không được giống nhau");
+    if (!spec && specOptions.length > 1) return toast.error("Kho nguồn có nhiều thông số — vui lòng chọn thông số cần chuyển");
     // Chặn cứng ở frontend trước khi gọi API
     if (available !== null && Number(form.quantity) > available)
       return toast.error(`Không đủ tồn kho — tồn hiện có: ${available} ${form.unit}`);
@@ -63,15 +69,15 @@ function TransferForm({ lookups, onSaved }) {
         quantity: Number(form.quantity),
         unit: form.unit,
         lot_code: form.lot_code || "",
+        spec_key: spec || null,
         note: form.note || "",
       });
       toast.success(result?.message || "Chuyển kho thành công!");
       setForm({
-        product_id: "", quantity: "", unit: "", lot_code: "",
+        product_id: "", quantity: "", unit: "", lot_code: "", spec_key: "",
         from_location_id: "", to_location_id: "", note: ""
       });
-      setAvailable(null);
-      setAvailableLocations(null);
+      setStockRows(null);
       onSaved();
     } catch (e) {
       toast.error("Lỗi chuyển kho: " + e.message);
@@ -127,7 +133,8 @@ function TransferForm({ lookups, onSaved }) {
           <div className="flex items-center gap-4">
             <div className="flex-1">
               <Field label="Kho / Vị trí nguồn" required>
-                <select className={inputCls} value={form.from_location_id} onChange={e => set("from_location_id", e.target.value)}>
+                <select className={inputCls} value={form.from_location_id}
+                  onChange={e => setForm(s => ({ ...s, from_location_id: e.target.value, spec_key: "" }))}>
                   <option value="">-- Kho xuất hàng --</option>
                   {fromLocationsToShow.map(l => (
                     <option key={l.id} value={l.id}>{l.warehouse_name} · {l.name}</option>
@@ -162,7 +169,17 @@ function TransferForm({ lookups, onSaved }) {
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+          <Field label="Thông số">
+            {specOptions.length > 1 ? (
+              <select className={`${inputCls} ${!spec ? "border-amber-400" : ""}`} value={form.spec_key} onChange={e => set("spec_key", e.target.value)}>
+                <option value="">-- Chọn thông số --</option>
+                {specOptions.map(k => <option key={k} value={k}>{specLabel(k)}</option>)}
+              </select>
+            ) : (
+              <div className={`${inputCls} bg-slate-50 text-slate-500`}>{specOptions.length === 1 ? specLabel(specOptions[0]) : "—"}</div>
+            )}
+          </Field>
           <Field label="Số lô">
             <input className={inputCls} placeholder="Mã lô sản xuất (nếu có)" value={form.lot_code}
               onChange={e => set("lot_code", e.target.value)} />
@@ -186,25 +203,25 @@ function TransferForm({ lookups, onSaved }) {
 function TransferHistory() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [range, setRange] = useState(defaultRange());
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      // Get both inbound+outbound for "Chuyển kho" notes
-      const all = await inventory.transactions({});
-      setRows((all || []).filter(r => (r.note || "").includes("Chuyển kho")));
+      // K-19: chuyển kho có loại giao dịch riêng → lọc ở server (trước đây tải 300 dòng rồi lọc theo ghi chú)
+      setRows(await inventory.transactions({ trx_type: "Chuyển kho", ...range, limit: 2000 }));
     } catch (e) { toast.error("Lỗi: " + e.message); }
     finally { setLoading(false); }
-  }, []);
+  }, [range]);
   useEffect(() => { load(); }, [load]);
 
-  const TRX_COLOR = { "Nhập": "bg-emerald-50 text-emerald-700", "Xuất": "bg-rose-50 text-rose-700" };
   const columns = [
     { key: "created_at", label: "Thời gian", render: r => new Date(r.created_at).toLocaleString("vi-VN") },
-    { key: "trx_type", label: "Loại", render: r => <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${TRX_COLOR[r.trx_type] || ""}`}>{r.trx_type}</span> },
+    { key: "trx_type", label: "Loại", render: r => <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${trxIsIn(r) ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"}`}>{trxIsIn(r) ? "Chuyển đến" : "Chuyển đi"}</span> },
     { key: "product_code", label: "Mã SP", filter: "text", tdClass: "font-medium text-blue-600" },
     { key: "product_name", label: "Sản phẩm", filter: "select" },
     { key: "quantity", label: "Số lượng", align: "right", render: r => <span className="font-semibold">{fmt(r.quantity)}</span> },
     { key: "warehouse_name", label: "Kho/Vị trí", render: r => r.warehouse_name ? `${r.warehouse_name}${r.location_name ? " · " + r.location_name : ""}` : "—" },
+    byColumn,
     { key: "note", label: "Chi tiết", tdClass: "text-slate-500 text-xs" },
   ];
 
@@ -214,6 +231,8 @@ function TransferHistory() {
         <div className="flex items-center gap-2 font-semibold text-slate-700">
           <History size={16} /> Lịch sử chuyển kho
         </div>
+        <div className="flex-1" />
+        <div className="mr-3"><TrxRange value={range} onChange={setRange} /></div>
         <button onClick={load} className="btn-ghost text-sm flex items-center gap-1.5">
           <RefreshCcw size={14} className={loading ? "animate-spin" : ""} /> Làm mới
         </button>

@@ -4,6 +4,7 @@ import { DataTable, PageHeader, UnitSelect, SearchSelect } from "../../component
 import { inventory } from "../../mesApi.js";
 import { usePerm } from "../../perm.jsx";
 import { inputCls, fmt, fmtDate, toast, todayYmd } from "../../ui.js";
+import { defaultRange, TrxRange, byColumn } from "./trxHistory.jsx";
 
 const Field = ({ label, required, children }) => (
   <div>
@@ -17,8 +18,24 @@ const Field = ({ label, required, children }) => (
 const OUTBOUND_PURPOSES = ["Giao cho khách hàng", "Xuất cho sản xuất", "Xuất trả NCC", "Hủy / Phế liệu", "Chuyển kho", "Khác"];
 
 const emptyLine = () => ({
-  _k: Math.random(), product_id: "", quantity: "", unit: "", lot_code: "", available: null, availableLots: [], availableLocations: null, note: ""
+  _k: Math.random(), product_id: "", quantity: "", unit: "", lot_code: "", spec_key: "", rows: null, note: ""
 });
+
+const specLabel = (k) => (String(k || "").split("|").filter(Boolean).join(" · ") || "Không thông số");
+const newRef = () => `XK${new Date().toISOString().replace(/\D/g, '').slice(2, 14)}${Math.floor(Math.random() * 90 + 10)}`;
+
+// Tồn của 1 dòng phiếu tại vị trí xuất, tách theo thông số / lô (K-04/K-05: không gộp lẫn màu, kích thước)
+function lineStock(l, locId) {
+  if (!l.rows) return { available: null, specs: [], lots: [], spec: "", lot: "" };
+  const locRows = l.rows.filter(r => Number(r.quantity) > 0 && (!locId || r.location_id === locId));
+  const specs = [...new Set(locRows.map(r => r.spec_key))];
+  const spec = l.spec_key || (specs.length === 1 ? specs[0] : "");
+  const specRows = spec ? locRows.filter(r => r.spec_key === spec) : locRows;
+  const lots = [...new Set(specRows.filter(r => r.lot_code).map(r => r.lot_code))];
+  const lot = l.lot_code || (lots.length === 1 ? lots[0] : "");
+  const available = (lot ? specRows.filter(r => r.lot_code === lot) : specRows).reduce((s, r) => s + Number(r.quantity || 0), 0);
+  return { available, specs, lots, spec, lot };
+}
 
 function OutboundForm({ lookups, onSaved }) {
   const [header, setHeader] = useState({
@@ -27,62 +44,29 @@ function OutboundForm({ lookups, onSaved }) {
   });
   const [lines, setLines] = useState([emptyLine()]);
   const [saving, setSaving] = useState(false);
-  // Ref lưu location_id hiện tại để dùng trong async callbacks
-  const locationRef = React.useRef("");
+  // K-03: số phiếu tự sinh cố định cho mỗi lần lập phiếu → gửi trùng (bấm đúp) bị backend từ chối
+  const autoRef = React.useRef(newRef());
+  const busy = React.useRef(false);
 
   const setH = (k, v) => setHeader(s => ({ ...s, [k]: v }));
   const setLine = (k, field, v) => setLines(a => a.map(l => l._k === k ? { ...l, [field]: v } : l));
 
-  // Lấy tồn kho của 1 sản phẩm tại vị trí đang chọn
-  const fetchAvailable = async (product_id) => {
-    if (!product_id) return { total: null, lots: [], locations: [] };
-    try {
-      const tree = await inventory.tree({ product_id });
-      const availableLocations = [...new Set((tree || []).filter(r => r.quantity > 0 && r.location_id).map(r => r.location_id))];
-      const locId = locationRef.current;
-      // Nếu đã chọn kho: chỉ tính tồn tại kho đó
-      // Nếu chưa chọn kho: tính tồn tích lũy toàn bộ
-      const rows = locId
-        ? (tree || []).filter(x => x.product_id === product_id && x.location_id === locId)
-        : (tree || []).filter(x => x.product_id === product_id);
-      const total = rows.reduce((s, r) => s + Number(r.quantity || 0), 0);
-      const lots = [...new Set(rows.filter(r => r.quantity > 0 && r.lot_code).map(r => r.lot_code))];
-      return { total, lots, locations: availableLocations };
-    } catch { return { total: null, lots: [], locations: [] }; }
-  };
-
   const onProductChange = async (k, id) => {
     const p = (lookups.products || []).find(x => x.id === id);
-    setLines(a => a.map(l => l._k === k ? { ...l, product_id: id, unit: p?.unit || "", available: null, availableLots: [], availableLocations: null } : l));
+    setLines(a => a.map(l => l._k === k ? { ...l, product_id: id, unit: p?.unit || "", spec_key: "", lot_code: "", rows: null } : l));
     if (id) {
-      const { total, lots, locations } = await fetchAvailable(id);
-      setLines(a => a.map(l => l._k === k ? { 
-        ...l, 
-        available: total, 
-        availableLots: lots,
-        availableLocations: locations,
-        lot_code: lots.length === 1 ? lots[0] : (l.lot_code || "") 
-      } : l));
+      try {
+        const tree = await inventory.tree({ product_id: id });
+        const rows = (tree || []).filter(r => r.product_id === id);
+        setLines(a => a.map(l => l._k === k && l.product_id === id ? { ...l, rows } : l));
+      } catch { /* ignore */ }
     }
   };
 
-  // Khi đổi kho xuất: cập nhật lại tồn kho của tất cả dòng hàng
-  const onLocationChange = async (locId) => {
-    locationRef.current = locId;
+  // Đổi kho xuất: thông số / lô đã chọn có thể không còn ở vị trí mới → chọn lại
+  const onLocationChange = (locId) => {
     setH("location_id", locId);
-    // Reset available rồi fetch lại
-    setLines(a => a.map(l => ({ ...l, available: null, availableLots: [] })));
-    const currentLines = lines.filter(l => l.product_id);
-    for (const l of currentLines) {
-      const { total, lots, locations } = await fetchAvailable(l.product_id);
-      setLines(a => a.map(x => x._k === l._k ? { 
-        ...x, 
-        available: total,
-        availableLots: lots,
-        availableLocations: locations,
-        lot_code: lots.length === 1 ? lots[0] : (x.lot_code || "")
-      } : x));
-    }
+    setLines(a => a.map(l => ({ ...l, spec_key: "", lot_code: "" })));
   };
 
   const addLine = () => setLines(a => [...a, emptyLine()]);
@@ -90,8 +74,14 @@ function OutboundForm({ lookups, onSaved }) {
 
   const save = async () => {
     if (!header.location_id) return toast.error("Chọn kho / vị trí xuất hàng");
-    const validLines = lines.filter(l => l.product_id && Number(l.quantity) > 0);
+    const validLines = lines.filter(l => l.product_id && Number(l.quantity) > 0)
+      .map(l => ({ ...l, ...lineStock(l, header.location_id) }));
     if (!validLines.length) return toast.error("Nhập ít nhất 1 sản phẩm với số lượng > 0");
+    const noSpec = validLines.filter(l => !l.spec && l.specs.length > 1);
+    if (noSpec.length) {
+      const names = noSpec.map(l => (lookups.products || []).find(x => x.id === l.product_id)?.product_code || "").join(", ");
+      return toast.error(`Sản phẩm ${names} có nhiều thông số tại vị trí này — vui lòng chọn thông số cần xuất.`);
+    }
 
     // Chặn cứng: không cho phép xuất kho khi số lượng vượt tồn hiện có
     const overStock = validLines.filter(l => l.available !== null && Number(l.quantity) > l.available);
@@ -103,48 +93,59 @@ function OutboundForm({ lookups, onSaved }) {
       return toast.error(`Không đủ tồn kho — vui lòng kiểm tra lại:\n${details}`);
     }
 
+    if (busy.current) return;
+    busy.current = true;
     setSaving(true);
-    const finalRef = header.ref_code.trim() || `XK${new Date().toISOString().replace(/\D/g, '').slice(2, 14)}`;
+    const finalRef = header.ref_code.trim() || autoRef.current;
     try {
       if (header.purpose === "Giao cho khách hàng") {
         await inventory.createOutboundSlip({
           purpose: header.purpose,
           location_id: header.location_id,
           note: header.note,
-          lines: validLines
+          lines: validLines.map(l => ({
+            product_id: l.product_id, quantity: Number(l.quantity), unit: l.unit,
+            lot_code: l.lot, spec_key: l.spec || null, note: l.note,
+          })),
         });
         toast.success(`Đã tạo Phiếu chờ xuất kho cho khách hàng!`);
       } else {
-        await Promise.all(validLines.map(l =>
-          inventory.adjust({
+        // K-03: cả phiếu là MỘT request / MỘT transaction — 1 dòng thiếu tồn thì không dòng nào bị trừ
+        await inventory.adjust({
+          trx_type: "Xuất",
+          location_id: header.location_id,
+          ref_code: finalRef,
+          lines: validLines.map(l => ({
             product_id: l.product_id,
             quantity: Number(l.quantity),
             unit: l.unit,
-            location_id: header.location_id,
-            lot_code: l.lot_code || "",
-            trx_type: "Xuất",
-            ref_code: finalRef,
+            lot_code: l.lot,
+            spec_key: l.spec || null,
             note: [header.purpose, header.note, l.note].filter(Boolean).join(" | "),
-          })
-        ));
+          })),
+        });
         toast.success(`Đã xuất kho ${validLines.length} dòng sản phẩm thành công!`);
       }
       setLines([emptyLine()]);
       setHeader(h => ({ ...h, ref_code: "" }));
+      autoRef.current = newRef();
       onSaved();
     } catch (e) {
       toast.error("Lỗi: " + e.message);
     } finally {
+      busy.current = false;
       setSaving(false);
     }
   };
 
-  const selectedProductLines = lines.filter(l => l.product_id && l.availableLocations);
+  // Chỉ hiện vị trí mà MỌI sản phẩm đã chọn đều còn hàng
+  const selectedProductLines = lines.filter(l => l.product_id && l.rows);
   let validLocationIds = null;
   if (selectedProductLines.length > 0) {
     validLocationIds = selectedProductLines.reduce((acc, l) => {
-      if (acc === null) return new Set(l.availableLocations);
-      return new Set([...acc].filter(x => l.availableLocations.includes(x)));
+      const locs = new Set(l.rows.filter(r => Number(r.quantity) > 0 && r.location_id).map(r => r.location_id));
+      if (acc === null) return locs;
+      return new Set([...acc].filter(x => locs.has(x)));
     }, null);
   }
 
@@ -196,6 +197,7 @@ function OutboundForm({ lookups, onSaved }) {
               <thead>
                 <tr className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
                   <th className="px-3 py-2.5 text-left">Sản phẩm *</th>
+                  <th className="px-3 py-2.5 w-44">Thông số</th>
                   <th className="px-3 py-2.5 text-right w-28">Tồn hiện tại</th>
                   <th className="px-3 py-2.5 text-right w-28">Số lượng *</th>
                   <th className="px-3 py-2.5 w-24">Đơn vị</th>
@@ -206,7 +208,8 @@ function OutboundForm({ lookups, onSaved }) {
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {lines.map(l => {
-                  const overQty = l.available !== null && Number(l.quantity) > l.available;
+                  const st = lineStock(l, header.location_id);
+                  const overQty = st.available !== null && Number(l.quantity) > st.available;
                   return (
                     <tr key={l._k} className={`hover:bg-slate-50/50 ${overQty ? "bg-rose-50/40" : ""}`}>
                       <td className="px-3 py-2">
@@ -217,9 +220,18 @@ function OutboundForm({ lookups, onSaved }) {
                           placeholder="-- Chọn sản phẩm --"
                         />
                       </td>
+                      <td className="px-3 py-2">
+                        {st.specs.length > 1 ? (
+                          <select className={`${inputCls} ${!st.spec ? "border-amber-400" : ""}`} value={l.spec_key}
+                            onChange={e => setLines(a => a.map(x => x._k === l._k ? { ...x, spec_key: e.target.value, lot_code: "" } : x))}>
+                            <option value="">-- Chọn thông số --</option>
+                            {st.specs.map(k => <option key={k} value={k}>{specLabel(k)}</option>)}
+                          </select>
+                        ) : <span className="text-xs text-slate-500">{st.specs.length === 1 ? specLabel(st.specs[0]) : "—"}</span>}
+                      </td>
                       <td className="px-3 py-2 text-right">
-                        {l.available !== null
-                          ? <span className={`font-medium ${l.available <= 0 ? "text-rose-600" : "text-slate-600"}`}>{fmt(l.available)}</span>
+                        {st.available !== null
+                          ? <span className={`font-medium ${st.available <= 0 ? "text-rose-600" : "text-slate-600"}`}>{fmt(st.available)}</span>
                           : <span className="text-slate-300">—</span>
                         }
                       </td>
@@ -234,12 +246,12 @@ function OutboundForm({ lookups, onSaved }) {
                         <UnitSelect value={l.unit} onChange={v => setLine(l._k, "unit", v)} />
                       </td>
                       <td className="px-3 py-2">
-                        <input className={inputCls} placeholder="Số lô" value={l.lot_code || ""}
+                        <input className={inputCls} placeholder={st.lots.length === 1 ? st.lots[0] : "Số lô"} value={l.lot_code || ""}
                           list={`lot-${l._k}`}
                           onChange={e => setLine(l._k, "lot_code", e.target.value)} />
-                        {l.availableLots && l.availableLots.length > 0 && (
+                        {st.lots.length > 0 && (
                           <datalist id={`lot-${l._k}`}>
-                            {l.availableLots.map(lot => <option key={lot} value={lot} />)}
+                            {st.lots.map(lot => <option key={lot} value={lot} />)}
                           </datalist>
                         )}
                       </td>
@@ -411,12 +423,13 @@ function PendingSlips({ canConfirm, onConfirmed }) {
 function OutboundHistory() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [range, setRange] = useState(defaultRange());
   const load = useCallback(async () => {
     setLoading(true);
-    try { setRows(await inventory.transactions({ trx_type: "Xuất" })); }
+    try { setRows(await inventory.transactions({ trx_type: "Xuất", ...range, limit: 2000 })); }
     catch (e) { toast.error("Lỗi: " + e.message); }
     finally { setLoading(false); }
-  }, []);
+  }, [range]);
   useEffect(() => { load(); }, [load]);
 
   const columns = [
@@ -427,6 +440,7 @@ function OutboundHistory() {
     { key: "warehouse_name", label: "Kho/Vị trí", render: r => r.warehouse_name ? `${r.warehouse_name}${r.location_name ? " · " + r.location_name : ""}` : "—" },
     { key: "lot_code", label: "Lô", render: r => r.lot_code || "—" },
     { key: "ref_code", label: "Số phiếu", filter: "text", render: r => r.ref_code || "—" },
+    byColumn,
     { key: "note", label: "Ghi chú / Mục đích", tdClass: "text-slate-400 text-xs" },
   ];
 
@@ -436,6 +450,8 @@ function OutboundHistory() {
         <div className="flex items-center gap-2 font-semibold text-slate-700">
           <History size={16} /> Lịch sử phiếu xuất
         </div>
+        <div className="flex-1" />
+        <div className="mr-3"><TrxRange value={range} onChange={setRange} /></div>
         <button onClick={load} className="btn-ghost text-sm flex items-center gap-1.5">
           <RefreshCcw size={14} className={loading ? "animate-spin" : ""} /> Làm mới
         </button>

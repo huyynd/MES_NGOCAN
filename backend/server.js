@@ -11,6 +11,14 @@ const { ensureSeedAdmin } = require('./src/modules/auth/authController');
 
 const app = express();
 
+// ── IP thật của người dùng khi chạy sau proxy (Render, Nginx...) ──────────────
+// Không có dòng này, sau proxy mọi request đều mang IP của proxy → giới hạn đăng nhập / tần suất
+// bị tính CHUNG cho cả công ty. TRUST_PROXY = số tầng proxy phía trước (Render: 1).
+// Chạy trực tiếp (máy dev, LAN) thì để trống: KHÔNG tin header X-Forwarded-For (tránh giả IP).
+// Trên Render tự bật 1 tầng (Render luôn đặt biến môi trường RENDER).
+const trustProxy = process.env.TRUST_PROXY ?? (process.env.RENDER ? '1' : '');
+if (trustProxy !== '') app.set('trust proxy', /^\d+$/.test(trustProxy) ? Number(trustProxy) : trustProxy);
+
 // ── Bảo mật HTTP Headers ──────────────────────────────────────────────────────
 app.use(helmet());
 
@@ -37,19 +45,21 @@ app.use(cors({
 }));
 
 // ── Rate limiting ─────────────────────────────────────────────────────────────
-// Giới hạn chung: 200 req / phút / IP
+// Giới hạn chung theo IP. Cả xưởng dùng chung 1 Wi-Fi = 1 IP (nhiều điện thoại + máy tính)
+// nên mặc định 1000 req / phút / IP; chỉnh bằng RATE_LIMIT_PER_MIN nếu cần.
 app.use(rateLimit({
   windowMs: 60 * 1000,
-  max: 200,
+  max: Number(process.env.RATE_LIMIT_PER_MIN) || 1000,
   standardHeaders: true,
   legacyHeaders: false,
   message: { message: 'Quá nhiều yêu cầu, vui lòng thử lại sau.' },
 }));
 
-// Giới hạn nghiêm hơn cho endpoint đăng nhập: 10 req / phút / IP
+// Giới hạn số lần gọi đăng nhập theo IP: 60 lần / phút (đầu ca cả xưởng đăng nhập cùng lúc).
+// Chống dò mật khẩu thật sự nằm ở authController (khóa theo tài khoản + IP / tài khoản / IP).
 app.use('/api/auth/login', rateLimit({
   windowMs: 60 * 1000,
-  max: 10,
+  max: Number(process.env.LOGIN_RATE_LIMIT_PER_MIN) || 60,
   standardHeaders: true,
   legacyHeaders: false,
   message: { message: 'Quá nhiều lần thử đăng nhập, vui lòng thử lại sau.' },

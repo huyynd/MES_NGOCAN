@@ -11,6 +11,9 @@ router.get('/deliveries/deliverable', deliveries.deliverable); // dòng đơn gi
 router.get('/deliveries/:id', deliveries.getById);
 router.put('/deliveries/:id', requirePerm('deliveries:edit'), deliveries.update);
 router.post('/deliveries/:id/ship', requirePerm('deliveries:approve'), deliveries.ship);
+// K-12: khách trả hàng — nhập lại kho đúng lô / thông số đã giao
+router.get('/deliveries/:id/returns', deliveries.returnable);
+router.post('/deliveries/:id/returns', requirePerm('deliveries:approve'), deliveries.createReturn);
 router.delete('/deliveries/:id', requirePerm('deliveries:delete'), deliveries.remove);
 
 module.exports = router;

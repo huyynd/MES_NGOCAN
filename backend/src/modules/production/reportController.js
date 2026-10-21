@@ -1,5 +1,6 @@
 const db = require('../../core/db');
 const { upUnit } = require('../../core/lib/units');
+const { hasAppPerm } = require('../../core/requireAuth');
 
 // A5: nguồn tồn kho cho báo cáo — bỏ tồn của SP / kho / vị trí đã xóa (cùng điều kiện màn Tồn kho)
 // G3: kỳ báo cáo — nhận cả fromDate/toDate lẫn from/to (các màn cũ dùng khác nhau), không đổi tham số cũ
@@ -411,7 +412,15 @@ async function employeeRows({ fromDate, toDate, stage, shift, team, orderCode } 
 
 exports.employees = async (req, res) => {
   try {
-    res.json({ data: await employeeRows({ ...req.query, ...periodOf(req.query) }) });
+    let rows = await employeeRows({ ...req.query, ...periodOf(req.query) });
+    // Tài khoản gắn với 1 công nhân (linked_worker) mà không được cấp xem "Hiệu suất nhân viên" / "Báo cáo giám đốc"
+    // → chỉ thấy số của chính mình (giống /reports/employees/:worker/tasks). Tài khoản văn phòng (không gắn) giữ nguyên.
+    const u = req.user;
+    if (u && !u.is_admin && u.linked_worker
+        && !hasAppPerm(req, 'rep_employee', 'view') && !hasAppPerm(req, 'rep_director', 'view')) {
+      rows = rows.filter((r) => r.worker === u.linked_worker);
+    }
+    res.json({ data: rows });
   } catch (err) { console.error(err); res.status(500).json({ message: 'L\u1ed7i khi l\u1ea5y b\u00e1o c\u00e1o nh\u00e2n vi\u00ean' }); }
 };
 
