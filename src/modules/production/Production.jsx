@@ -744,7 +744,10 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
         </fieldset>
       </Section>
       )}
+      </fieldset>
 
+      {/* Phân công nằm NGOÀI fieldset chế độ xem: tích chọn + Hoàn thành dùng được ngay không cần bấm Sửa;
+          các ô nhập vẫn khóa khi chưa Sửa (dis). */}
       {editId && !fhid("tasks") && (
         <Section title="Phân công sản xuất — chia lệnh nhỏ (công đoạn + sản lượng)"
           action={!fdis("tasks") && !locked && (
@@ -814,14 +817,14 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
                           {/* THỰC TẾ: total cộng dồn so với SL cần SX — ràng buộc ≤ 150% */}
                           <td className={`py-2 pr-2 font-semibold ${actOver ? "text-rose-600" : actMet ? "text-emerald-600" : "text-slate-600"}`} title={actOver ? `Vượt 150% SL cần SX (tối đa ${fmt(capStage)})` : undefined}>Σ {fmt(sumAct)} / {fmt(qtyReq)}{actOver ? " ⚠ >150%" : actMet ? " ✓" : ""}</td>
                           <td className="py-2 pr-2 text-right" colSpan={3}>
-                            {!fdis("tasks") && <button type="button" onClick={() => addTaskFor(stg)} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-blue-200 bg-white text-blue-600 text-xs font-medium hover:bg-blue-50 hover:border-blue-300 shadow-sm transition-colors"><Plus size={15} /> Thêm lần {stg.toLowerCase()}</button>}
+                            {!fdis("tasks") && editing && <button type="button" onClick={() => addTaskFor(stg)} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-blue-200 bg-white text-blue-600 text-xs font-medium hover:bg-blue-50 hover:border-blue-300 shadow-sm transition-colors"><Plus size={15} /> Thêm lần {stg.toLowerCase()}</button>}
                           </td>
                         </tr>
                         {/* Các dòng CON: từng lần làm (ẩn khi thu gọn) */}
                         {isOpen && rows.map((t) => {
                           const qtyOver = (Number(t.quantity) || 0) > capStage + 1e-6; // sản lượng 1 lần vượt 150%
                           const rowLocked = t.status === 'Hoàn thành'; // dòng đã hoàn thành: bất biến
-                          const dis = rowLocked; // khóa mọi ô nhập
+                          const dis = rowLocked || !editing; // khóa mọi ô nhập (dòng đã xong / chưa bấm Sửa)
                           return (
                           <tr key={t._k} className={`border-b border-slate-100${rowLocked ? " bg-emerald-50/40" : ""}`}>
                             <td className="py-1.5 pr-2 pl-6">{rowLocked && <Lock size={13} className="text-emerald-600 inline" />}</td>
@@ -876,7 +879,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
                                   </div>
                                 ))}
                             </td>
-                            <td className="py-1.5 text-center">{!rowLocked && <button disabled={dis} onClick={() => rmTask(t._k)} className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={16} /></button>}</td>
+                            <td className="py-1.5 text-center">{!dis && <button onClick={() => rmTask(t._k)} className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={16} /></button>}</td>
                           </tr>
                           );
                         })}
@@ -892,12 +895,13 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
           </fieldset>
         </Section>
       )}
-      </fieldset>
 
       {/* Hộp xác nhận lô cuộn khi hoàn thành công đoạn Cắt */}
       {cutModal && (() => {
         const cutQty = tasks.filter((t) => cutModal.codes.includes(t.task_code) && t.stage === 'Cắt').reduce((s, t) => s + (Number(t.actual_qty) || 0), 0);
-        const enough = cutModal.total_kg >= cutQty - 1e-6;
+        // Dòng Thổi hoàn thành cùng đợt được ghi kho TRƯỚC Cắt → cuộn của nó cũng dùng được để cắt
+        const blowQty = tasks.filter((t) => cutModal.codes.includes(t.task_code) && t.stage === 'Thổi').reduce((s, t) => s + (Number(t.actual_qty) || 0), 0);
+        const enough = cutModal.total_kg + blowQty >= cutQty - 1e-6;
         return (
         <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center p-4 z-[70]">
           <div className="bg-white rounded-lg shadow-xl w-full max-w-lg flex flex-col max-h-[90vh]">
@@ -907,7 +911,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
             </div>
             <div className="p-4 overflow-y-auto space-y-3 text-sm">
               <p>Thông số: <b>{cutModal.spec_label}</b></p>
-              <p>Cần cắt: <b>{fmt(cutQty)} kg</b> · Tồn cuộn khả dụng: <b className={enough ? "text-emerald-600" : "text-rose-600"}>{fmt(cutModal.total_kg)} kg</b></p>
+              <p>Cần cắt: <b>{fmt(cutQty)} kg</b> · Tồn cuộn khả dụng: <b className={enough ? "text-emerald-600" : "text-rose-600"}>{fmt(cutModal.total_kg + blowQty)} kg</b>{blowQty > 0 && <span className="text-slate-500"> (gồm {fmt(blowQty)} kg từ Thổi cùng đợt)</span>}</p>
               {!enough && <p className="text-rose-600 font-medium">⚠ Không đủ cuộn để cắt — hệ thống sẽ chặn khi xác nhận.</p>}
               <p className="text-slate-500">Các lô sẽ bị trừ (ưu tiên lô của lệnh rồi FIFO). Tích <b>"Đã hết cuộn"</b> để xóa phần kg dư của lô sau khi cắt (ghi "Điều chỉnh – Hao hụt cắt"):</p>
               <div className="border border-slate-200 rounded-lg divide-y divide-slate-100">
