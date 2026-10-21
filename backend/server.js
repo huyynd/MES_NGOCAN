@@ -9,6 +9,8 @@ const apiRouter = require('./src/routes');
 const requireAuth = require('./src/core/requireAuth');
 const { ensureSeedAdmin } = require('./src/modules/auth/authController');
 
+// Deploy marker: cấu hình môi trường (đặc biệt DATABASE_URL) được quản lý trên Render, không commit file .env.
+
 const app = express();
 
 // ── IP thật của người dùng khi chạy sau proxy (Render, Nginx...) ──────────────
