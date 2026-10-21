@@ -458,6 +458,9 @@ exports.update = async (req, res) => {
         if (changed.length) {
           return res.status(400).json({ message: `Lệnh tạo từ đơn hàng — ${changed.join(', ')} kế thừa từ đơn, không sửa ở lệnh sản xuất. Hãy sửa ở đơn hàng (hoặc hủy lệnh rồi lên kế hoạch lại).` });
         }
+        // Thông số cũng KẾ THỪA từ dòng đơn: bỏ qua thông số form gửi lên (trước đây form kiểu cũ ghi đè,
+        // làm mất Số lớp và gộp "Rộng × Dài" → hàng nhập kho lệch thông số với đơn, phiếu giao không thấy hàng).
+        for (const k of ['specs', 'attr_size', 'attr_thickness', 'attr_color']) delete b[k];
       }
       if (cur && cur.status === 'Hoàn thành') {
         // Kiểm tra xem có công đoạn chưa đủ thông tin không
@@ -492,7 +495,7 @@ exports.update = async (req, res) => {
         const specKeys = ['specs', 'attr_size', 'attr_thickness', 'attr_color'];
         if (specKeys.some((k) => b[k] !== undefined)) {
           const curKey = cur.spec_key != null ? cur.spec_key : buildSpecKey(cur.specs || {});
-          if (buildSpecKey(specsFromBody(b)) !== curKey) changed.push('thông số');
+          if (buildSpecKey(specsFromBody(b, cur.specs)) !== curKey) changed.push('thông số');
         }
         if (changed.length) {
           return res.status(400).json({ message: `Lệnh đã có sản lượng nhập kho — không đổi được ${changed.join(', ')}. Hãy đưa SL thực các lần về 0 (kho tự trừ lại) rồi mới đổi, hoặc tạo lệnh mới.` });
@@ -535,7 +538,11 @@ exports.update = async (req, res) => {
       cols.push(`finishing = $${i++}::jsonb`); vals.push(JSON.stringify(finishing));
     }
     if (!restrictToAssignment && (b.specs !== undefined || b.attr_size !== undefined || b.attr_thickness !== undefined || b.attr_color !== undefined)) {
-      const specs = specsFromBody(b);
+      // Client cũ chỉ gửi attr_* → giữ các thông số đang có mà attr_* không mang (Số lớp…)
+      const curSpecs = b.specs === undefined
+        ? (await db.query(`SELECT specs FROM production_orders WHERE id = $1`, [req.params.id])).rows[0]?.specs
+        : null;
+      const specs = specsFromBody(b, curSpecs);
       const a = legacyAttrs(specs);
       cols.push(`specs = $${i++}::jsonb`); vals.push(JSON.stringify(specs));
       cols.push(`spec_key = $${i++}`); vals.push(buildSpecKey(specs));

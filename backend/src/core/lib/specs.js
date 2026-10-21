@@ -29,16 +29,30 @@ function legacyAttrs(specs) {
   return { size, thickness: s['Độ dày'] || '', color: s['Màu sắc'] || '' };
 }
 
-// Lấy specs từ body: ưu tiên body.specs (object), nếu không có thì dựng từ attr_* cũ
-function specsFromBody(b) {
+// attr_size kiểu cũ "Rộng × Dài" (đúng chiều legacyAttrs ghép ra) → tách về 2 thông số riêng.
+// Trước đây cả chuỗi bị nhét vào "Chiều dài" → spec_key lệch với đơn hàng, phiếu giao không thấy hàng.
+function splitLegacySize(size) {
+  const s = String(size || '').trim();
+  const m = s.split(/\s*[×xX]\s*/);
+  if (m.length === 2 && (m[0] || m[1])) return { ngang: m[0].trim(), dai: m[1].trim() };
+  return { ngang: '', dai: s };
+}
+
+// Lấy specs từ body: ưu tiên body.specs (object), nếu không có thì dựng từ attr_* cũ.
+// base: thông số đang có (khi SỬA) — giữ lại các thông số form cũ không gửi (vd Số lớp).
+function specsFromBody(b, base = null) {
   if (b && b.specs && typeof b.specs === 'object') return cleanSpecs(b.specs);
-  const o = {};
+  const o = { ...cleanSpecs(base || {}) };
   if (b) {
-    if (b.attr_color) o['Màu sắc'] = String(b.attr_color).trim();
-    if (b.attr_thickness) o['Độ dày'] = String(b.attr_thickness).trim();
-    if (b.attr_size) o['Chiều dài'] = String(b.attr_size).trim();
+    const put = (k, v) => { if (v) o[k] = String(v).trim(); else delete o[k]; };
+    if (b.attr_color !== undefined) put('Màu sắc', b.attr_color);
+    if (b.attr_thickness !== undefined) put('Độ dày', b.attr_thickness);
+    if (b.attr_size !== undefined) {
+      const { ngang, dai } = splitLegacySize(b.attr_size);
+      put('Chiều ngang (Rộng)', ngang); put('Chiều dài', dai);
+    }
   }
   return cleanSpecs(o);
 }
 
-module.exports = { SPEC_NAMES, cleanSpecs, buildSpecKey, legacyAttrs, specsFromBody };
+module.exports = { SPEC_NAMES, cleanSpecs, buildSpecKey, legacyAttrs, specsFromBody, splitLegacySize };

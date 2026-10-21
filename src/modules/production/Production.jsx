@@ -7,6 +7,7 @@ import { inputCls, fmt, fmtDate, statusClass, toast } from "../../ui.js";
 import { PageHeader, Section, ListHeader, DataTable, UnitSelect, SearchSelect } from "../../components.jsx";
 import { PackageCheck, CheckCircle2, Lock, RotateCcw } from "lucide-react";
 import Qr from "../../Qr.jsx";
+import { SpecFields } from "../../SpecFields.jsx";
 import ProductionGantt from "./ProductionGantt.jsx";
 
 const STATUSES = ["Chờ duyệt", "Đã lên kế hoạch", "Chờ nguyên vật liệu", "Đang sản xuất", "Hoàn thành", "Đã hủy"];
@@ -25,7 +26,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
   const fhid = (k) => fperm("production", k) === "hidden";
   const fdis = (k) => fperm("production", k) !== "edit";
   const [f, setF] = useState({
-    attr_size: "", attr_thickness: "", attr_color: "", due_date: "", note: "", priority: "Trung bình", material_type: null, mix_ratio: [], status: ""
+    specs: {}, due_date: "", note: "", priority: "Trung bình", material_type: null, mix_ratio: [], status: ""
   });
   const [finishing, setFinishing] = useState(
     (lookups.finishingOptions || []).map((name) => ({ name, checked: false }))
@@ -239,7 +240,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
       setMeta(d);
       setF({
         product_id: d.product_id, customer_id: d.customer_id || "", quantity: d.quantity, unit: d.unit || "",
-        attr_size: d.attr_size || "", attr_thickness: d.attr_thickness || "", attr_color: d.attr_color || "",
+        specs: d.specs || {},
         due_date: d.due_date?.slice(0, 10) || "", note: d.note || "", priority: d.priority || "Trung bình",
         material_type: d.material_type || null, mix_ratio: d.mix_ratio || [], status: d.status || ""
       });
@@ -308,7 +309,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
     production.get(copyId).then((d) => {
       setF({
         product_id: d.product_id, customer_id: d.customer_id || "", quantity: d.quantity, unit: d.unit || "",
-        attr_size: d.attr_size || "", attr_thickness: d.attr_thickness || "", attr_color: d.attr_color || "",
+        specs: d.specs || {},
         due_date: d.due_date?.slice(0, 10) || "", note: d.note || "", priority: d.priority || "Trung bình",
         material_type: d.material_type || null, mix_ratio: d.mix_ratio || [], status: ""
       });
@@ -595,31 +596,16 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
 
       {!fhid("attributes") && (
       <Section title={<>Thông số đặc thù <span className="text-slate-400 font-normal">(kế thừa xuyên suốt)</span></>}>
-        <fieldset disabled={fdis("attributes")}>
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <Field label="Chiều ngang (Rộng) (Cm)">
-            <input className={inputCls} list="widths" value={(f.attr_size || "").split(/x|×/i)[0]?.trim() || ""} onChange={(e) => {
-              const d = (f.attr_size || "").split(/x|×/i)[1]?.trim() || "";
-              set("attr_size", e.target.value ? `${e.target.value} × ${d}` : (d ? ` × ${d}` : ""));
-            }} placeholder="vd: 20" />
-            <datalist id="widths">{(lookups.sizes || []).map((s) => <option key={s} value={s.split(/x|×/i)[0]?.trim()} />)}</datalist>
-          </Field>
-          <Field label="Chiều dài (Cm)">
-            <input className={inputCls} value={(f.attr_size || "").split(/x|×/i)[1]?.trim() || ""} onChange={(e) => {
-              const r = (f.attr_size || "").split(/x|×/i)[0]?.trim() || "";
-              set("attr_size", e.target.value ? `${r} × ${e.target.value}` : (r ? `${r} × ` : ""));
-            }} placeholder="vd: 30" />
-          </Field>
-          <Field label="Độ dày">
-            <input className={inputCls} list="thicknesses" value={f.attr_thickness} onChange={(e) => set("attr_thickness", e.target.value)} placeholder="vd: 20mic" />
-            <datalist id="thicknesses">{(lookups.thicknesses || []).map((s) => <option key={s} value={s} />)}</datalist>
-          </Field>
-          <Field label="Màu sắc">
-            <input className={inputCls} list="colors" value={f.attr_color} onChange={(e) => set("attr_color", e.target.value)} placeholder="vd: Trắng sữa" />
-            <datalist id="colors">{(lookups.colors || []).map((s) => <option key={s} value={s} />)}</datalist>
-          </Field>
-        </div>
-        </fieldset>
+        {/* Cùng bộ 5 thông số với Đơn hàng (lưu dạng specs) — trước đây form gộp "Rộng × Dài" vào 1 ô và
+            không có Số lớp → thông số lệnh lệch với đơn, hàng nhập kho không giao được.
+            Lệnh tạo từ dòng đơn: thông số kế thừa từ đơn, chỉ xem (sửa ở đơn hàng). */}
+        {(() => {
+          const fromOrder = !!(editId && meta?.sales_order_item_id);
+          return (<>
+            <SpecFields specs={f.specs} disabled={fdis("attributes") || fromOrder} onChange={(sp) => set("specs", sp)} />
+            {fromOrder && <p className="text-xs text-slate-400 mt-2">Lệnh tạo từ đơn hàng — thông số kế thừa từ dòng đơn; muốn đổi hãy sửa ở đơn hàng.</p>}
+          </>);
+        })()}
       </Section>
       )}
 

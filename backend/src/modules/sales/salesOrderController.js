@@ -176,6 +176,14 @@ async function saveItems(client, orderId, items) {
            planned_start_date=$12, planned_end_date=$13, material_type=$14, mix_ratio=$15::jsonb,
            unit_price=COALESCE($16, unit_price)
          WHERE id=$17 AND sales_order_id=$18`, [...base, it.id, orderId]);
+      // LSX kế thừa thông số từ dòng đơn: lệnh CHƯA nhập kho đi theo thông số mới
+      // (lệnh đã nhập kho giữ nguyên — đổi giữa chừng sẽ lệch tồn, xem L57 ở productionController).
+      await client.query(
+        `UPDATE production_orders SET specs=$1::jsonb, spec_key=$2, attr_size=$3, attr_thickness=$4, attr_color=$5,
+           group_key = product_id::text || '||' || $2
+         WHERE sales_order_item_id=$6 AND is_deleted=FALSE AND COALESCE(posted_qty,0)=0
+           AND status NOT IN ('Hoàn thành','Đã hủy') AND spec_key IS DISTINCT FROM $2`,
+        [JSON.stringify(specs), buildSpecKey(specs), a.size, a.thickness, a.color, it.id]);
     } else {
       await client.query(
         `INSERT INTO sales_order_items

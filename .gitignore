@@ -43,3 +43,7 @@ backend/_test*.js
 *.test.js
 test-*.js
 backend/test-*.js
+
+# Bản sao lưu dữ liệu PRD (dữ liệu khách hàng thật) — KHÔNG commit
+Backup_*.zip
+*.dump
