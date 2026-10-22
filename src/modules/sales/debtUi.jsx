@@ -63,8 +63,8 @@ export function DebtBanner({ info, context = "delivery" }) {
             ? `Có phiếu giao chưa thanh toán đủ ${info.oldest_days ? `(lâu nhất ${info.oldest_days} ngày)` : ""}. Liên hệ kế toán để biết số tiền.`
             : <>
                 Đang nợ <b>{fmt(info.debt)} đ</b>
-                {info.overdue_debt > 0 && <> — trong đó <b>{fmt(info.overdue_debt)} đ</b> quá {s.bad_days ?? 30} ngày (lâu nhất {info.oldest_days} ngày)</>}
-                {blocked && <>. Hạn mức: {fmt(s.limit_amount)} đ</>}.
+                {info.overdue_debt > 0 && <> — trong đó <b>{fmt(info.overdue_debt)} đ</b> quá {s.bad_days ?? "—"} ngày (lâu nhất {info.oldest_days} ngày)</>}
+                {blocked && <>. Hạn mức: {s.limit_amount != null ? `${fmt(s.limit_amount)} đ` : "—"}</>}.
               </>}
           {blocked && context === "delivery" && " Cần lập Phiếu thanh toán thu bớt nợ trước."}
         </div>

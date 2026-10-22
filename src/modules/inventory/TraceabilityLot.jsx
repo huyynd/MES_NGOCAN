@@ -2,7 +2,7 @@ import React, { useState, useCallback } from "react";
 import { Search, GitMerge, Package, Warehouse, ShoppingCart, Factory, Clock, ChevronRight } from "lucide-react";
 import { PageHeader } from "../../components.jsx";
 import { inventory, production } from "../../mesApi.js";
-import { fmt, fmtDate, statusClass, toast } from "../../ui.js";
+import { fmt, fmtDate, statusClass, toast, fmtDateTime } from "../../ui.js";
 import { inputCls } from "../../ui.js";
 import { TRX_COLOR, trxIsIn } from "./trxHistory.jsx";
 
@@ -75,7 +75,7 @@ function LotResult({ lot, transactions }) {
                 color={t.trx_type === "Nhập" ? "green" : t.trx_type === "Xuất" ? "rose" : t.trx_type === "Chuyển kho" ? "blue" : "amber"}
                 title={`${t.trx_type === "Chuyển kho" ? (trxIsIn(t) ? "Chuyển đến" : "Chuyển đi") : t.trx_type + " kho"} · ${fmt(t.quantity)} ${t.unit || ""}`}
                 subtitle={t.warehouse_name ? `${t.warehouse_name}${t.location_name ? " → " + t.location_name : ""}` : undefined}
-                date={new Date(t.created_at).toLocaleString("vi-VN")}
+                date={fmtDateTime(t.created_at)}
                 badge={{ text: t.trx_type, cls: TRX_COLOR[t.trx_type] || "" }}
               />
             ))}
@@ -117,7 +117,7 @@ function LotResult({ lot, transactions }) {
             <tbody className="divide-y divide-slate-100">
               {transactions.map(t => (
                 <tr key={t.id} className="hover:bg-slate-50/60">
-                  <td className="px-4 py-2.5 text-slate-500">{new Date(t.created_at).toLocaleString("vi-VN")}</td>
+                  <td className="px-4 py-2.5 text-slate-500">{fmtDateTime(t.created_at)}</td>
                   <td className="px-4 py-2.5">
                     <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${TRX_COLOR[t.trx_type] || "bg-amber-50 text-amber-700"}`}>{t.trx_type}</span>
                   </td>
@@ -231,7 +231,7 @@ export default function TraceabilityLot() {
       )}
 
       {!searched && (
-        <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl border border-blue-100 p-8 text-center">
+        <div className="bg-blue-50 rounded-xl border border-blue-100 p-8 text-center">
           <GitMerge size={48} className="mx-auto mb-4 text-blue-300" />
           <div className="text-slate-600 font-medium mb-2">Hệ thống truy xuất nguồn gốc</div>
           <div className="text-sm text-slate-500 max-w-md mx-auto">

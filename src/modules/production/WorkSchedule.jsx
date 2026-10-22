@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
+import { useAppSettings } from "../../appSettings.js";
 import { ChevronLeft, ChevronRight, RotateCcw, Pencil, Check, X } from "lucide-react";
 import { ListHeader, useSaving } from "../../components.jsx";
 import { workSchedules } from "../../mesApi.js";
@@ -17,6 +18,7 @@ function mondayOf(date) {
 }
 
 export default function WorkScheduleModule({ lookups }) {
+  const S = useAppSettings();
   const [anchor, setAnchor] = useState(mondayOf(new Date()));
   const [map, setMap] = useState({}); // `${emp}|${date}` -> shift_id
   const [isEditing, setIsEditing] = useState(false);
@@ -64,7 +66,7 @@ Chuyển tuần?`)) return;
       setIsEditing(false);
       return;
     }
-    const toastId = toast.loading("Đang lưu lịch làm việc...");
+    const toastId = toast.loading("Đang lưu lịch làm việc…");
     try {
       await workSchedules.bulkUpsert(changes);
       toast.success("Đã lưu lịch làm việc", { id: toastId });
@@ -169,7 +171,7 @@ Chuyển tuần?`)) return;
                       today.setHours(0, 0, 0, 0);
                       const wDate = d(dy);
                       const diffDays = Math.floor((today - wDate) / (1000 * 60 * 60 * 24));
-                      const isLocked = cell.has_attendance || diffDays > 3;
+                      const isLocked = cell.has_attendance || diffDays > S.schedule_lock_days;
 
                       return (
                         <td key={dy} className="px-1.5 py-1.5 border-r border-slate-100">

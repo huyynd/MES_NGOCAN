@@ -3,7 +3,7 @@ import { PackagePlus, Save, Plus, Trash2, RefreshCcw, FileText, History } from "
 import { ListHeader, DataTable, PageHeader, Section, UnitSelect, SearchSelect, useRemembered } from "../../components.jsx";
 import { inventory } from "../../mesApi.js";
 import { usePerm } from "../../perm.jsx";
-import { inputCls, fmt, fmtDate, statusClass, toast, todayYmd } from "../../ui.js";
+import { inputCls, fmt, fmtDate, statusClass, toast, todayYmd, fmtDateTime } from "../../ui.js";
 import { TRX_COLOR, defaultRange, TrxRange, byColumn } from "./trxHistory.jsx";
 
 const Field = ({ label, required, children }) => (
@@ -202,7 +202,7 @@ function TransactionHistory({ type }) {
   useEffect(() => { load(); }, [load]);
 
   const columns = [
-    { key: "created_at", label: "Thời gian", render: r => new Date(r.created_at).toLocaleString("vi-VN") },
+    { key: "created_at", label: "Thời gian", render: r => fmtDateTime(r.created_at) },
     { key: "trx_type", label: "Loại", render: r => <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${TRX_COLOR[r.trx_type] || ""}`}>{r.trx_type}</span> },
     { key: "product_code", label: "Mã SP", filter: "text", tdClass: "font-medium text-blue-600" },
     { key: "product_name", label: "Sản phẩm", filter: "select" },
@@ -226,8 +226,8 @@ function TransactionHistory({ type }) {
         </button>
       </div>
       <div className="p-4">
-        <DataTable dense columns={columns} rows={rows} rowKey={r => r.id}
-          emptyText={loading ? "Đang tải…" : "Chưa có phiếu nhập"} />
+        <DataTable dense loading={loading} columns={columns} rows={rows} rowKey={r => r.id}
+          emptyText="Chưa có phiếu nhập" />
       </div>
     </div>
   );

@@ -7,7 +7,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { paymentReceipts as api } from "../../mesApi.js";
 import { usePerm } from "../../perm.jsx";
 import { inputCls, fmt, fmtDate, statusClass, toast, todayYmd } from "../../ui.js";
-import { PageHeader, Section, ListHeader, DataTable, SearchSelect } from "../../components.jsx";
+import { PageHeader, Section, ListHeader, DataTable, SearchSelect, DateInput } from "../../components.jsx";
 import { MoneyInput, DebtBanner, LevelBadge, vnd } from "./debtUi.jsx";
 
 const today = todayYmd; // ngày theo giờ VN (không dùng toISOString — lệch 1 ngày trước 7h sáng)
@@ -159,8 +159,8 @@ function ReceiptForm({ lookups, id, onBack, onSaved }) {
                   ))}
                 </div>
               </Field>
-              <Field label="Ngày thanh toán" required><input type="date" className={inputCls} value={f.pay_date} onChange={(e) => set("pay_date", e.target.value)} /></Field>
-              <Field label="Ngày xuất hóa đơn"><input type="date" className={inputCls} value={f.invoice_date} onChange={(e) => set("invoice_date", e.target.value)} /></Field>
+              <Field label="Ngày thanh toán" required><DateInput className={inputCls} value={f.pay_date} onChange={(e) => set("pay_date", e.target.value)} /></Field>
+              <Field label="Ngày xuất hóa đơn"><DateInput className={inputCls} value={f.invoice_date} onChange={(e) => set("invoice_date", e.target.value)} /></Field>
               <Field label="Số hóa đơn"><input className={inputCls} value={f.invoice_no} onChange={(e) => set("invoice_no", e.target.value)} placeholder="vd: 0001234" /></Field>
               <Field label="Người thanh toán"><input className={inputCls} value={f.payer_name} onChange={(e) => set("payer_name", e.target.value)} placeholder="Người bên khách trả tiền" /></Field>
               <Field label="Số đơn hàng" className="lg:col-span-2">
@@ -211,7 +211,7 @@ function ReceiptForm({ lookups, id, onBack, onSaved }) {
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {preview.rows.map((n) => {
-                    const late = n.age_days > (info.settings?.bad_days ?? 30);
+                    const late = info.settings?.bad_days != null && n.age_days > info.settings.bad_days; // S-12: chưa có ngưỡng thì không tô
                     return (
                       <tr key={n.id} className={n.take > 0 ? "" : "text-slate-400"}>
                         <td className="px-4 py-1.5 font-medium">{n.note_code}</td>
@@ -222,7 +222,7 @@ function ReceiptForm({ lookups, id, onBack, onSaved }) {
                         <td className="px-4 py-1.5 text-right tabular-nums font-semibold text-emerald-700">{n.take > 0 ? vnd(n.take) : "—"}</td>
                         <td className="px-4 py-1.5 text-right tabular-nums">
                           {n.take > 0 && n.after <= 0.005
-                            ? <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700">Đã thanh toán</span>
+                            ? <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${statusClass("Đã thanh toán")}`}>Đã thanh toán</span>
                             : vnd(n.after)}
                         </td>
                       </tr>
@@ -289,8 +289,9 @@ export default function PaymentReceiptsModule({ lookups }) {
   }, [focusId]); // eslint-disable-line react-hooks/exhaustive-deps
   const [rows, setRows] = useState([]);
 
+  const [listLoading, setListLoading] = useState(true);
   const load = useCallback(async () => {
-    try { setRows((await api.list()) || []); } catch (e) { toast.error("Lỗi tải phiếu thanh toán: " + e.message); }
+    setListLoading(true); try { setRows((await api.list()) || []); } catch (e) { toast.error("Lỗi tải phiếu thanh toán: " + e.message); } finally { setListLoading(false); }
   }, []);
   useEffect(() => { if (moneyPerm !== "hidden") load(); }, [load, moneyPerm]);
 
@@ -326,7 +327,7 @@ export default function PaymentReceiptsModule({ lookups }) {
         <Wallet size={16} className="shrink-0" />
         Khách trả 1 lần cho nhiều phiếu giao: tiền tự trừ vào phiếu giao <b>cũ nhất trước</b> <ArrowRight size={14} /> phiếu đủ tiền tự chuyển <b>Đã thanh toán</b>. Trả dư được giữ làm tiền trả trước.
       </div>
-      <DataTable columns={columns} rows={rows} rowKey={(r) => r.id} emptyText="Chưa có phiếu thanh toán" />
+      <DataTable loading={listLoading} columns={columns} rows={rows} rowKey={(r) => r.id} emptyText="Chưa có phiếu thanh toán" />
     </div>
   );
 }

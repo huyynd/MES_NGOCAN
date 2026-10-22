@@ -23,7 +23,7 @@ export default function Login({ onLogin }) {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-100 p-4">
-      <form onSubmit={submit} className="bg-white rounded-2xl border border-slate-200 shadow-sm w-full max-w-sm p-8 space-y-5">
+      <form onSubmit={submit} className="bg-white rounded-xl border border-slate-200 shadow-sm w-full max-w-sm p-8 space-y-5">
         <div className="text-center">
           <Logo className="h-12 w-auto mx-auto" />
           <h1 className="text-lg font-bold text-slate-800 mt-3">Hệ thống MES</h1>

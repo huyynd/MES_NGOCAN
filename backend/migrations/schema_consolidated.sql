@@ -2686,3 +2686,19 @@ BEGIN
   END LOOP;
 END $$;
 -- ---------------------------------------------------------------------
+
+-- 25) ĐỢT 5 (2026-10-21): CÀI ĐẶT HỆ THỐNG + THỐNG NHẤT TÊN NHÀ MÁY
+--  a) Ghi sẵn cài đặt mặc định = giá trị trước đây gắn cứng trong code (KHÔNG ghi đè nếu đã có).
+--     Danh sách đầy đủ + kiểm giá trị: backend/src/core/lib/settings.js (DEFS).
+INSERT INTO public.app_settings (key, value) VALUES
+  ('vat_percent', '8'), ('urgent_days', '5'), ('priority_top', '5'), ('scrap_alert_percent', '5'),
+  ('schedule_lock_days', '3'), ('near_min_percent', '120'),
+  ('company_name', to_jsonb('CÔNG TY TNHH THƯƠNG MẠI SẢN XUẤT XNK BAO BÌ NGỌC AN THƯ'::text)),
+  ('company_tax', to_jsonb('0316748578'::text)),
+  ('company_address', to_jsonb('119/1 Đường Đỗ Mười, Tổ 4, Khu phố 1, Phường Thới An, Thành Phố Hồ Chí Minh'::text)),
+  ('company_phone', to_jsonb('0938 446 156'::text))
+ON CONFLICT (key) DO NOTHING;
+--  b) Kho: danh sách nhà máy thống nhất "Nhà máy thổi" / "Nhà máy cắt" (như Máy / Nhân viên).
+--     Kho đang ghi "Nhà máy 1/2/3" (giá trị cũ, không dùng cho phân quyền) → để trống (chủ dự án chốt).
+UPDATE public.warehouses SET factory = NULL WHERE factory IN ('Nhà máy 1', 'Nhà máy 2', 'Nhà máy 3');
+-- ---------------------------------------------------------------------

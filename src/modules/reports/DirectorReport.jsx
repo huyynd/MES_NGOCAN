@@ -7,8 +7,8 @@ import {
 import { useNavigate } from "react-router-dom";
 import * as XLSX from "xlsx";
 import { reports } from "../../mesApi.js";
-import { fmt, fmtDate, toast, statusClass } from "../../ui.js";
-import { usePager } from "../../components.jsx";
+import { fmt, fmtDate, toast, statusClass, fmtDec } from "../../ui.js";
+import { usePager, LoadError, DialogBehavior } from "../../components.jsx";
 
 /* ───────────────────────── Bảng màu & hằng số ───────────────────────── */
 
@@ -23,12 +23,12 @@ const AGE = [
 const C = { overdue: "#e11d48", intime: "#0a63b8", good: "#10b981", violet: "#7c3aed", track: "#eef2f6" };
 
 const ACCENTS = {
-  blue: { chip: "bg-blue-50 text-blue-600 ring-blue-100", glow: "bg-blue-400/15" },
-  emerald: { chip: "bg-emerald-50 text-emerald-600 ring-emerald-100", glow: "bg-emerald-400/15" },
-  violet: { chip: "bg-violet-50 text-violet-600 ring-violet-100", glow: "bg-violet-400/15" },
-  rose: { chip: "bg-rose-50 text-rose-600 ring-rose-100", glow: "bg-rose-400/15" },
-  amber: { chip: "bg-amber-50 text-amber-600 ring-amber-100", glow: "bg-amber-400/15" },
-  slate: { chip: "bg-slate-50 text-slate-500 ring-slate-200", glow: "bg-slate-400/10" },
+  blue: { chip: "bg-blue-50 text-blue-600 ring-blue-100" },
+  emerald: { chip: "bg-emerald-50 text-emerald-600 ring-emerald-100" },
+  violet: { chip: "bg-sky-50 text-sky-600 ring-sky-100" },
+  rose: { chip: "bg-rose-50 text-rose-600 ring-rose-100" },
+  amber: { chip: "bg-amber-50 text-amber-600 ring-amber-100" },
+  slate: { chip: "bg-slate-50 text-slate-500 ring-slate-200" },
 };
 
 const TONES = {
@@ -154,10 +154,9 @@ function KpiCard({ icon: Icon, accent = "blue", label, hint, value, valueClass, 
   return (
     <Comp
       onClick={onClick}
-      className={`group relative flex flex-col overflow-hidden rounded-2xl border border-slate-200/70 bg-white ${compact ? "p-4" : "p-5"} shadow-card transition-all duration-300 animate-rise motion-reduce:animate-none text-left ${active ? "!border-blue-400 ring-2 ring-blue-500/30" : ""} ${onClick ?"cursor-pointer hover:-translate-y-1 hover:shadow-card-hover hover:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/40" : "hover:-translate-y-0.5 hover:shadow-card-hover"}`}
+      className={`group relative flex flex-col overflow-hidden rounded-xl border border-slate-200/70 bg-white ${compact ? "p-4" : "p-5"} shadow-card transition-colors duration-300 animate-rise motion-reduce:animate-none text-left ${active ? "!border-blue-400 ring-2 ring-blue-500/30" : ""} ${onClick ?"cursor-pointer hover:border-slate-300 hover:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/40" : "hover:border-slate-300"}`}
       style={{ animationDelay: `${delay}ms` }}
     >
-      <div className={`pointer-events-none absolute -right-12 -top-12 h-36 w-36 rounded-full blur-2xl transition-opacity duration-300 group-hover:opacity-100 opacity-70 ${a.glow}`} />
       <div className="relative flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-[13px] font-medium text-slate-600">{label}</div>
@@ -167,7 +166,7 @@ function KpiCard({ icon: Icon, accent = "blue", label, hint, value, valueClass, 
           <Icon size={18} strokeWidth={2} />
         </div>
       </div>
-      <div className={`relative ${compact ? "mt-3" : "mt-4"} font-display font-semibold leading-none tracking-tight text-slate-900 tabular-nums ${valueClass || (compact ? "text-[26px]" : "text-[30px]")}`}>
+      <div className={`relative ${compact ? "mt-3" : "mt-4"} font-display font-semibold leading-none tracking-tight text-slate-900 tabular-nums ${valueClass || "text-2xl"}`}>
         {value}
       </div>
       {meta && <div className={`relative mt-2 ${compact ? "text-xs" : "text-[13px]"} text-slate-500`}>{meta}</div>}
@@ -179,7 +178,7 @@ function KpiCard({ icon: Icon, accent = "blue", label, hint, value, valueClass, 
 function Panel({ title, subtitle, icon: Icon, action, children, className = "", delay = 0 }) {
   return (
     <section
-      className={`rounded-2xl border border-slate-200/70 bg-white p-5 shadow-card animate-rise motion-reduce:animate-none ${className}`}
+      className={`rounded-xl border border-slate-200/70 bg-white p-5 shadow-card animate-rise motion-reduce:animate-none ${className}`}
       style={{ animationDelay: `${delay}ms` }}
     >
       <div className="mb-4 flex items-start justify-between gap-3">
@@ -263,7 +262,7 @@ function Skeleton() {
     <div className="animate-pulse space-y-5">
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {[0, 1, 2, 3].map((i) => (
-          <div key={i} className="rounded-2xl border border-slate-200/70 bg-white p-5">
+          <div key={i} className="rounded-xl border border-slate-200/70 bg-white p-5">
             <div className={`${blk} h-3 w-24`} />
             <div className={`${blk} mt-5 h-7 w-32`} />
             <div className={`${blk} mt-3 h-3 w-20`} />
@@ -272,8 +271,8 @@ function Skeleton() {
         ))}
       </div>
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
-        <div className="h-80 rounded-2xl border border-slate-200/70 bg-white lg:col-span-7" />
-        <div className="h-80 rounded-2xl border border-slate-200/70 bg-white lg:col-span-5" />
+        <div className="h-80 rounded-xl border border-slate-200/70 bg-white lg:col-span-7" />
+        <div className="h-80 rounded-xl border border-slate-200/70 bg-white lg:col-span-5" />
       </div>
     </div>
   );
@@ -434,7 +433,7 @@ function SalesView({ s, r, period }) {
 
       {/* Bản tin điểm nhấn — cao bằng khối 4 ô bên trái, dài thì cuộn trong khung */}
       <div className="lg:relative">
-        <section className="flex flex-col rounded-2xl border border-slate-200/70 bg-white p-4 shadow-card animate-rise motion-reduce:animate-none lg:absolute lg:inset-0"
+        <section className="flex flex-col rounded-xl border border-slate-200/70 bg-white p-4 shadow-card animate-rise motion-reduce:animate-none lg:absolute lg:inset-0"
           style={{ animationDelay: "260ms" }}>
           <div className="flex items-start justify-between gap-2">
             <div className="flex items-center gap-2">
@@ -666,7 +665,8 @@ function SalesView({ s, r, period }) {
       {/* Modal: Danh sách đơn hàng */}
       {ordersModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-sm transition-opacity">
-          <div className="w-full max-w-4xl overflow-hidden rounded-2xl bg-white shadow-2xl animate-rise">
+          <div className="w-full max-w-4xl overflow-hidden rounded-xl bg-white shadow-2xl animate-rise">
+            <DialogBehavior onClose={() => setOrdersModal(false)} dirty={false} />
             <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4">
               <h3 className="font-display text-lg font-semibold text-slate-800">
                 Chi tiết {s.order_count} đơn hàng {period === "week" ? "tuần này" : "tháng này"}
@@ -730,7 +730,8 @@ function SalesView({ s, r, period }) {
       {/* Modal: Danh sách phiếu giao / hóa đơn */}
       {deliveriesModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-sm transition-opacity">
-          <div className="w-full max-w-4xl overflow-hidden rounded-2xl bg-white shadow-2xl animate-rise">
+          <div className="w-full max-w-4xl overflow-hidden rounded-xl bg-white shadow-2xl animate-rise">
+            <DialogBehavior onClose={() => setDeliveriesModal(false)} dirty={false} />
             <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4">
               <h3 className="font-display text-lg font-semibold text-slate-800">
                 Chi tiết Phiếu giao hàng / Hóa đơn {period === "week" ? "tuần này" : "tháng này"}
@@ -757,7 +758,7 @@ function SalesView({ s, r, period }) {
                       {s.deliveries.map((d) => (
                         <tr key={d.id} className="transition hover:bg-slate-50/50">
                           <td className="px-4 py-3 text-slate-500 tabular-nums">{fmtDate(d.date)}</td>
-                          <td className="px-4 py-3 font-medium text-violet-600">{d.code}</td>
+                          <td className="px-4 py-3 font-medium text-sky-600">{d.code}</td>
                           <td className="px-4 py-3 text-slate-700">{d.customer || "—"}</td>
                           <td className="px-4 py-3 text-right font-medium tabular-nums text-slate-900">{fmt(d.total)}</td>
                           <td className="px-4 py-3 text-right tabular-nums text-emerald-600">{d.paid > 0 ? fmt(d.paid) : "—"}</td>
@@ -817,7 +818,7 @@ const th = "px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide 
 const td = "px-4 py-2.5 text-sm text-slate-700";
 
 function ProdDetail({ view, rows, isScrap, periodLb }) {
-  const { slice, Pager, Filler } = usePager(rows, 5, [5, 10, 20]);
+  const { slice, pager, filler } = usePager(rows, 5, [5, 10, 20]);
   const label = PROD_VIEWS[view].label;
   const exportExcel = () => {
     if (!rows.length) { toast.error("Danh sách đang trống, không có gì để xuất"); return; }
@@ -861,7 +862,7 @@ function ProdDetail({ view, rows, isScrap, periodLb }) {
                 <td className={td}>{fmtDate(d.date)}</td>
                 <td className={`${td} text-right tabular-nums`}>{fmt(d.finished)} kg</td>
                 <td className={`${td} text-right font-semibold tabular-nums text-rose-600`}>{fmt(d.scrap)} kg</td>
-                <td className={`${td} text-right tabular-nums`}>{d.finished > 0 ? `${(d.scrap / (d.finished + d.scrap) * 100).toFixed(1)}%` : "—"}</td>
+                <td className={`${td} text-right tabular-nums`}>{d.finished > 0 ? `${fmtDec(d.scrap / (d.finished + d.scrap) * 100, 1)}%` : "—"}</td>
               </tr>
             )) : slice.map((r) => (
               <tr key={r.id} className="hover:bg-slate-50/70">
@@ -875,11 +876,11 @@ function ProdDetail({ view, rows, isScrap, periodLb }) {
                 <td className={td}><span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${statusClass(r.status)}`}>{r.status}</span></td>
               </tr>
             ))}
-            {rows.length > 0 && <Filler cols={isScrap ? 4 : 8} />}
+            {rows.length > 0 && filler(isScrap ? 4 : 8)}
           </tbody>
         </table>
       </div>
-      <div className="mt-3"><Pager /></div>
+      <div className="mt-3">{pager}</div>
     </>
   );
 }
@@ -1010,19 +1011,19 @@ function ProdView({ p, period }) {
 /* ───────────────────────── Tab 3 · Nhân sự ───────────────────────── */
 
 const MEDALS = [
-  "bg-gradient-to-br from-amber-300 to-amber-500 text-white shadow-sm shadow-amber-500/30",
-  "bg-gradient-to-br from-slate-300 to-slate-400 text-white shadow-sm shadow-slate-400/30",
-  "bg-gradient-to-br from-orange-300 to-orange-500 text-white shadow-sm shadow-orange-500/30",
+  "bg-amber-400 text-white shadow-sm shadow-amber-500/30",
+  "bg-slate-300 text-white shadow-sm shadow-slate-400/30",
+  "bg-orange-400 text-white shadow-sm shadow-orange-500/30",
 ];
 
 /* 3 tiêu chí xếp hạng — CÙNG thứ tự & màu với màn Hiệu suất nhân viên */
-const fmt3 = (v) => Number(v || 0).toFixed(3);
+const fmt3 = (v) => fmtDec(v || 0, 3);
 const STAFF_CRITERIA = [
-  { key: "output", label: "Sản lượng", desc: "kg thành phẩm — cao nhất dẫn đầu", color: "#6366f1",
+  { key: "output", label: "Sản lượng", desc: "kg thành phẩm — cao nhất dẫn đầu", color: "#0055b3",
     sort: (a, b) => b.output - a.output, val: (x) => x.output, show: (v) => <>{fmt(v)} <span className="text-xs font-medium text-slate-400">kg</span></> },
   { key: "scrap", label: "Ít phế nhất", desc: "kg phế — ít nhất được vinh danh", color: "#10b981",
     sort: (a, b) => a.scrap - b.scrap, val: (x) => x.scrap, show: (v) => <>{fmt(v)} <span className="text-xs font-medium text-slate-400">kg</span></> },
-  { key: "ratio", label: "Phế / 1kg thấp nhất", desc: "kg phế / kg thành phẩm — ít nhất được vinh danh", color: "#f59e0b",
+  { key: "ratio", label: "Phế / 1 kg TP thấp nhất", desc: "kg phế ÷ kg thành phẩm — ít nhất được vinh danh", color: "#f59e0b",
     sort: (a, b) => a.scrap_ratio - b.scrap_ratio, val: (x) => x.scrap_ratio, show: (v) => fmt3(v) },
 ];
 
@@ -1044,7 +1045,7 @@ function StaffView({ w }) {
           meta={<>TB <span className="font-semibold text-slate-700">{fmt(w.avg_per_hour)}</span> kg / giờ công</>} />
         <KpiCard icon={PackageX} accent={w.total_scrap > 0 ? "rose" : "slate"} label="Tổng phế" hint="Theo Quản lý phế" delay={140}
           value={<>{fmt(w.total_scrap ?? 0)}{unit}</>} />
-        <KpiCard icon={Gauge} accent="amber" label="Phế / 1kg (TB)" hint="kg phế / kg thành phẩm" delay={210}
+        <KpiCard icon={Gauge} accent="amber" label="Phế / 1 kg TP (TB)" hint="kg phế ÷ kg thành phẩm" delay={210}
           value={w.scrap_ratio == null ? "—" : fmt3(w.scrap_ratio)} />
       </div>
 
@@ -1092,12 +1093,14 @@ export default function DirectorReport() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [updatedAt, setUpdatedAt] = useState(null);
+  const [loadErr, setLoadErr] = useState("");
 
   const load = useCallback(() => {
     setLoading(true);
+    setLoadErr("");
     reports.director(period)
       .then((d) => { setData(d); setUpdatedAt(new Date()); })
-      .catch((e) => toast.error("Lỗi tải báo cáo: " + e.message))
+      .catch((e) => { setLoadErr(e.message || "Lỗi máy chủ"); toast.error("Lỗi tải báo cáo: " + e.message); })
       .finally(() => setLoading(false));
   }, [period]);
   useEffect(() => { load(); }, [load]);
@@ -1126,7 +1129,7 @@ export default function DirectorReport() {
           <div role="tablist" aria-label="Chọn kỳ báo cáo" className="inline-flex items-center rounded-xl bg-slate-100 p-1 ring-1 ring-inset ring-slate-200/70">
             {[["week", "Tuần"], ["month", "Tháng"]].map(([k, lb]) => (
               <button key={k} id={`dr-period-${k}`} role="tab" aria-selected={period === k} onClick={() => setPeriod(k)}
-                className={`rounded-lg px-4 py-1.5 text-sm font-medium transition-all ${period === k ? "bg-white text-slate-900 shadow-sm ring-1 ring-slate-200/80" : "text-slate-500 hover:text-slate-800"}`}>
+                className={`rounded-lg px-4 py-1.5 text-sm font-medium transition-colors ${period === k ? "bg-white text-slate-900 shadow-sm ring-1 ring-slate-200/80" : "text-slate-500 hover:text-slate-800"}`}>
                 {lb}
               </button>
             ))}
@@ -1151,13 +1154,13 @@ export default function DirectorReport() {
       </nav>
 
       {/* Nội dung */}
-      {loading && !data ? <Skeleton /> : !data ? null : (
+      {loading && !data ? <Skeleton /> : !data ? (loadErr ? <LoadError message={`Không tải được báo cáo (${loadErr})`} onRetry={load} /> : null) : (
         <div key={`${tab}-${period}`} className={`transition-opacity duration-200 ${loading ? "opacity-60" : ""}`}>
           {tab === "sales" && (
             showMoney
               ? <SalesView s={data.sales} r={data.receivables || EMPTY_R} period={period} />
               : (
-                <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-16 text-center">
+                <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-slate-200 bg-white px-4 py-16 text-center">
                   <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-slate-100 text-slate-400"><Lock size={20} /></div>
                   <div className="text-sm font-medium text-slate-700">Số liệu doanh thu và công nợ được bảo mật</div>
                   <div className="text-xs text-slate-400">Chỉ hiển thị cho vai trò quản lý</div>

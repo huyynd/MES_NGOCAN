@@ -3,7 +3,7 @@ import { RotateCcw, Save, RefreshCcw, History, ArrowRight } from "lucide-react";
 import { DataTable, PageHeader, UnitSelect, useRemembered } from "../../components.jsx";
 import { inventory } from "../../mesApi.js";
 import { usePerm } from "../../perm.jsx";
-import { inputCls, fmt, toast } from "../../ui.js";
+import { inputCls, fmt, toast, fmtDateTime } from "../../ui.js";
 import { trxIsIn, defaultRange, TrxRange, byColumn } from "./trxHistory.jsx";
 
 const Field = ({ label, required, children }) => (
@@ -215,7 +215,7 @@ function TransferHistory() {
   useEffect(() => { load(); }, [load]);
 
   const columns = [
-    { key: "created_at", label: "Thời gian", render: r => new Date(r.created_at).toLocaleString("vi-VN") },
+    { key: "created_at", label: "Thời gian", render: r => fmtDateTime(r.created_at) },
     { key: "trx_type", label: "Loại", render: r => <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${trxIsIn(r) ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"}`}>{trxIsIn(r) ? "Chuyển đến" : "Chuyển đi"}</span> },
     { key: "product_code", label: "Mã SP", filter: "text", tdClass: "font-medium text-blue-600" },
     { key: "product_name", label: "Sản phẩm", filter: "select" },
@@ -238,8 +238,8 @@ function TransferHistory() {
         </button>
       </div>
       <div className="p-4">
-        <DataTable dense columns={columns} rows={rows} rowKey={r => r.id}
-          emptyText={loading ? "Đang tải…" : "Chưa có giao dịch chuyển kho"} />
+        <DataTable dense loading={loading} columns={columns} rows={rows} rowKey={r => r.id}
+          emptyText="Chưa có giao dịch chuyển kho" />
       </div>
     </div>
   );

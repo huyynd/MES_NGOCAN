@@ -207,3 +207,8 @@ export const recycling = {
   receiveRolls: (id, rolls) => http(`/recycling/${id}/receive`, body("PUT", { rolls })),
   complete: (id, data) => http(`/recycling/${id}/complete`, body("PUT", data)),
 };
+// Cài đặt hệ thống (chỉ Admin): danh sách kèm nhãn/kiểu/giới hạn + lưu cả lô
+export const appSettingsApi = {
+  list: () => http(`/app-settings`).then((r) => r.data),
+  save: (values) => http(`/app-settings`, body("PUT", { values })),
+};

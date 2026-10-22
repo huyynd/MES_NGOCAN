@@ -3,9 +3,9 @@ import {
   Recycle, Plus, Trash2, Save, FileText, Scale, CheckCircle2, 
   ArrowRight, Box, Package, Calendar, User, X
 } from "lucide-react";
-import { ListHeader, DataTable } from "../../components.jsx";
+import { ListHeader, DataTable, DialogBehavior, confirmClose, DateInput } from "../../components.jsx";
 import { recycling, resource } from "../../mesApi.js";
-import { inputCls, fmt, toast, todayYmd } from "../../ui.js";
+import { inputCls, fmt, toast, todayYmd, fmtDate, statusClass } from "../../ui.js";
 
 const warehousesApi = resource("warehouses");
 
@@ -66,14 +66,12 @@ export default function RecyclingModule() {
 
   const cols = [
     { key: "ticket_code", label: "Mã phiếu", render: r => <span className="font-semibold text-blue-600">{r.ticket_code}</span> },
-    { key: "export_date", label: "Ngày xuất", render: r => new Date(r.export_date).toLocaleDateString("vi-VN") },
+    { key: "export_date", label: "Ngày xuất", render: r => fmtDate(r.export_date) },
     { key: "scrap_warehouse_name", label: "Kho xuất" },
     { key: "third_party_name", label: "Bên thứ 3" },
     { key: "status", label: "Trạng thái", render: r => (
       <span className={`px-2 py-1 text-xs font-semibold rounded-full ${
-        r.status === 'Hoàn thành' ? 'bg-emerald-100 text-emerald-700' :
-        r.status === 'Đang tái chế' ? 'bg-amber-100 text-amber-700' :
-        'bg-slate-100 text-slate-700'
+        statusClass(r.status)
       }`}>{r.status}</span>
     )},
     { key: "expected_qty", label: "Tổng (kg)", align: "right", render: r => <span className="font-semibold">{fmt(r.expected_qty)}</span> },
@@ -199,11 +197,12 @@ Hoàn thành phiếu?`)) return;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden">
+        <DialogBehavior onClose={onClose} />
         <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
           <h2 className="text-xl font-bold text-slate-800">
             {ticket ? `Phiếu Tái Chế: ${ticket.ticket_code}` : "Tạo Phiếu Tái Chế Mới"}
           </h2>
-          <button onClick={onClose} className="p-2 hover:bg-slate-100 rounded-full text-slate-500">
+          <button onClick={(e) => confirmClose(e, onClose)} className="p-2 hover:bg-slate-100 rounded-full text-slate-500">
             <X size={20} />
           </button>
         </div>
@@ -238,7 +237,7 @@ Hoàn thành phiếu?`)) return;
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-slate-600 mb-1">Ngày xuất</label>
-              <input type="date" className={inputCls} value={s1.export_date} onChange={e => setS1({...s1, export_date: e.target.value})} disabled={isCompleted || ticket} />
+              <DateInput className={inputCls} value={s1.export_date} onChange={e => setS1({...s1, export_date: e.target.value})} disabled={isCompleted || ticket} />
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-600 mb-1">Kho phế phẩm</label>
@@ -381,7 +380,7 @@ Hoàn thành phiếu?`)) return;
       </div>
 
       <div className="mt-8 pt-4 border-t border-slate-100 flex justify-end gap-3">
-        <button onClick={onClose} className="btn-ghost">Đóng</button>
+        <button onClick={(e) => confirmClose(e, onClose)} className="btn-ghost">Đóng</button>
         {(!isCompleted && (
           (step === 1 && !ticket) || 
           (step === 2 && ticket.status === 'Chờ cân') || 
@@ -389,7 +388,7 @@ Hoàn thành phiếu?`)) return;
           (step === 4 && ticket.status === 'Đang tái chế')
         )) && (
           <button onClick={nextStep} disabled={loading} className="btn-primary flex items-center gap-2">
-            {loading ? "Đang xử lý..." : step === 4 ? <><CheckCircle2 size={16}/> Hoàn thành & nhập kho</> : step === 2 ? "Lưu cân & trừ phế" : step === 3 ? "Lưu cuộn" : "Tạo phiếu"}
+            {loading ? "Đang xử lý…" : step === 4 ? <><CheckCircle2 size={16}/> Hoàn thành & nhập kho</> : step === 2 ? "Lưu cân & trừ phế" : step === 3 ? "Lưu cuộn" : "Tạo phiếu"}
           </button>
         )}
       </div>

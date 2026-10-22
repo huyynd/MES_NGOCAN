@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { Save, RotateCcw, Factory, CalendarClock, Package, Boxes, AlertTriangle, Play, Pause, CheckCircle2 } from "lucide-react";
 import { production } from "../../mesApi.js";
 import { usePerm } from "../../perm.jsx";
-import { ListHeader, useRemembered } from "../../components.jsx";
+import { ListHeader, useRemembered, LoadError, DialogBehavior, confirmClose } from "../../components.jsx";
 import {  inputCls, fmt, fmtDate, statusClass , toast } from "../../ui.js";
 
 /* ---- Modal: NVL thực tế sử dụng (gợi ý từ BOM) → trừ tồn kho ---- */
@@ -10,11 +10,12 @@ function MaterialModal({ task, canEdit, completeMode = false, onClose }) {
   const [data, setData] = useState(null);
   const [lines, setLines] = useState([]);
   const [saving, setSaving] = useState(false);
+  const [loadErr, setLoadErr] = useState(""); const [tryN, setTryN] = useState(0);
   useEffect(() => {
     production.materials(task.production_order_id)
       .then((d) => { setData(d); setLines((d.lines || []).map((l) => ({ ...l, used_qty: l.used_qty ?? l.suggested_qty }))); })
-      .catch((e) => toast.error("Lỗi tải NVL: " + e.message));
-  }, [task.production_order_id]);
+      .catch((e) => setLoadErr(e.message || "Lỗi máy chủ"));
+  }, [task.production_order_id, tryN]);
   const setQty = (mid, v) => setLines((a) => a.map((l) => (l.material_id === mid ? { ...l, used_qty: v } : l)));
   const save = async () => {
     setSaving(true);
@@ -26,15 +27,16 @@ function MaterialModal({ task, canEdit, completeMode = false, onClose }) {
   };
 
   return (
-    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4" onClick={() => onClose(false)}>
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl p-6 space-y-4 max-h-[90vh] overflow-auto" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl p-6 space-y-4 max-h-[90vh] overflow-auto">
+        <DialogBehavior onClose={() => onClose(false)} />
         <div>
           <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Boxes size={18} className="text-blue-500" /> NVL thực tế sử dụng</h3>
           <p className="text-sm text-slate-500 mt-1">Lệnh <b className="text-blue-600">{task.order_code}</b> · {task.product_name} · SL {fmt(task.quantity)} {task.unit}. Gợi ý lấy từ định mức (BOM); sửa lại theo thực tế rồi Lưu để <b>trừ tồn kho NVL</b>.</p>
           {completeMode && <p className="text-sm text-emerald-700 font-medium mt-1">Cập nhật NVL thực tế xong sẽ <b>Hoàn thành sản xuất</b> cho lô này.</p>}
         </div>
 
-        {!data ? <div className="text-slate-400 text-sm py-6 text-center">Đang tải…</div>
+        {!data ? (loadErr ? <LoadError message={`Không tải được NVL (${loadErr})`} onRetry={() => { setLoadErr(""); setTryN((n) => n + 1); }} /> : <div className="text-slate-400 text-sm py-6 text-center">Đang tải…</div>)
           : !data.has_bom ? <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800 flex items-center gap-2"><AlertTriangle size={16} /> Sản phẩm chưa có định mức (BOM) đang hoạt động — chưa gợi ý được NVL.</div>
             : (
               <div className="border border-slate-200 rounded-lg overflow-hidden">
@@ -71,7 +73,7 @@ function MaterialModal({ task, canEdit, completeMode = false, onClose }) {
             )}
 
         <div className="flex justify-end gap-2 pt-1">
-          <button onClick={() => onClose(false)} className="btn-ghost">{completeMode ? "Hủy" : "Đóng"}</button>
+          <button onClick={(e) => confirmClose(e, () => onClose(false))} className="btn-ghost">{completeMode ? "Hủy" : "Đóng"}</button>
           {canEdit && data?.has_bom && lines.length > 0 &&
             <button onClick={save} disabled={saving} className="btn-primary" style={completeMode ? { background: "#059669" } : undefined}>
               <Save size={16} /> {saving ? "Đang lưu…" : (completeMode ? "Lưu NVL & Hoàn thành" : "Lưu & trừ kho")}</button>}
@@ -137,7 +139,7 @@ function TaskCard({ t, canEdit, onSaved, lookups }) {
           <div className="min-w-0">
             <div className="text-xl font-extrabold text-slate-900 leading-tight">
               {t.product_name}
-              {t.material_type && <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-bold bg-indigo-100 text-indigo-700 border border-indigo-200 align-middle mb-1">{t.material_type}</span>}
+              {t.material_type && <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-bold bg-blue-100 text-blue-700 border border-blue-200 align-middle mb-1">{t.material_type}</span>}
             </div>
             <div className="text-xs text-slate-400">{t.product_code}</div>
           </div>
@@ -168,9 +170,9 @@ function TaskCard({ t, canEdit, onSaved, lookups }) {
 
         {/* Tỷ lệ pha */}
         {t.material_type === 'pha' && t.mix_ratio && t.mix_ratio.length > 0 && (
-          <div className="rounded-lg bg-indigo-50 border border-indigo-200 overflow-hidden">
-            <div className="px-3 py-2 bg-indigo-100/50 border-b border-indigo-200">
-              <span className="text-[11px] font-semibold text-indigo-700 uppercase tracking-wide">Tỷ lệ pha Nguyên vật liệu</span>
+          <div className="rounded-lg bg-blue-50 border border-blue-200 overflow-hidden">
+            <div className="px-3 py-2 bg-blue-100/50 border-b border-blue-200">
+              <span className="text-[11px] font-semibold text-blue-700 uppercase tracking-wide">Tỷ lệ pha Nguyên vật liệu</span>
             </div>
             <div className="p-0">
               <table className="w-full text-sm text-left">
@@ -178,9 +180,9 @@ function TaskCard({ t, canEdit, onSaved, lookups }) {
                   {t.mix_ratio.map((r, idx) => {
                     const materialName = lookups?.products?.find(p => p.id === r.material_id)?.product_name || "Vật tư không xác định";
                     return (
-                      <tr key={idx} className="border-b border-indigo-100 last:border-0">
-                        <td className="px-3 py-1.5 text-indigo-900 font-medium">{materialName}</td>
-                        <td className="px-3 py-1.5 text-indigo-700 text-right font-bold w-20">{r.ratio}%</td>
+                      <tr key={idx} className="border-b border-blue-100 last:border-0">
+                        <td className="px-3 py-1.5 text-blue-900 font-medium">{materialName}</td>
+                        <td className="px-3 py-1.5 text-blue-700 text-right font-bold w-20">{r.ratio}%</td>
                       </tr>
                     );
                   })}

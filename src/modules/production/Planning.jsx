@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
+import { getAppSettings } from "../../appSettings.js";
 import { Layers, CalendarClock, RotateCcw, ShoppingCart, AlertTriangle, ClipboardList, Save, ChevronLeft, ChevronRight, CalendarRange, Star } from "lucide-react";
-import { ListHeader, usePager, DataTable, useSaving } from "../../components.jsx";
+import { ListHeader, usePager, DataTable, useSaving, DialogBehavior, confirmClose, DateInput } from "../../components.jsx";
 import { planning, production } from "../../mesApi.js";
 import { DEFAULT_STAGES, stageFactory } from "../../productionDefaults.js";
 import {  inputCls, fmt, fmtDate, statusClass , toast } from "../../ui.js";
@@ -72,8 +73,9 @@ function AllocateModal({ lookups, batch, onClose, onDone }) {
   };
 
   return (
-    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl p-6 space-y-4 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+        <DialogBehavior onClose={onClose} />
         <h3 className="text-lg font-bold text-slate-800">Phân bổ & tạo lệnh sản xuất</h3>
         <p className="text-sm text-slate-500">
           Lô: <b>{batch.product_name}</b> · {batch.attr_color || "—"} · {batch.attr_size || "—"} · {batch.attr_thickness || "—"}<br />
@@ -96,7 +98,7 @@ function AllocateModal({ lookups, batch, onClose, onDone }) {
                     <td className="px-3 py-2 text-slate-600">{it.customer_name || "—"}</td>
                     <td className="px-3 py-2 text-slate-500">{it.note || "—"}</td>
                     <td className="px-3 py-2 text-slate-500">
-                      {it.material_type === 'zin' ? <span className="text-emerald-600 font-medium text-xs">✦ Hàng zin</span> : it.material_type === 'pha' ? <span className="text-amber-600 font-medium text-xs">⟳ Hàng pha</span> : "—"}
+                      {it.material_type === 'zin' ? <span className="text-emerald-600 font-medium text-xs">Hàng zin</span> : it.material_type === 'pha' ? <span className="text-amber-600 font-medium text-xs">Hàng pha</span> : "—"}
                     </td>
                     <td className="px-3 py-2 text-right text-slate-500">{fmt(rem(it))} {it.unit}</td>
                     <td className="px-3 py-2 text-right">
@@ -112,7 +114,7 @@ function AllocateModal({ lookups, batch, onClose, onDone }) {
         </div>
 
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Ngày bắt đầu sản xuất"><input type="date" className={inputCls} value={planned_date} onChange={(e) => setPlannedDate(e.target.value)} /></Field>
+          <Field label="Ngày bắt đầu sản xuất"><DateInput className={inputCls} value={planned_date} onChange={(e) => setPlannedDate(e.target.value)} /></Field>
         </div>
 
         {/* Phân bổ theo TỪNG công đoạn — mỗi công đoạn có máy/ca/đội/người riêng */}
@@ -169,7 +171,7 @@ function AllocateModal({ lookups, batch, onClose, onDone }) {
         </div>
 
         <div className="flex justify-end gap-2 pt-1">
-          <button onClick={onClose} className="btn-ghost">Hủy</button>
+          <button onClick={(e) => confirmClose(e, onClose)} className="btn-ghost">Hủy</button>
           <button onClick={() => guard(save)} disabled={saving} className="btn-primary"><Save size={16} /> {saving ? "Đang lưu…" : `Tạo ${planItems.length} lệnh`}</button>
         </div>
       </div>
@@ -208,7 +210,8 @@ function computePriority(batches) {
   const anchorDays = anchor?.earliest_due ? Math.ceil((new Date(anchor.earliest_due) - today) / 86400000) : null;
   const aw = anchor ? bw(anchor) : null;
   const widthDist = (b) => (aw == null || bw(b) == null) ? Infinity : Math.abs(bw(b) - aw);
-  const urgent = anchorDays != null && anchorDays <= 5;
+  const { urgent_days, priority_top } = getAppSettings(); // Cài đặt hệ thống (mặc định 5 / 5)
+  const urgent = anchorDays != null && anchorDays <= urgent_days;
 
   const restNormal = (anchor ? normalSorted.slice(1) : normalSorted).sort((a, c) =>
     urgent
@@ -218,7 +221,7 @@ function computePriority(batches) {
   const orderedAll = [...highGroup, ...(anchor ? [anchor, ...restNormal] : restNormal)];
 
   const rankMap = {};
-  orderedAll.slice(0, 5).forEach((b, i) => { rankMap[b.batch_key] = i + 1; });
+  orderedAll.slice(0, priority_top).forEach((b, i) => { rankMap[b.batch_key] = i + 1; });
   return { rankMap, ordered: orderedAll, anchorDays };
 }
 
@@ -249,7 +252,7 @@ function OrderPlanningTab({ lookups, mode = "ontime" }) {
     return { list: ontime, priority: computePriority(ontime) };
   }, [batches, overdueMode, today]);
 
-  const { slice, Pager } = usePager(priority.ordered);
+  const { slice, pager } = usePager(priority.ordered);
 
   const load = useCallback(async () => {
     try { const r = await planning.fromOrders(); setBatches(r.batches); setDemandLines(r.demand_lines); }
@@ -271,7 +274,7 @@ function OrderPlanningTab({ lookups, mode = "ontime" }) {
         <div className="bg-white rounded-xl border border-slate-200 px-5 py-3"><div className={`text-2xl font-bold ${overdueMode ? "text-rose-600" : "text-slate-800"}`}>{list.length}</div><div className="text-xs text-slate-500">{overdueMode ? "Lô quá hạn" : "Lô cần sản xuất"}</div></div>
         {!overdueMode && <div className="bg-white rounded-xl border border-slate-200 px-5 py-3"><div className="text-2xl font-bold text-slate-800">{demandLines}</div><div className="text-xs text-slate-500">Dòng đơn hàng chờ</div></div>}
       </div>
-      {!list.length && <div className="bg-white rounded-xl border border-slate-200 p-10 text-center text-slate-400">{overdueMode ? "Không có lô nào quá hạn giao. 🎉" : "Không có đơn hàng nào cần lên kế hoạch. Tạo đơn hàng ở mục Đơn hàng trước."}</div>}
+      {!list.length && <div className="bg-white rounded-xl border border-slate-200 p-10 text-center text-slate-400">{overdueMode ? "Không có lô nào quá hạn giao." : "Không có đơn hàng nào cần lên kế hoạch. Tạo đơn hàng ở mục Đơn hàng trước."}</div>}
       <div className="space-y-4">
         {slice.map((b, idx) => {
           const rank = priority.rankMap[b.batch_key];
@@ -325,7 +328,7 @@ function OrderPlanningTab({ lookups, mode = "ontime" }) {
                     <td className="px-4 py-2">{fmtDate(it.due_date)}</td>
                     <td className="px-4 py-2 text-slate-500">{it.note || "—"}</td>
                     <td className="px-4 py-2 text-slate-500">
-                      {it.material_type === 'zin' ? <span className="text-emerald-600 font-medium text-xs bg-emerald-50 px-2 py-0.5 rounded border border-emerald-100">✦ Hàng zin</span> : it.material_type === 'pha' ? <span className="text-amber-600 font-medium text-xs bg-amber-50 px-2 py-0.5 rounded border border-amber-100">⟳ Hàng pha</span> : "—"}
+                      {it.material_type === 'zin' ? <span className="text-emerald-600 font-medium text-xs bg-emerald-50 px-2 py-0.5 rounded border border-emerald-100">Hàng zin</span> : it.material_type === 'pha' ? <span className="text-amber-600 font-medium text-xs bg-amber-50 px-2 py-0.5 rounded border border-amber-100">Hàng pha</span> : "—"}
                     </td>
                   </tr>
                 ))}
@@ -335,7 +338,7 @@ function OrderPlanningTab({ lookups, mode = "ontime" }) {
           );
         })}
       </div>
-      <Pager />
+      {pager}
       {allocating && <AllocateModal lookups={lookups} batch={allocating} onClose={() => setAllocating(null)} onDone={() => { setAllocating(null); load(); }} />}
     </div>
   );
@@ -353,7 +356,7 @@ function GroupingTab({ lookups, onOpenOrder }) {
   const [totalOrders, setTotalOrders] = useState(0);
   const [scheduling, setScheduling] = useState(null);
   const [scope, setScope] = useState("todo");
-  const { slice, Pager } = usePager(groups);
+  const { slice, pager } = usePager(groups);
 
   const load = useCallback(async () => {
     try {
@@ -447,7 +450,7 @@ function GroupingTab({ lookups, onOpenOrder }) {
           </div>
         ))}
       </div>
-      <Pager />
+      {pager}
       {scheduling && <ScheduleModal lookups={lookups} order={scheduling} onClose={() => setScheduling(null)} onSaved={() => { setScheduling(null); load(); }} />}
     </div>
   );
@@ -456,8 +459,9 @@ function GroupingTab({ lookups, onOpenOrder }) {
 /* ====== Tab 2: Nhu cầu NVL cần mua ====== */
 function MaterialTab({ onOpenProduct }) {
   const [data, setData] = useState({ requirements: [], missing_bom: [], order_count: 0 });
+  const [listLoading, setListLoading] = useState(true);
   const load = useCallback(async () => {
-    try { setData(await planning.materialRequirements()); } catch (e) { toast.error("Lỗi tính NVL: " + e.message); }
+    setListLoading(true); try { setData(await planning.materialRequirements()); } catch (e) { toast.error("Lỗi tính NVL: " + e.message); } finally { setListLoading(false); }
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -484,7 +488,7 @@ function MaterialTab({ onOpenProduct }) {
         </div>
       )}
 
-      <DataTable columns={columns} rows={data.requirements} rowKey={(r) => r.material_id} emptyText="Chưa có nhu cầu NVL (cần lệnh SX + định mức)." />
+      <DataTable loading={listLoading} columns={columns} rows={data.requirements} rowKey={(r) => r.material_id} emptyText="Chưa có nhu cầu NVL (cần lệnh SX + định mức)." />
     </div>
   );
 }

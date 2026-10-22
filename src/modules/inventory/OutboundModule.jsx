@@ -3,7 +3,7 @@ import { Upload, Save, Plus, Trash2, RefreshCcw, History, AlertTriangle, Package
 import { DataTable, PageHeader, UnitSelect, SearchSelect, useRemembered } from "../../components.jsx";
 import { inventory } from "../../mesApi.js";
 import { usePerm } from "../../perm.jsx";
-import { inputCls, fmt, fmtDate, toast, todayYmd } from "../../ui.js";
+import { inputCls, fmt, fmtDate, toast, todayYmd, fmtDateTime } from "../../ui.js";
 import { defaultRange, TrxRange, byColumn } from "./trxHistory.jsx";
 
 const Field = ({ label, required, children }) => (
@@ -366,7 +366,7 @@ function PendingSlips({ canConfirm, onConfirmed }) {
                     </div>
                     <div className="text-xs text-slate-400">
                       {s.warehouse_name ? `${s.warehouse_name}${s.location_name ? " · " + s.location_name : ""} · ` : ""}
-                      {s.line_count} dòng · tổng {fmt(s.total_qty)} · {new Date(s.created_at).toLocaleString("vi-VN")}
+                      {s.line_count} dòng · tổng {fmt(s.total_qty)} · {fmtDateTime(s.created_at)}
                     </div>
                   </div>
                   {canConfirm && <>
@@ -435,7 +435,7 @@ function OutboundHistory() {
   useEffect(() => { load(); }, [load]);
 
   const columns = [
-    { key: "created_at", label: "Thời gian", render: r => new Date(r.created_at).toLocaleString("vi-VN") },
+    { key: "created_at", label: "Thời gian", render: r => fmtDateTime(r.created_at) },
     { key: "product_code", label: "Mã SP", filter: "text", tdClass: "font-medium text-blue-600" },
     { key: "product_name", label: "Sản phẩm", filter: "select" },
     { key: "quantity", label: "Số lượng", align: "right", render: r => <span className="font-semibold text-rose-600">−{fmt(r.quantity)}</span> },
@@ -459,8 +459,8 @@ function OutboundHistory() {
         </button>
       </div>
       <div className="p-4">
-        <DataTable dense columns={columns} rows={rows} rowKey={r => r.id}
-          emptyText={loading ? "Đang tải…" : "Chưa có phiếu xuất"} />
+        <DataTable dense loading={loading} columns={columns} rows={rows} rowKey={r => r.id}
+          emptyText="Chưa có phiếu xuất" />
       </div>
     </div>
   );

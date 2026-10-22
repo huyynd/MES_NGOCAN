@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
+import { LoadError, DateInput } from "../../components.jsx";
 import { toast } from "../../ui.js";
 import { ChevronLeft, ChevronRight, RotateCcw } from "lucide-react";
 import { production } from "../../mesApi.js";
@@ -28,6 +29,7 @@ export default function ProductionGantt({ onOpenOrder }) {
   const [all, setAll] = useState([]);
   const [anchor, setAnchor] = useState(null); // ngày bắt đầu khung nhìn
   const [span, setSpan] = useState(14);
+  const [loadErr, setLoadErr] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -37,7 +39,8 @@ export default function ProductionGantt({ onOpenOrder }) {
         const earliest = rows.map((r) => r.start_date).sort()[0];
         setAnchor((a) => a || earliest);
       } else setAnchor((a) => a || toYMD(new Date()));
-    } catch (e) { toast.error("Lỗi tải Gantt: " + e.message); }
+      setLoadErr("");
+    } catch (e) { setLoadErr(e.message || "Lỗi máy chủ"); toast.error("Lỗi tải Gantt: " + e.message); }
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -54,7 +57,9 @@ export default function ProductionGantt({ onOpenOrder }) {
     return [...m.values()].sort((a, b) => (a.factory + a.name).localeCompare(b.factory + b.name));
   }, [all]);
 
-  if (!anchor) return <div className="text-slate-400 text-sm py-10">Đang tải biểu đồ…</div>;
+  if (!anchor) return loadErr
+    ? <LoadError className="mt-6" message={`Không tải được biểu đồ Gantt (${loadErr})`} onRetry={() => { setLoadErr(""); load(); }} />
+    : <div className="text-slate-400 text-sm py-10">Đang tải biểu đồ…</div>;
   const from = days[0], to = days[span - 1];
 
   const barOf = (t) => {
@@ -73,7 +78,7 @@ export default function ProductionGantt({ onOpenOrder }) {
           <button onClick={() => setAnchor(addDays(anchor, -span))} className="btn-ghost px-2"><ChevronLeft size={16} /></button>
           <span className="text-sm font-medium text-slate-700">{fmtDate(from)} → {fmtDate(to)}</span>
           <button onClick={() => setAnchor(addDays(anchor, span))} className="btn-ghost px-2"><ChevronRight size={16} /></button>
-          <input type="date" value={anchor} onChange={(e) => setAnchor(e.target.value)}
+          <DateInput value={anchor} onChange={(e) => setAnchor(e.target.value)}
             className="px-2 py-1.5 rounded-lg border border-slate-300 text-sm" />
         </div>
         <div className="flex items-center gap-2">

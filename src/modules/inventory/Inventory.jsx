@@ -3,7 +3,7 @@ import { RotateCcw, PackagePlus, Save, Warehouse, History, ExternalLink, Plus, T
 import { ListHeader, DataTable, PageHeader, Section, UnitSelect, SearchSelect, useRemembered } from "../../components.jsx";
 import { inventory } from "../../mesApi.js";
 import { usePerm } from "../../perm.jsx";
-import {  inputCls, fmt, fmtDate, statusClass , toast } from "../../ui.js";
+import {  inputCls, fmt, fmtDate, statusClass , toast, fmtDateTime } from "../../ui.js";
 import { PRODUCT_SPECS, splitNU, specShort } from "../../specs.js";
 import { TRX_COLOR, trxIsIn, defaultRange, TrxRange, byColumn } from "./trxHistory.jsx";
 
@@ -404,13 +404,14 @@ function TreeTab({ lookups }) {
 function TransactionsTab() {
   const [rows, setRows] = useState([]);
   const [range, setRange] = useRemembered("inv:trx:range", defaultRange);
+  const [listLoading, setListLoading] = useState(true);
   const load = useCallback(async () => {
-    try { setRows(await inventory.transactions({ ...range, limit: 2000 })); } catch (e) { toast.error("Lỗi tải lịch sử: " + e.message); }
+    setListLoading(true); try { setRows(await inventory.transactions({ ...range, limit: 2000 })); } catch (e) { toast.error("Lỗi tải lịch sử: " + e.message); } finally { setListLoading(false); }
   }, [range]);
   useEffect(() => { load(); }, [load]);
 
   const columns = [
-    { key: "created_at", label: "Thời gian", filter: "date", tdClass: "text-slate-500", render: (t) => new Date(t.created_at).toLocaleString("vi-VN") },
+    { key: "created_at", label: "Thời gian", filter: "date", tdClass: "text-slate-500", render: (t) => fmtDateTime(t.created_at) },
     { key: "trx_type", label: "Loại", filter: "select", render: (t) => <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${TRX_COLOR[t.trx_type] || ""}`}>{t.trx_type}</span> },
     { key: "product_code", label: "Mã SP", filter: "text", tdClass: "font-medium text-blue-600" },
     { key: "product_name", label: "Sản phẩm", filter: "select", tdClass: "text-slate-800" },
@@ -428,7 +429,7 @@ function TransactionsTab() {
   return (
     <div className="space-y-3">
       <div className="flex justify-end"><TrxRange value={range} onChange={setRange} /></div>
-      <DataTable dense columns={columns} rows={rows} rowKey={(t) => t.id} emptyText="Chưa có giao dịch" />
+      <DataTable loading={listLoading} dense columns={columns} rows={rows} rowKey={(t) => t.id} emptyText="Chưa có giao dịch" />
     </div>
   );
 }

@@ -4,7 +4,7 @@ import { production } from "../../mesApi.js";
 import { DEFAULT_STAGES, stageFactory, machinesForStage } from "../../productionDefaults.js";
 import { usePerm } from "../../perm.jsx";
 import { inputCls, fmt, fmtDate, statusClass, toast } from "../../ui.js";
-import { PageHeader, Section, ListHeader, DataTable, UnitSelect, SearchSelect } from "../../components.jsx";
+import { PageHeader, Section, ListHeader, DataTable, UnitSelect, SearchSelect, DialogBehavior, confirmClose, useRemembered, DateInput } from "../../components.jsx";
 import { PackageCheck, CheckCircle2, Lock, RotateCcw } from "lucide-react";
 import Qr from "../../Qr.jsx";
 import { SpecFields } from "../../SpecFields.jsx";
@@ -132,7 +132,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
         mids.forEach((mId, i) => {
           let chosenMId = mId;
           if (!chosenMId) {
-             const wantWs = s.workshop || (stage === "Cắt" ? "Nhà máy cắt" : "Nhà máy thổi");
+             const wantWs = s.workshop || stageFactory(stage);
              if (chosen[wantWs]) chosenMId = chosen[wantWs];
              else {
                let pool = avail.filter((m) => m.status === "Hoạt động" && m.factory === wantWs);
@@ -150,7 +150,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
           const taskQty = (i === mids.length - 1 && baseQty > 0) ? (baseQty - qtyPerTask * (mids.length - 1)) : qtyPerTask;
 
           // Kế thừa đội/công nhân CHỈ khi cùng nhà máy với công đoạn (1 công nhân chỉ thuộc 1 nhà máy)
-          const stageTeam = stage === "Cắt" ? "Nhà máy cắt" : "Nhà máy thổi";
+          const stageTeam = stageFactory(stage);
           const teamMatch = defaults.assigned_team && defaults.assigned_team === stageTeam;
           newTasks.push({
             _k: Date.now() + seq, stage, quantity: taskQty, actual_qty: "", scrap_qty: "",
@@ -477,7 +477,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
   };
 
   const del = async () => {
-    if (!confirm("Xóa lệnh sản xuất này?")) return;
+    if (!confirm(`Xóa lệnh sản xuất ${meta?.order_code || ""}?`)) return;
     try { await production.remove(editId); toast.success("Đã xóa lệnh sản xuất thành công"); onSaved(); } catch (e) { toast.error("Lỗi xóa: " + e.message); }
   };
 
@@ -489,14 +489,14 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
           {editId && meta?.status && <span className={`inline-flex px-2.5 py-0.5 rounded-full text-sm font-medium ${statusClass(meta.status)}`}>{meta.status}</span>}
         </span>} onBack={onBack}
         actions={editId && !editing ? (<>
-          {locked && <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-500 border border-slate-200">🔒 Đã {meta?.status} · không thể sửa</span>}
+          {locked && <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-500 border border-slate-200"><Lock size={12} aria-hidden="true" /> Đã {meta?.status} · không thể sửa</span>}
           {meta?.status === 'Hoàn thành' && !locked && <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200">⚠ Hoàn thành · cần bổ sung phân công</span>}
           {can("production", "edit") && !matsIssued && !locked && <button onClick={requestMats} disabled={pmBusy} className="btn-ghost text-amber-700 border-amber-300 hover:bg-amber-50"><PackageCheck size={16} /> Yêu cầu NVL</button>}
           {can("production", "edit") && !locked && <button onClick={() => setEditing(true)} className="btn-ghost"><Pencil size={16} /> Sửa</button>}
           {can("production", "delete") && <button onClick={del} className="btn-ghost" style={{ color: "#e11d48" }}><Trash2 size={16} /> Xóa</button>}
         </>) : (<>
           {editId && <button onClick={() => { setEditing(false); loadData(); }} className="btn-ghost">Hủy</button>}
-          <button onClick={save} disabled={saving} className="btn-primary disabled:opacity-60 disabled:cursor-not-allowed"><Save size={16} /> {saving ? "Đang lưu..." : "Lưu lệnh sản xuất"}</button>
+          <button onClick={save} disabled={saving} className="btn-primary disabled:opacity-60 disabled:cursor-not-allowed"><Save size={16} /> {saving ? "Đang lưu…" : "Lưu lệnh sản xuất"}</button>
         </>)} />
 
       <fieldset disabled={!editing} className="space-y-5">
@@ -542,7 +542,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
             )}
           </Field>
           <Field label="Ngày giao (deadline)">
-            <input type="date" className={inputCls} value={f.due_date} onChange={(e) => set("due_date", e.target.value)} />
+            <DateInput className={inputCls} value={f.due_date} onChange={(e) => set("due_date", e.target.value)} />
           </Field>
           {!fhid("priority") && <Field label="Độ ưu tiên">
             <select className={inputCls} disabled={fdis("priority")} value={f.priority} onChange={(e) => set("priority", e.target.value)}>
@@ -629,7 +629,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
         <div className="mb-4">
           <p className="text-xs font-semibold text-slate-500 uppercase mb-2">Loại nguyên liệu</p>
           <div className="flex gap-4 flex-wrap">
-            <label className={`flex items-center gap-2.5 px-4 py-2.5 rounded-xl border-2 cursor-pointer transition-all select-none ${
+            <label className={`flex items-center gap-2.5 px-4 py-2.5 rounded-xl border-2 cursor-pointer transition-colors select-none ${
               f.material_type === 'zin'
                 ? 'border-emerald-500 bg-emerald-50 text-emerald-800'
                 : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'
@@ -645,7 +645,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
               <span className="text-sm font-medium">Hàng zin</span>
               <span className="text-xs text-slate-400">(100% nhựa nguyên sinh)</span>
             </label>
-            <label className={`flex items-center gap-2.5 px-4 py-2.5 rounded-xl border-2 cursor-pointer transition-all select-none ${
+            <label className={`flex items-center gap-2.5 px-4 py-2.5 rounded-xl border-2 cursor-pointer transition-colors select-none ${
               f.material_type === 'pha'
                 ? 'border-amber-500 bg-amber-50 text-amber-800'
                 : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'
@@ -815,8 +815,8 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
                           <td className="py-2 pr-2 font-medium text-slate-500 cursor-pointer" onClick={() => toggleStage(stg)} title="Tổng sản lượng cho phép của các lần (kế hoạch)">Σ KH {fmt(sumQty)}</td>
                           <td colSpan={4} className="cursor-pointer py-2 pr-2" onClick={() => toggleStage(stg)}>
                             {stg === "Cắt" && rollAvail && (
-                              <span className="inline-flex items-center gap-1.5 text-xs font-medium text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-full px-2.5 py-0.5">
-                                🧵 Tồn cuộn khả dụng: {fmt(rollAvail.total_kg)} kg ({rollAvail.spec_label})
+                              <span className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-full px-2.5 py-0.5">
+                                Tồn cuộn khả dụng: {fmt(rollAvail.total_kg)} kg ({rollAvail.spec_label})
                               </span>
                             )}
                           </td>
@@ -851,7 +851,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
                               })()}
                             </td>
                             <td className="py-1.5 pr-2"><select disabled={dis} className={cellCls} value={t.machine_id} onChange={(e) => upTask(t._k, "machine_id", e.target.value)}><option value="">-- Chọn máy --</option>{stageMachines.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</select></td>
-                            <td className="py-1.5 pr-2"><input disabled={dis} type="date" className={cellCls} value={t.planned_date} onChange={(e) => upTask(t._k, "planned_date", e.target.value)} /></td>
+                            <td className="py-1.5 pr-2"><DateInput disabled={dis} className={cellCls} value={t.planned_date} onChange={(e) => upTask(t._k, "planned_date", e.target.value)} /></td>
                             {/* Cột Đội đã ẨN (dữ liệu assigned_team vẫn giữ). Công nhân: người của nhà máy theo
                                 công đoạn xếp trên, người khác xếp dưới — không chặn ai. */}
                             <td className="py-1.5 pr-2">
@@ -911,9 +911,10 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
         return (
         <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center p-4 z-[70]">
           <div className="bg-white rounded-lg shadow-xl w-full max-w-lg flex flex-col max-h-[90vh]">
+            <DialogBehavior onClose={() => setCutModal(null)} />
             <div className="flex items-center justify-between p-4 border-b border-slate-100">
               <h2 className="text-lg font-semibold text-slate-800">Hoàn thành Cắt — trừ cuộn BTP</h2>
-              <button onClick={() => setCutModal(null)} className="text-slate-400 hover:text-slate-600">&times;</button>
+              <button onClick={(e) => confirmClose(e, () => setCutModal(null))} className="text-slate-400 hover:text-slate-600">&times;</button>
             </div>
             <div className="p-4 overflow-y-auto space-y-3 text-sm">
               <p>Thông số: <b>{cutModal.spec_label}</b></p>
@@ -925,7 +926,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
                 {cutModal.lots.map((lot) => (
                   <label key={lot.lot_code} className="flex items-center justify-between gap-3 p-2.5 cursor-pointer hover:bg-slate-50">
                     <span>
-                      <b>{lot.lot_code}</b>{lot.is_own ? <span className="ml-1 text-xs text-indigo-600">(lô của lệnh)</span> : ""}
+                      <b>{lot.lot_code}</b>{lot.is_own ? <span className="ml-1 text-xs text-blue-600">(lô của lệnh)</span> : ""}
                       <span className="text-slate-500"> · {lot.location} · {fmt(lot.qty)} kg</span>
                     </span>
                     <span className="inline-flex items-center gap-1.5 text-xs">
@@ -938,10 +939,10 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
               </div>
             </div>
             <div className="p-4 border-t border-slate-100 flex justify-end gap-3 bg-slate-50 rounded-b-lg">
-              <button onClick={() => setCutModal(null)} className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-200 rounded-lg">Hủy</button>
+              <button onClick={(e) => confirmClose(e, () => setCutModal(null))} className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-200 rounded-lg">Hủy</button>
               <button onClick={() => finishComplete(cutModal.codes, [...cutModal.finish])} disabled={completing}
                 className="px-4 py-2 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg disabled:opacity-60 flex items-center gap-2">
-                <CheckCircle2 size={16} /> {completing ? "Đang xử lý..." : "Xác nhận hoàn thành"}
+                <CheckCircle2 size={16} /> {completing ? "Đang xử lý…" : "Xác nhận hoàn thành"}
               </button>
             </div>
           </div>
@@ -1017,12 +1018,13 @@ export function ScheduleModal({ lookups, order, onClose, onSaved }) {
   return (
     <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center p-4 z-[60]">
       <div className="bg-white rounded-lg shadow-xl w-full max-w-4xl flex flex-col max-h-[90vh]">
+        <DialogBehavior onClose={onClose} />
         <div className="flex items-center justify-between p-4 border-b border-slate-100">
           <h2 className="text-lg font-semibold text-slate-800">Phân công - {order.order_code}</h2>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600">&times;</button>
+          <button onClick={(e) => confirmClose(e, onClose)} className="text-slate-400 hover:text-slate-600">&times;</button>
         </div>
         <div className="p-4 overflow-y-auto">
-          {loading ? <p className="text-slate-500">Đang tải...</p> : (
+          {loading ? <p className="text-slate-500">Đang tải…</p> : (
             <div className="overflow-x-auto border border-slate-200 rounded-lg">
               <table className="w-full text-sm">
                 <thead className="bg-slate-50 text-slate-500 text-xs uppercase">
@@ -1051,13 +1053,13 @@ export function ScheduleModal({ lookups, order, onClose, onSaved }) {
                           </select>
                         </td>
                         <td className="px-3 py-2">
-                          <input disabled={dis} type="date" className={inputCls} value={t.planned_date?.slice(0, 10) || ""} onChange={e => setTask(t.id, "planned_date", e.target.value)} />
+                          <DateInput disabled={dis} className={inputCls} value={t.planned_date?.slice(0, 10) || ""} onChange={e => setTask(t.id, "planned_date", e.target.value)} />
                         </td>
                         <td className="px-3 py-2">
                           <input disabled={dis} className={inputCls} placeholder="VD: Ca 1" value={t.shift || ""} onChange={e => setTask(t.id, "shift", e.target.value)} />
                         </td>
                         <td className="px-3 py-2">
-                          <input disabled={dis} className={inputCls} placeholder="Nhân công..." value={t.assigned_worker || ""} onChange={e => setTask(t.id, "assigned_worker", e.target.value)} />
+                          <input disabled={dis} className={inputCls} placeholder="Nhân công…" value={t.assigned_worker || ""} onChange={e => setTask(t.id, "assigned_worker", e.target.value)} />
                         </td>
                         <td className="px-3 py-2">
                           <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${statusClass(t.status)}`}>{t.status}</span>
@@ -1071,8 +1073,8 @@ export function ScheduleModal({ lookups, order, onClose, onSaved }) {
           )}
         </div>
         <div className="p-4 border-t border-slate-100 flex justify-end gap-3 bg-slate-50 rounded-b-lg">
-          <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-200 rounded-lg transition-colors">Hủy</button>
-          <button onClick={save} disabled={loading || saving} className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors flex items-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"><Save size={16}/> {saving ? "Đang lưu..." : "Lưu thay đổi"}</button>
+          <button onClick={(e) => confirmClose(e, onClose)} className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-200 rounded-lg transition-colors">Hủy</button>
+          <button onClick={save} disabled={loading || saving} className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors flex items-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"><Save size={16}/> {saving ? "Đang lưu…" : "Lưu thay đổi"}</button>
         </div>
       </div>
     </div>
@@ -1089,10 +1091,15 @@ export default function ProductionModule({ lookups, focusId, onFocusConsumed, on
   const [rows, setRows] = useState([]);
   const [cameFromFocus, setCameFromFocus] = useState(false); // mở từ module khác → back về đúng chỗ
 
+  // Phạm vi danh sách: mặc định lệnh chưa xong + lệnh tạo trong 90 ngày (lệnh cũ đã xong ẩn bớt cho nhẹ); "Tất cả" = như cũ
+  const [scope, setScope] = useRemembered("prod:list:scope", "recent");
+  const [listLoading, setListLoading] = useState(true);
   const load = useCallback(async () => {
-    try { setRows(await production.list({})); }
+    setListLoading(true);
+    try { setRows(await production.list(scope === "all" ? {} : { recent_days: 90 })); }
     catch (e) { toast.error("Lỗi tải lệnh sản xuất: " + e.message); }
-  }, []);
+    finally { setListLoading(false); }
+  }, [scope]);
   useEffect(() => { load(); }, [load]);
 
   // Mở sẵn chi tiết lệnh khi được điều hướng từ module khác (vd: Kế hoạch)
@@ -1109,7 +1116,8 @@ export default function ProductionModule({ lookups, focusId, onFocusConsumed, on
   };
 
   const del = async (id) => {
-    if (!confirm("Xóa lệnh sản xuất này?")) return;
+    const r = rows.find((x) => x.id === id);
+    if (!confirm(`Xóa lệnh sản xuất ${r?.order_code || ""}${r?.product_name ? ` – ${r.product_name}` : ""}?`)) return;
     try { await production.remove(id); toast.success("Đã xóa lệnh sản xuất thành công"); load(); } catch (e) { toast.error("Lỗi xóa: " + e.message); }
   };
 
@@ -1162,6 +1170,11 @@ export default function ProductionModule({ lookups, focusId, onFocusConsumed, on
   return (
     <div className="space-y-5">
       <ListHeader title="Lệnh sản xuất" actions={<>
+        <select value={scope} onChange={(e) => setScope(e.target.value)} aria-label="Phạm vi lệnh" title="Phạm vi lệnh hiển thị"
+          className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-700">
+          <option value="recent">Chưa xong + 90 ngày</option>
+          <option value="all">Tất cả lệnh</option>
+        </select>
         <div className="flex rounded-lg border border-slate-200 overflow-hidden text-sm">
           <button onClick={() => setMode("table")} className={`flex items-center gap-1.5 px-3 py-1.5 ${mode === "table" ? "bg-blue-600 text-white" : "text-slate-600 hover:bg-slate-50"}`}><List size={15} /> Bảng</button>
           <button onClick={() => setMode("gantt")} className={`flex items-center gap-1.5 px-3 py-1.5 ${mode === "gantt" ? "bg-blue-600 text-white" : "text-slate-600 hover:bg-slate-50"}`}><GanttChartSquare size={15} /> Gantt</button>
@@ -1171,7 +1184,7 @@ export default function ProductionModule({ lookups, focusId, onFocusConsumed, on
 
       {mode === "gantt" && <ProductionGantt onOpenOrder={(id) => openForm({ edit: id })} />}
 
-      {mode === "table" && <DataTable dense columns={columns} rows={rows} rowKey={(r) => r.id} emptyText="Chưa có lệnh sản xuất" />}
+      {mode === "table" && <DataTable loading={listLoading} dense columns={columns} rows={rows} rowKey={(r) => r.id} emptyText="Chưa có lệnh sản xuất" />}
       {scheduling && <ScheduleModal lookups={lookups} order={scheduling} onClose={() => setScheduling(null)} onSaved={() => { setScheduling(null); load(); }} />}
     </div>
   );

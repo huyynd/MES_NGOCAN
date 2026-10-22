@@ -64,9 +64,10 @@ export default function UsersModule({ lookups }) {
   const [roleList, setRoleList] = useState([]);
   const [editing, setEditing] = useState(null);
   const teams = [...new Set(((lookups && lookups.employees) || []).map((e) => e.factory).filter(Boolean))];
-  const load = useCallback(async () => { try { setRows(await users.list()); } catch (e) { toast.error("Lỗi tải tài khoản: " + e.message); } }, []);
+  const [listLoading, setListLoading] = useState(true);
+  const load = useCallback(async () => { setListLoading(true); try { setRows(await users.list()); } catch (e) { toast.error("Lỗi tải tài khoản: " + e.message); } finally { setListLoading(false); } }, []);
   useEffect(() => { load(); roles.list().then(setRoleList).catch((e) => toast.error("Không tải được danh sách vai trò — bấm Làm mới: " + e.message)); }, [load]);
-  const del = async (id) => { if (!confirm("Xóa tài khoản này?")) return; try { await users.remove(id); toast.success("Đã xóa thành công"); load(); } catch (e) { toast.error("Lỗi xóa: " + e.message); } };
+  const del = async (id) => { const u = rows.find((x) => x.id === id); if (!confirm(`Xóa tài khoản ${u?.username || ""}${u?.full_name ? ` (${u.full_name})` : ""}?`)) return; try { await users.remove(id); toast.success("Đã xóa thành công"); load(); } catch (e) { toast.error("Lỗi xóa: " + e.message); } };
 
   const columns = [
     { key: "username", label: "Tài khoản", filter: "text", render: (u) => <button onClick={() => setEditing(u)} className="font-medium text-blue-600 hover:underline">{u.username}</button> },
@@ -89,7 +90,7 @@ export default function UsersModule({ lookups }) {
         <button onClick={load} className="btn-ghost"><RotateCcw size={16} /> Làm mới</button>
         <button onClick={() => setEditing({})} className="btn-primary"><Plus size={16} /> Thêm tài khoản</button>
       </>} />
-      <DataTable columns={columns} rows={rows} rowKey={(u) => u.id} emptyText="Chưa có tài khoản" />
+      <DataTable loading={listLoading} columns={columns} rows={rows} rowKey={(u) => u.id} emptyText="Chưa có tài khoản" />
     </div>
   );
 }

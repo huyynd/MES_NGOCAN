@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
+import { useAppSettings } from "../../appSettings.js";
 import {
   Activity, Download, RefreshCcw, TrendingUp, Package, CheckCircle2, AlertTriangle,
   X, User, Users, CalendarDays, Factory, ShoppingCart, Tag, ClipboardList, Layers,
   ChevronRight, AlertCircle,
 } from "lucide-react";
-import { ListHeader, Section, DataTable, SearchSelect, useRemembered } from "../../components.jsx";
+import { ListHeader, Section, DataTable, SearchSelect, useRemembered, DialogBehavior, DateInput } from "../../components.jsx";
 import { production, scrap as scrapApi } from "../../mesApi.js";
-import { fmt, fmtDate, statusClass, toast, todayYmd, monthStartYmd } from "../../ui.js";
+import { fmt, fmtDate, statusClass, toast, todayYmd, monthStartYmd, fmtDec } from "../../ui.js";
 import * as XLSX from "xlsx";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -27,7 +28,7 @@ const monthStart = monthStartYmd;
 const STATUS_COLORS = {
   "Chờ duyệt": "#94a3b8",
   "Đã lên kế hoạch": "#3b82f6",
-  "Chờ nguyên vật liệu": "#a855f7",
+  "Chờ nguyên vật liệu": "#b45309", // amber đậm (cảnh báo) — khác "Đang sản xuất"
   "Đang sản xuất": "#f59e0b",
   "Hoàn thành": "#10b981",
   "Đã hủy": "#ef4444",
@@ -56,7 +57,7 @@ function KpiCard({ label, value, sub, icon: Icon, color = "blue", onClick, activ
   const c = colors[color] || colors.blue;
   return (
     <button type="button" onClick={onClick} title="Bấm để xem danh sách chi tiết"
-      className={`relative overflow-hidden rounded-xl border bg-white px-4 pt-4 pb-3.5 text-left transition-all hover:shadow-md hover:-translate-y-0.5
+      className={`relative overflow-hidden rounded-xl border bg-white px-4 pt-4 pb-3.5 text-left transition-colors hover:border-slate-300
         ${active ? `ring-2 shadow-md ${c.ring}` : "border-slate-200"}`}>
       <div className={`absolute left-0 top-0 h-full w-1 ${c.bar}`} />
       <div className="flex items-center justify-between gap-2">
@@ -103,7 +104,7 @@ function OutputCharts({ rows, onPick }) {
   }, [rows]);
 
   const colorOf = (n) => STATUS_COLORS[n] || "#94a3b8";
-  const num = (v) => Number(v).toLocaleString("vi-VN");
+  const num = (v) => fmt(v);
   const card = "bg-white rounded-xl border border-slate-200 p-4";
   const empty = <div className="h-52 flex items-center justify-center text-sm text-slate-400">Chưa có dữ liệu</div>;
 
@@ -246,9 +247,10 @@ function OrderDetailDrawer({ order, onClose }) {
       {/* Drawer */}
       <div className="fixed right-0 top-0 h-full w-full max-w-[520px] bg-white shadow-2xl z-50 flex flex-col"
         style={{ animation: "slideInRight 0.22s ease" }}>
+        <DialogBehavior onClose={onClose} dirty={false} />
 
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-gradient-to-r from-blue-600 to-blue-700 text-white shrink-0">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-blue-600 text-white shrink-0">
           <div>
             <div className="text-xs font-medium opacity-80 mb-0.5">Chi tiết lệnh sản xuất</div>
             <div className="text-lg font-bold tracking-wide">{order.order_code}</div>
@@ -272,7 +274,7 @@ function OrderDetailDrawer({ order, onClose }) {
             </div>
             <div className="h-2.5 rounded-full bg-slate-200 overflow-hidden">
               <div
-                className={`h-full rounded-full transition-all ${barColor}`}
+                className={`h-full rounded-full transition-[width] ${barColor}`}
                 style={{ width: `${Math.min(pct, 100)}%` }}
               />
             </div>
@@ -401,6 +403,7 @@ export default function OutputReport(props) {
 }
 
 function OutputReportBody({ lookups }) {
+  const S = useAppSettings();
   const { can, isAdmin } = usePerm(); // eslint-disable-line no-unused-vars
   const [rows, setRows]               = useState([]);
   const [loading, setLoading]         = useState(false);
@@ -420,14 +423,15 @@ function OutputReportBody({ lookups }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await production.list({ status: "" }) // API trả đủ mọi lệnh (không giới hạn số dòng);
+      // Chỉ tải lệnh trong kỳ đang chọn — máy chủ lọc theo đúng orderDate() (trước đây tải hết rồi lọc ở trình duyệt)
+      const data = await production.list({ date_from: from, date_to: to });
       setRows(Array.isArray(data) ? data : data?.data || []);
     } catch (e) {
       toast.error("Lỗi tải sản lượng: " + e.message);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [from, to]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -490,7 +494,8 @@ function OutputReportBody({ lookups }) {
   const runningCount = filtered.filter(r => r.status === "Đang sản xuất").length;
   const achieveRate  = totalPlanned > 0 ? Math.round((totalActual / totalPlanned) * 100) : 0;
   const scrapRate    = (scrapFinished + totalScrap) > 0
-    ? ((totalScrap / (scrapFinished + totalScrap)) * 100).toFixed(1) : "0.0";
+    ? (totalScrap / (scrapFinished + totalScrap)) * 100 : 0;
+  const scrapRateTxt = fmtDec(scrapRate, 1);
   // Còn phải sản xuất (gộp toàn bộ lệnh đang lọc) và phần vượt mức
   const totalRemaining = Math.max(0, totalPlanned - totalActual);
   const totalOver      = Math.max(0, totalActual - totalPlanned);
@@ -524,7 +529,7 @@ function OutputReportBody({ lookups }) {
     { key: "date", label: "Ngày", render: (r) => fmtDate(r.date) },
     { key: "finished_qty", label: "SL thành phẩm", align: "right", render: (r) => fmt(r.finished_qty) },
     { key: "scrap_qty", label: "SL phế", align: "right", render: (r) => <span className="font-semibold text-rose-600">{fmt(r.scrap_qty)}</span> },
-    { key: "rate", label: "Tỷ lệ phế", align: "right", render: (r) => `${r.rate.toFixed(1)}%` },
+    { key: "rate", label: "Tỷ lệ phế", align: "right", render: (r) => `${fmtDec(r.rate, 1)}%` },
   ];
 
   const columns = [
@@ -668,12 +673,12 @@ function OutputReportBody({ lookups }) {
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           <div>
             <label className="block text-xs font-medium text-slate-500 mb-1">Từ ngày</label>
-            <input type="date" className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+            <DateInput className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40"
               value={from} onChange={e => setFrom(e.target.value)} />
           </div>
           <div>
             <label className="block text-xs font-medium text-slate-500 mb-1">Đến ngày</label>
-            <input type="date" className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+            <DateInput className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40"
               value={to} onChange={e => setTo(e.target.value)} />
           </div>
           <div>
@@ -765,8 +770,8 @@ function OutputReportBody({ lookups }) {
           sub={filtered.length > 0 ? `${Math.round(overdueCount / filtered.length * 100)}% số lệnh` : "Trễ hạn chót"}
           icon={AlertCircle} color={overdueCount > 0 ? "rose" : "green"} {...cardProps("overdue")} />
         <KpiCard label="Phế phẩm"    value={scrapErr ? "—" : fmt(totalScrap)}
-          sub={scrapErr ? "Lỗi tải số liệu phế" : `Tỷ lệ phế ${scrapRate}%`}
-          icon={AlertTriangle} color={Number(scrapRate) > 5 ? "rose" : "amber"} {...cardProps("scrap")} />
+          sub={scrapErr ? "Lỗi tải số liệu phế" : `Tỷ lệ phế ${scrapRateTxt}%`}
+          icon={AlertTriangle} color={scrapRate > S.scrap_alert_percent ? "rose" : "amber"} {...cardProps("scrap")} />
       </div>
 
       <OutputCharts rows={filtered} onPick={pick} />
@@ -816,10 +821,11 @@ function OutputReportBody({ lookups }) {
           <DataTable
             key="orders"
             dense
+            loading={loading}
             columns={columns}
             rows={viewRows}
             rowKey={(r) => r.id}
-            emptyText={loading ? "Đang tải dữ liệu..." : "Không có lệnh nào trong mục này"}
+            emptyText={loading ? "Đang tải dữ liệu…" : "Không có lệnh nào trong mục này"}
           />
         )}
       </Section>

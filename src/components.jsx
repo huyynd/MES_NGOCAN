@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
-import { ArrowLeft, ChevronLeft, ChevronRight, ChevronDown } from "lucide-react";
+import { ArrowLeft, ChevronLeft, ChevronRight, ChevronDown, X } from "lucide-react";
 import { inputCls, UNITS } from "./ui.js";
 
 // Bỏ dấu tiếng Việt để tìm không phân biệt dấu/hoa-thường
@@ -10,9 +10,10 @@ const stripVN = (s) => (s || "").toString().toLowerCase().normalize("NFD").repla
  * Dropdown có Ô TÌM KIẾM (combobox): gõ vài ký tự → lọc gợi ý (không phân biệt dấu).
  * options: [{ value, label }]. onChange(value).
  */
-export function SearchSelect({ value, onChange, options = [], placeholder = "-- Chọn --", disabled = false, className }) {
+export function SearchSelect({ value, onChange, options = [], placeholder = "-- Chọn --", disabled = false, className, ariaLabel }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
+  const [activeIdx, setActiveIdx] = useState(0); // C-04: mục đang trỏ bằng phím ↑↓
   const [pos, setPos] = useState(null);           // toạ độ để đặt menu (portal, fixed)
   const triggerRef = useRef(null);
   const menuRef = useRef(null);
@@ -30,7 +31,26 @@ export function SearchSelect({ value, onChange, options = [], placeholder = "-- 
       setPos({ left: r.left, top: r.bottom + 4, width: r.width, maxHeight: Math.min(300, spaceBelow - 16) });
     }
   };
-  const openMenu = () => { if (disabled) return; place(); setOpen(true); };
+  const openMenu = () => {
+    if (disabled) return;
+    place(); setOpen(true);
+    setActiveIdx(Math.max(0, options.findIndex((o) => o.value === value)));
+  };
+  const close = (refocus) => { setOpen(false); setQ(""); if (refocus) triggerRef.current?.focus(); };
+  // ↑↓ di chuyển, Enter chọn, Esc đóng (trả focus về nút), Tab đóng
+  const onKeyDown = (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!filtered.length) return;
+      const n = e.key === "ArrowDown" ? Math.min(filtered.length - 1, activeIdx + 1) : Math.max(0, activeIdx - 1);
+      setActiveIdx(n);
+      menuRef.current?.querySelector(`[data-idx="${n}"]`)?.scrollIntoView({ block: "nearest" });
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const o = filtered[activeIdx]; if (o) { onChange(o.value); close(true); }
+    } else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(true); }
+    else if (e.key === "Tab") close(false);
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -52,6 +72,8 @@ export function SearchSelect({ value, onChange, options = [], placeholder = "-- 
   return (
     <>
       <button type="button" ref={triggerRef} disabled={disabled} onClick={() => (open ? setOpen(false) : openMenu())}
+        aria-haspopup="listbox" aria-expanded={open} aria-label={ariaLabel}
+        onKeyDown={(e) => { if (!open && (e.key === "ArrowDown" || e.key === "ArrowUp")) { e.preventDefault(); openMenu(); } }}
         className={(className || inputCls) + " text-left flex items-center justify-between gap-2" + (disabled ? " bg-slate-50 text-slate-400" : "")}>
         <span className={"truncate " + (selected ? "" : (disabled ? "text-transparent" : "text-slate-400"))}>{selected ? selected.label : placeholder}</span>
         <ChevronDown size={16} className={"shrink-0 " + (disabled && !selected ? "text-transparent" : "text-slate-400")} />
@@ -60,14 +82,16 @@ export function SearchSelect({ value, onChange, options = [], placeholder = "-- 
         <div ref={menuRef} style={{ position: "fixed", left: pos.left, ...(pos.top ? { top: pos.top } : { bottom: pos.bottom }), width: "max-content", minWidth: pos.width, maxWidth: 350, maxHeight: pos.maxHeight || 288, zIndex: 1000 }}
           className="bg-white border border-slate-200 rounded-lg shadow-lg overflow-auto flex flex-col">
           <div className="p-2 sticky top-0 bg-white border-b border-slate-100">
-            <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Gõ để tìm…" size={1}
+            <input autoFocus value={q} onChange={(e) => { setQ(e.target.value); setActiveIdx(0); }} onKeyDown={onKeyDown} placeholder="Gõ để tìm…" size={1}
+              aria-label={ariaLabel ? `Tìm ${ariaLabel}` : "Gõ để tìm"}
               className="w-full min-w-[50px] px-2 py-1.5 rounded border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40" />
           </div>
-          <div className="py-1">
+          <div className="py-1" role="listbox" aria-label={ariaLabel}>
             {!filtered.length && <div className="px-3 py-2 text-sm text-slate-400">Không tìm thấy</div>}
-            {filtered.map((o) => (
-              <button type="button" key={o.value} onClick={() => pick(o.value)}
-                className={"w-full text-left truncate px-3 py-1.5 text-xs hover:bg-blue-50 " + (o.value === value ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-700")}
+            {filtered.map((o, i) => (
+              <button type="button" key={o.value} onClick={() => pick(o.value)} tabIndex={-1}
+                role="option" aria-selected={o.value === value} data-idx={i} onMouseEnter={() => setActiveIdx(i)}
+                className={"w-full text-left truncate px-3 py-1.5 text-xs hover:bg-blue-50 " + (o.value === value ? "bg-blue-50 text-blue-700 font-medium " : "text-slate-700 ") + (i === activeIdx ? "ring-1 ring-inset ring-blue-300" : "")}
                 title={o.label}>
                 {o.label}
               </button>
@@ -212,20 +236,20 @@ export function Pagination({ total, page, size, pageCount, start, onPage, onSize
     <div className="flex items-center justify-between flex-wrap gap-3 pt-1">
       <div className="flex items-center gap-2 text-sm text-slate-500">
         <span>Hiển thị</span>
-        <select value={size} onChange={(e) => onSize(+e.target.value)}
+        <select value={size} onChange={(e) => onSize(+e.target.value)} aria-label="Số dòng mỗi trang"
           className="rounded-md border border-slate-300 px-2 py-1 text-sm">
           {sizes.map((n) => <option key={n} value={n}>{n}</option>)}
         </select>
         <span>dòng · {from}–{to} / {total}</span>
       </div>
       <div className="flex items-center gap-1">
-        <button className={pagerBtn} disabled={page <= 1} onClick={() => onPage(page - 1)}><ChevronLeft size={16} /></button>
+        <button className={pagerBtn} disabled={page <= 1} onClick={() => onPage(page - 1)} aria-label="Trang trước"><ChevronLeft size={16} /></button>
         {pageNumbers(page, pageCount).map((n, i) =>
           n === "…"
             ? <span key={`e${i}`} className="px-1.5 text-slate-400">…</span>
-            : <button key={n} onClick={() => onPage(n)}
+            : <button key={n} onClick={() => onPage(n)} aria-current={n === page ? "page" : undefined} aria-label={`Trang ${n}`}
                 className={`${pagerBtn} ${n === page ? "!bg-blue-600 !text-white !border-blue-600" : ""}`}>{n}</button>)}
-        <button className={pagerBtn} disabled={page >= pageCount} onClick={() => onPage(page + 1)}><ChevronRight size={16} /></button>
+        <button className={pagerBtn} disabled={page >= pageCount} onClick={() => onPage(page + 1)} aria-label="Trang sau"><ChevronRight size={16} /></button>
       </div>
     </div>
   );
@@ -259,20 +283,25 @@ export function usePager(rows, initialSize = 10, sizes, stateKey = null) {
   useEffect(() => { if (total > 0 && page > pageCount) setPage(pageCount); }, [pageCount]); // eslint-disable-line
   const start = (page - 1) * size;
   const slice = rows.slice(start, start + size);
-  const Pager = () => (
+  // C-06: `pager` / `filler(cols)` là element dựng sẵn (KHÔNG phải component mới mỗi lần vẽ → không mất focus).
+  // `Pager` / `Filler` giữ lại cho chỗ cũ còn dùng <Pager /> / <Filler cols />.
+  const pager = (
     <Pagination total={total} page={page} size={size} pageCount={pageCount}
       start={start} onPage={setPage} onSize={(s) => { setSize(s); setPage(1); }} sizes={sizes} />
   );
   // Hàng trống lấp đầy để bảng luôn cao đúng `size` dòng → thanh phân trang không nhảy.
   const fillCount = total > 0 ? Math.max(0, size - slice.length) : 0;
-  const Filler = ({ cols }) => fillCount === 0 ? null : (
+  const filler = (cols) => fillCount === 0 ? null : (
     <>{Array.from({ length: fillCount }).map((_, i) => (
       <tr key={`__filler${i}`} aria-hidden="true">
         <td colSpan={cols} className="px-4 py-3">&nbsp;</td>
       </tr>
     ))}</>
   );
-  return { slice, Pager, Filler };
+  const Pager = () => pager;
+  const Filler = ({ cols }) => filler(cols);
+  const resetPage = () => setPage(1);
+  return { slice, pager, filler, Pager, Filler, resetPage };
 }
 
 /* ---- Bảng dữ liệu có bộ lọc theo từng cột ---- */
@@ -303,11 +332,13 @@ export function DateInput({ value, onChange, placeholder = "dd/mm/yyyy", classNa
  *             render?(row), align?, tdClass? }]
  * Lọc nhiều cột cùng lúc (AND), text = gần đúng (bỏ dấu), tự cập nhật danh sách.
  */
-export function DataTable({ columns, rows, rowKey, pageSize = 10, emptyText = "Không có dữ liệu", dense = false, stateKey }) {
+export function DataTable({ columns, rows, rowKey, pageSize = 10, emptyText = "Không có dữ liệu", dense = false, stateKey, loading = false }) {
   // Bộ lọc + trang được nhớ theo màn hình (đường dẫn + bộ cột) → Quay lại từ chi tiết vẫn giữ lọc
   const memKey = stateKey ?? `dt:${window.location.pathname}:${columns.map((c) => c.key).join(",")}`;
   const [filters, setFilters] = useRemembered(memKey + ":filters", {});
-  const setF = (k, v) => setFilters((s) => ({ ...s, [k]: v }));
+  // C-05: đổi bộ lọc → về trang 1 (lúc mở lại màn vẫn giữ trang đã nhớ — chỉ reset khi người dùng lọc)
+  const resetPageRef = useRef(null);
+  const setF = (k, v) => { setFilters((s) => ({ ...s, [k]: v })); resetPageRef.current?.(); };
   const cellValue = (c, r) => c.filterValue ? c.filterValue(r) : r[c.filterKey || c.key];
 
   const distinct = (c) => {
@@ -327,7 +358,8 @@ export function DataTable({ columns, rows, rowKey, pageSize = 10, emptyText = "K
     return stripAccent(cell).includes(stripAccent(fv));
   }));
 
-  const { slice, Pager, Filler } = usePager(filtered, pageSize, undefined, memKey);
+  const { slice, pager, filler, resetPage } = usePager(filtered, pageSize, undefined, memKey);
+  resetPageRef.current = resetPage;
   const pad = dense ? "px-3 py-2" : "px-4 py-3";
   const inputCls = "w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs text-slate-700 placeholder:text-slate-400 disabled:placeholder-transparent focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none";
 
@@ -343,14 +375,14 @@ export function DataTable({ columns, rows, rowKey, pageSize = 10, emptyText = "K
                     <SearchSelect
                       value={filters[c.key] || ""}
                       onChange={(v) => setF(c.key, v === "__all__" ? "" : v)}
-                      placeholder={c.label}
+                      placeholder={c.label} ariaLabel={"Lọc " + c.label}
                       className={inputCls + " bg-white"}
                       options={[{ value: "__all__", label: "— Tất cả —" }, ...distinct(c).map((v) => ({ value: String(v), label: String(v) }))]}
                     />
                   ) : c.filter === "date" ? (
-                    <DateInput value={filters[c.key] || ""} onChange={(e) => setF(c.key, e.target.value)} className={inputCls} />
+                    <DateInput value={filters[c.key] || ""} onChange={(e) => setF(c.key, e.target.value)} className={inputCls} placeholder={c.label} aria-label={"Lọc " + c.label} />
                   ) : c.filter === "text" ? (
-                    <input value={filters[c.key] || ""} onChange={(e) => setF(c.key, e.target.value)} placeholder={c.label} className={inputCls} />
+                    <input value={filters[c.key] || ""} onChange={(e) => setF(c.key, e.target.value)} placeholder={c.label} aria-label={"Lọc " + c.label} className={inputCls} />
                   ) : null}
                 </th>
               ))}
@@ -359,22 +391,159 @@ export function DataTable({ columns, rows, rowKey, pageSize = 10, emptyText = "K
               {columns.map((c) => <th key={c.key} className={`${pad} font-semibold ${alignCls(c.align)}`}>{c.label}</th>)}
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-100">
+          <tbody className={"divide-y divide-slate-100" + (loading && rows.length ? " opacity-60 transition-opacity" : "")} aria-busy={loading || undefined}>
             {slice.map((r) => (
               <tr key={rowKey(r)} className="hover:bg-slate-50/70">
                 {columns.map((c) => (
-                  <td key={c.key} className={`${pad} ${alignCls(c.align)} ${c.tdClass || "text-slate-700"}`}>
+                  <td key={c.key} className={`${pad} ${alignCls(c.align)}${c.align === "right" ? " tabular-nums" : ""} ${c.tdClass || "text-slate-700"}`}>
                     {c.render ? c.render(r) : (r[c.key] ?? "—")}
                   </td>
                 ))}
               </tr>
             ))}
-            {!filtered.length && <tr><td colSpan={columns.length} className={`${pad} py-10 text-center text-slate-400`}>{emptyText}</td></tr>}
-            <Filler cols={columns.length} />
+            {!filtered.length && <tr><td colSpan={columns.length} className={`${pad} py-10 text-center text-slate-400`}>{loading && !rows.length ? "Đang tải…" : emptyText}</td></tr>}
+            {filler(columns.length)}
           </tbody>
         </table>
       </div>
-      <Pager />
+      {pager}
     </div>
   );
+}
+
+/* ---- Hộp thoại dùng chung (G-03) ----
+   useDialog: Esc để đóng, focus vào hộp khi mở + trả focus khi đóng, khóa cuộn nền,
+   có thay đổi chưa lưu (dirty) thì hỏi trước khi đóng. requestClose() dùng cho nút Hủy / × / nền.
+   locked = đang xử lý (vd đang nhập Excel) → không cho đóng. */
+export function useDialog({ open = true, onClose, dirty, locked = false, labelledBy }) {
+  const ref = useRef(null);
+  // dirty không truyền → tự coi là có thay đổi khi người dùng gõ / chọn trong hộp (onChangeCapture)
+  const touched = useRef(false);
+  const st = useRef({}); st.current = { onClose, dirty, locked };
+  const requestClose = React.useCallback(() => {
+    const { onClose: oc, dirty: d, locked: l } = st.current;
+    if (l) return;
+    if ((d ?? touched.current) && !window.confirm("Bỏ thay đổi chưa lưu?")) return;
+    oc?.();
+  }, []);
+  useEffect(() => {
+    if (!open) return;
+    const prevFocus = document.activeElement;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const t = setTimeout(() => {
+      const el = ref.current;
+      if (!el || el.contains(document.activeElement)) return;
+      (el.querySelector("[autofocus], input:not([disabled]):not([type=hidden]), select:not([disabled]), textarea:not([disabled]), button:not([disabled])") || el).focus?.();
+    }, 0);
+    const onKey = (e) => { if (e.key === "Escape" && !e.defaultPrevented) { e.preventDefault(); requestClose(); } };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      clearTimeout(t);
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+      prevFocus?.focus?.();
+    };
+  }, [open, requestClose]);
+  // gắn vào khung hộp có sẵn: <div {...dialogProps}> (giữ nguyên giao diện cũ)
+  const dialogProps = { ref, role: "dialog", "aria-modal": "true", "aria-labelledby": labelledBy, tabIndex: -1,
+    onChangeCapture: () => { touched.current = true; }, style: { outline: "none" } };
+  return { ref, requestClose, dialogProps };
+}
+
+const MODAL_SIZES = { sm: "max-w-md", md: "max-w-lg", lg: "max-w-3xl", xl: "max-w-5xl", "2xl": "max-w-6xl" };
+let _dlgSeq = 0;
+/** Hộp thoại giữa màn hình. Mặc định bấm nền KHÔNG đóng (closeOnBackdrop=false) để không mất dữ liệu đang nhập.
+ *  children có thể là hàm (requestClose) => … để nút Hủy trong thân hộp cũng đi qua bước hỏi dirty. */
+export function Modal({ open = true, title, onClose, dirty, locked = false, closeOnBackdrop = false, size = "lg", footer, children, bodyClass = "p-5", className = "", z = "z-50" }) {
+  const { requestClose, dialogProps } = useDialog({ open, onClose, dirty, locked });
+  const [titleId] = useState(() => `dlg-title-${++_dlgSeq}`);
+  if (!open) return null;
+  return (
+    <div className={`fixed inset-0 bg-slate-900/50 flex items-center justify-center p-4 ${z}`}
+      onMouseDown={(e) => { if (closeOnBackdrop && e.target === e.currentTarget) requestClose(); }}>
+      <div {...dialogProps} aria-labelledby={title ? titleId : undefined}
+        className={`bg-white rounded-xl shadow-xl w-full ${MODAL_SIZES[size] || size} max-h-[90vh] flex flex-col outline-none ${className}`}>
+        {title != null && (
+          <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-slate-100 shrink-0">
+            <h3 id={titleId} className="font-semibold text-slate-800">{title}</h3>
+            <button type="button" onClick={requestClose} disabled={locked} aria-label="Đóng" className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 disabled:opacity-40"><X size={18} /></button>
+          </div>
+        )}
+        <div className={`flex-1 overflow-y-auto ${bodyClass}`}>{typeof children === "function" ? children(requestClose) : children}</div>
+        {footer && <div className="px-5 py-3 border-t border-slate-100 flex justify-end gap-2 shrink-0">{typeof footer === "function" ? footer(requestClose) : footer}</div>}
+      </div>
+    </div>
+  );
+}
+
+/** G-05: khối báo lỗi tải + nút Thử lại (thay cho việc kẹt mãi ở "Đang tải…") */
+export function LoadError({ message = "Không tải được dữ liệu", onRetry, className = "" }) {
+  return (
+    <div role="alert" className={`flex items-center gap-3 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 ${className}`}>
+      {/* lỗi mạng của trình duyệt (tiếng Anh) → nói rõ bằng tiếng Việt */}
+      <span>{String(message).replace(/Failed to fetch|NetworkError[^)]*|Load failed/g, "không kết nối được máy chủ")}</span>
+      {onRetry && <button type="button" onClick={onRetry} className="btn-ghost py-1 text-sm">Thử lại</button>}
+    </div>
+  );
+}
+
+/* ---- Gắn hành vi hộp thoại vào KHUNG CÓ SẴN (không đổi giao diện) ----
+   Đặt <DialogBehavior onClose={…} /> làm con đầu tiên của khung hộp: khung được gắn role="dialog",
+   Esc để đóng, focus vào ô đầu khi mở / trả focus khi đóng, khóa cuộn nền, tự đánh dấu "có thay đổi"
+   khi người dùng gõ / chọn trong hộp. Nút Hủy / × gọi confirmClose(e, đóng) để cũng được hỏi.
+   dirty (tùy chọn) = ghi đè cách tự đánh dấu; locked = đang xử lý, không cho đóng. */
+export function DialogBehavior({ onClose, dirty, locked = false }) {
+  const spanRef = useRef(null);
+  const st = useRef({}); st.current = { onClose, dirty, locked };
+  useEffect(() => {
+    const el = spanRef.current?.parentElement;
+    if (!el) return;
+    el.setAttribute("role", "dialog"); el.setAttribute("aria-modal", "true");
+    if (!el.hasAttribute("tabindex")) el.setAttribute("tabindex", "-1");
+    el.style.outline = "none";
+    const h = el.querySelector("h1, h2, h3");
+    if (h) { if (!h.id) h.id = `dlg-h-${++_dlgSeq}`; el.setAttribute("aria-labelledby", h.id); }
+    const prevFocus = document.activeElement;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const t = setTimeout(() => {
+      if (el.contains(document.activeElement)) return;
+      (el.querySelector("input:not([disabled]):not([type=hidden]), select:not([disabled]), textarea:not([disabled])") || el).focus?.({ preventScroll: true });
+    }, 0);
+    const mark = () => { if (st.current.dirty === undefined) el.dataset.dirty = "1"; };
+    el.addEventListener("input", mark); el.addEventListener("change", mark);
+    const onKey = (e) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      const all = document.querySelectorAll('[role="dialog"]');
+      if (all[all.length - 1] !== el) return; // chỉ hộp trên cùng
+      e.preventDefault();
+      confirmClose({ currentTarget: el }, () => st.current.onClose?.());
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      clearTimeout(t);
+      el.removeEventListener("input", mark); el.removeEventListener("change", mark);
+      document.removeEventListener("keydown", onKey);
+      // gỡ thuộc tính đã gắn (khung có thể vẫn nằm trong trang, vd ngăn kéo chỉ trượt ra ngoài)
+      ["role", "aria-modal", "aria-labelledby"].forEach((k) => el.removeAttribute(k));
+      delete el.dataset.dirty; delete el.dataset.locked;
+      document.body.style.overflow = prevOverflow;
+      if (prevFocus && document.contains(prevFocus)) prevFocus.focus?.({ preventScroll: true });
+    };
+  }, []);
+  useEffect(() => {
+    const el = spanRef.current?.parentElement; if (!el) return;
+    if (dirty !== undefined) { if (dirty) el.dataset.dirty = "1"; else delete el.dataset.dirty; }
+    if (locked) el.dataset.locked = "1"; else delete el.dataset.locked;
+  });
+  return <span ref={spanRef} hidden />;
+}
+
+/** Đóng hộp thoại có kiểm tra: đang khóa → bỏ qua; có thay đổi chưa lưu → hỏi. e = sự kiện bấm nút trong hộp. */
+export function confirmClose(e, close) {
+  const el = e?.currentTarget?.closest ? e.currentTarget.closest('[role="dialog"]') : null;
+  if (el?.dataset.locked) return;
+  if (el?.dataset.dirty && !window.confirm("Bỏ thay đổi chưa lưu?")) return;
+  close?.();
 }

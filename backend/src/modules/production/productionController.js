@@ -374,12 +374,27 @@ exports.list = async (req, res) => {
     if (customer_id) { where.push(`po.customer_id = $${i++}`); params.push(customer_id); }
     if (planned_date){ where.push(`po.planned_date = $${i++}`); params.push(planned_date); }
     if (q)           { where.push(`(po.order_code ILIKE $${i} OR p.product_name ILIKE $${i})`); params.push(`%${q}%`); i++; }
-    
+    // Tham số tùy chọn (không truyền → trả đủ như cũ):
+    //  date_from / date_to: theo "ngày của lệnh" — GIỐNG HỆT orderDate() ở Báo cáo sản lượng (OutputReport.jsx):
+    //    ngày dự kiến sớm nhất của phân công → ngày dự kiến của lệnh → ngày tạo (theo giờ UTC như chuỗi ISO trình duyệt cắt)
+    //  recent_days: lệnh chưa xong (khác Hoàn thành / Đã hủy) HOẶC tạo trong N ngày gần đây (màn danh sách LSX)
+    //  limit / offset: phân trang phía máy chủ
+    const { date_from, date_to, recent_days } = req.query;
+    const ORDER_DATE = `COALESCE((SELECT MIN(td.planned_date) FROM production_tasks td WHERE td.production_order_id = po.id AND td.planned_date IS NOT NULL),
+                                 po.planned_date, (po.created_at AT TIME ZONE 'UTC')::date)`;
+    const isDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ''));
+    if (isDate(date_from)) { where.push(`${ORDER_DATE} >= $${i++}::date`); params.push(date_from); }
+    if (isDate(date_to))   { where.push(`${ORDER_DATE} <= $${i++}::date`); params.push(date_to); }
+    const days = parseInt(recent_days, 10);
+    if (days > 0) { where.push(`(po.status NOT IN ('Hoàn thành', 'Đã hủy') OR po.created_at >= now() - make_interval(days => $${i++}))`); params.push(Math.min(days, 3650)); }
+    const limit = parseInt(req.query.limit, 10), offset = parseInt(req.query.offset, 10);
+    const pageSql = limit > 0 ? ` LIMIT ${Math.min(limit, 5000)} OFFSET ${offset > 0 ? offset : 0}` : '';
+
     // Áp dụng Data Scope
     const scopeCond = getDataScope(req, 'production', 'view', { factoryCol: 'po.assigned_team' });
     where.push(`(${scopeCond})`);
 
-    const sql = `${SELECT_JOIN} WHERE ${where.join(' AND ')} ORDER BY CASE WHEN po.priority = 'Cao' THEN 1 WHEN po.priority = 'Trung bình' THEN 2 ELSE 3 END, po.created_at DESC`;
+    const sql = `${SELECT_JOIN} WHERE ${where.join(' AND ')} ORDER BY CASE WHEN po.priority = 'Cao' THEN 1 WHEN po.priority = 'Trung bình' THEN 2 ELSE 3 END, po.created_at DESC${pageSql}`;
     const { rows } = await db.query(sql, params);
     res.json({ data: rows });
   } catch (err) { console.error(err); res.status(500).json({ message: 'Lỗi khi lấy danh sách lệnh sản xuất' }); }

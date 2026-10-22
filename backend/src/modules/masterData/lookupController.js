@@ -1,5 +1,6 @@
 // backend/controllers/lookupController.js — dữ liệu cho dropdown ở frontend
 const db = require('../../core/db');
+const { getAppSettings } = require('../../core/lib/settings');
 
 // Xem trước mã kế tiếp sẽ được cấp (MAX hiện có + 1) — chỉ để hiển thị ở form
 const CODE_MAP = {
@@ -86,6 +87,7 @@ exports.all = async (_req, res) => {
       finishingOptions: ['Đục lỗ', 'Xí đáy', 'In ấn', 'Ghép màng', 'Hàn đáy', 'Bo góc'],
       default_roll_product_id: setting('roll_product_id'),
       default_material_product_id: setting('default_material_product_id'),
+      settings: await getAppSettings(db), // Cài đặt hệ thống (VAT, ngưỡng, thông tin công ty…) — mặc định = giá trị cũ
     });
   } catch (err) { console.error(err); res.status(500).json({ message: 'Lỗi khi lấy dữ liệu lookup' }); }
 };

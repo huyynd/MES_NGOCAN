@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
+import { useAppSettings } from "../../appSettings.js";
 import { useNavigate } from "react-router-dom";
 import { RotateCcw, Plus, Trash2, Pencil, ArrowLeft, Save, Printer, FileText, Truck, Wallet, X } from "lucide-react";
 import { deliveries as api, resource, inventory, paymentReceipts } from "../../mesApi.js";
@@ -8,7 +9,7 @@ const ordersApi = resource("sales-orders");
 import { usePerm } from "../../perm.jsx";
 import {  inputCls, fmt, fmtDate, statusClass , toast, todayYmd } from "../../ui.js";
 import { specShort } from "../../specs.js";
-import { PageHeader, Section, ListHeader, DataTable, Logo, UnitSelect, SearchSelect, useSaving } from "../../components.jsx";
+import { PageHeader, Section, ListHeader, DataTable, Logo, UnitSelect, SearchSelect, useSaving, LoadError, DialogBehavior, confirmClose, DateInput } from "../../components.jsx";
 
 // Bảng chuyển trạng thái (khớp backend). "Giao hàng" chỉ đặt qua nút Giao hàng (trừ tồn).
 // Bản nháp chỉ được Hủy; sau khi đã giao không cho Hủy — hàng trả lại dùng nút "Khách trả hàng" (nhập lại kho).
@@ -26,13 +27,6 @@ const PAYABLE_STATUSES = ["Giao hàng", "Đã xuất hóa đơn", "Chờ thanh t
 
 const today = todayYmd; // ngày giao mặc định theo giờ VN (toISOString lệch 1 ngày trước 7h sáng)
 
-// Thông tin đơn vị bán hàng (in trên phiếu xuất kho)
-const COMPANY = {
-  name: "CÔNG TY TNHH THƯƠNG MẠI SẢN XUẤT XNK BAO BÌ NGỌC AN THƯ",
-  tax: "0316748578",
-  address: "119/1 Đường Đỗ Mười, Tổ 4, Khu phố 1, Phường Thới An, Thành Phố Hồ Chí Minh",
-  phone: "0938 446 156",
-};
 const MIN_ROWS = 8; // số dòng tối thiểu của bảng (in giấy cho đẹp)
 
 const Field = ({ label, required, children }) => (
@@ -101,12 +95,13 @@ function ReturnModal({ id, noteCode, lookups, onClose, onSaved }) {
   const [loc, setLoc] = useState({});   // trx_id → vị trí nhận
   const [head, setHead] = useState({ return_date: today(), note: "" });
   const [saving, setSaving] = useState(false);
+  const [loadErr, setLoadErr] = useState(""); const [tryN, setTryN] = useState(0);
   useEffect(() => {
     api.returns(id).then((d) => {
       setData(d);
       setLoc(Object.fromEntries((d.lines || []).map((l) => [l.trx_id, l.location_id || ""])));
-    }).catch((e) => toast.error("Lỗi: " + e.message));
-  }, [id]);
+    }).catch((e) => setLoadErr(e.message || "Lỗi máy chủ"));
+  }, [id, tryN]);
   const left = (l) => Number(l.shipped_qty) - Number(l.returned_qty);
   const save = async () => {
     const items = (data?.lines || []).filter((l) => Number(qty[l.trx_id]) > 0)
@@ -121,17 +116,18 @@ function ReturnModal({ id, noteCode, lookups, onClose, onSaved }) {
     finally { setSaving(false); }
   };
   return (
-    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-5xl p-6 space-y-4 max-h-[90vh] overflow-auto" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-5xl p-6 space-y-4 max-h-[90vh] overflow-auto">
+        <DialogBehavior onClose={onClose} />
         <div className="flex items-center justify-between">
           <h3 className="text-lg font-bold text-slate-800">Khách trả hàng — phiếu giao {noteCode}</h3>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
+          <button onClick={(e) => confirmClose(e, onClose)} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
         </div>
-        {!data ? <div className="text-sm text-slate-400">Đang tải…</div> : !data.lines.length ? (
+        {!data ? (loadErr ? <LoadError message={`Không tải được hàng đã giao (${loadErr})`} onRetry={() => { setLoadErr(""); setTryN((n) => n + 1); }} /> : <div className="text-sm text-slate-400">Đang tải…</div>) : !data.lines.length ? (
           <div className="text-sm text-slate-500">Phiếu này chưa có dữ liệu xuất kho để trả.</div>
         ) : (<>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <Field label="Ngày trả"><input type="date" className={inputCls} value={head.return_date} onChange={(e) => setHead((h) => ({ ...h, return_date: e.target.value }))} /></Field>
+            <Field label="Ngày trả"><DateInput className={inputCls} value={head.return_date} onChange={(e) => setHead((h) => ({ ...h, return_date: e.target.value }))} /></Field>
             <div className="md:col-span-2"><Field label="Lý do / ghi chú"><input className={inputCls} value={head.note} placeholder="VD: giao nhầm màu, hàng lỗi…" onChange={(e) => setHead((h) => ({ ...h, note: e.target.value }))} /></Field></div>
           </div>
           <div className="rounded-lg border border-slate-200 overflow-x-auto">
@@ -166,7 +162,7 @@ function ReturnModal({ id, noteCode, lookups, onClose, onSaved }) {
           )}
           <div className="text-xs text-amber-700 bg-amber-50 rounded-lg px-3 py-2">Trả hàng chỉ nhập lại kho — công nợ của phiếu giao không tự thay đổi.</div>
           <div className="flex justify-end gap-2">
-            <button onClick={onClose} className="btn-ghost">Đóng</button>
+            <button onClick={(e) => confirmClose(e, onClose)} className="btn-ghost">Đóng</button>
             <button onClick={save} disabled={saving} className="btn-primary"><RotateCcw size={16} /> {saving ? "Đang lưu…" : "Xác nhận trả hàng"}</button>
           </div>
         </>)}
@@ -390,7 +386,7 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
       }
     } catch (e) { toast.error("Lỗi lưu phiếu: " + e.message); }
   };
-  const del = async () => { if (!confirm("Xóa phiếu này?")) return; try { await api.remove(editId); toast.success("Đã xóa thành công"); onSaved(); } catch (e) { toast.error("Lỗi xóa: " + e.message); } };
+  const del = async () => { if (!confirm(`Xóa phiếu giao ${noteCode || ""}?`)) return; try { await api.remove(editId); toast.success("Đã xóa thành công"); onSaved(); } catch (e) { toast.error("Lỗi xóa: " + e.message); } };
   const ship = async () => {
     if (!confirm("Xác nhận GIAO HÀNG cho khách?\nHệ thống sẽ tạo phiếu xuất kho (Giao hàng cho khách) và TRỪ TỒN theo số lượng giao (dòng theo đơn ưu tiên lô do chính LSX của đơn làm ra).")) return;
     try { const r = await api.ship(editId); toast.success(r?.message || "Đã giao hàng"); load(); }
@@ -446,7 +442,7 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
               </select>
             </Field>
             {/* Ngày giao chốt = ngày bấm "Giao hàng" → sau đó khóa; không chọn ngày tương lai */}
-            <Field label="Ngày giao"><input type="date" className={inputCls} value={f.delivery_date} max={today()} disabled={!isDraft}
+            <Field label="Ngày giao"><DateInput className={inputCls} value={f.delivery_date} max={today()} disabled={!isDraft}
               title={!isDraft ? "Ngày giao đã chốt khi bấm Giao hàng" : undefined} onChange={(e) => set("delivery_date", e.target.value)} /></Field>
             <Field label="Ghi chú"><input className={inputCls} value={f.note} onChange={(e) => set("note", e.target.value)} /></Field>
             {showMoney && <Field label="Tổng tiền phiếu">
@@ -587,11 +583,16 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
 
 /* ---- Phiếu in (template chung giao hàng + thanh toán) ---- */
 function DeliveryVoucher({ id, onBack }) {
+  const S = useAppSettings();
+  const COMPANY = { name: S.company_name, tax: S.company_tax, address: S.company_address, phone: S.company_phone }; // Cài đặt hệ thống
   const { fpermSecret } = usePerm();
   const showMoney = fpermSecret("deliveries", "amounts") !== "hidden";
   const [d, setD] = useState(null);
-  useEffect(() => { api.get(id).then(setD).catch((e) => toast.error("Lỗi: " + e.message)); }, [id]);
-  if (!d) return <div className="text-slate-400 text-sm py-10">Đang tải phiếu…</div>;
+  const [loadErr, setLoadErr] = useState(""); const [tryN, setTryN] = useState(0);
+  useEffect(() => { api.get(id).then(setD).catch((e) => setLoadErr(e.message || "Lỗi máy chủ")); }, [id, tryN]);
+  if (!d) return loadErr
+    ? <LoadError className="mt-6" message={`Không tải được phiếu (${loadErr})`} onRetry={() => { setLoadErr(""); setTryN((n) => n + 1); }} />
+    : <div className="text-slate-400 text-sm py-10">Đang tải phiếu…</div>;
   const totalQty = (d.items || []).reduce((s, it) => s + Number(it.quantity || 0), 0);
   const dt = d.delivery_date ? new Date(d.delivery_date) : null;
   const items = d.items || [];
@@ -720,8 +721,9 @@ export default function DeliveriesModule({ lookups, focusOrderId, onFocusConsume
   const [voucherId, setVoucherId] = useState(null);
   const [rows, setRows] = useState([]);
 
+  const [listLoading, setListLoading] = useState(true);
   const load = useCallback(async () => {
-    try { setRows((await api.list({})) || []); } catch (e) { toast.error("Lỗi tải phiếu: " + e.message); }
+    setListLoading(true); try { setRows((await api.list({})) || []); } catch (e) { toast.error("Lỗi tải phiếu: " + e.message); } finally { setListLoading(false); }
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -730,7 +732,7 @@ export default function DeliveriesModule({ lookups, focusOrderId, onFocusConsume
     if (focusOrderId) { setEditId(null); setNewOrderId(focusOrderId); setView("form"); onFocusConsumed?.(); }
   }, [focusOrderId]); // eslint-disable-line
 
-  const del = async (id) => { if (!confirm("Xóa phiếu này?")) return; try { await api.remove(id); toast.success("Đã xóa thành công"); load(); } catch (e) { toast.error("Lỗi xóa: " + e.message); } };
+  const del = async (id) => { const r = rows.find((x) => x.id === id); if (!confirm(`Xóa phiếu giao ${r?.note_code || ""}${r?.customer_name ? ` – ${r.customer_name}` : ""}?`)) return; try { await api.remove(id); toast.success("Đã xóa thành công"); load(); } catch (e) { toast.error("Lỗi xóa: " + e.message); } };
 
   const resetToList = () => { setView("list"); setEditId(null); setNewOrderId(null); };
   if (view === "form") return <DeliveryForm key={editId || "new"} lookups={lookups} editId={editId} initialOrderId={newOrderId}
@@ -762,7 +764,7 @@ export default function DeliveriesModule({ lookups, focusOrderId, onFocusConsume
         <button onClick={load} className="btn-ghost"><RotateCcw size={16} /> Làm mới</button>
         {can("deliveries", "create") && <button onClick={() => { setEditId(null); setView("form"); }} className="btn-primary"><Plus size={16} /> Tạo phiếu</button>}
       </>} />
-      <DataTable columns={columns} rows={rows} rowKey={(r) => r.id} emptyText="Chưa có phiếu giao hàng" />
+      <DataTable loading={listLoading} columns={columns} rows={rows} rowKey={(r) => r.id} emptyText="Chưa có phiếu giao hàng" />
     </div>
   );
 }

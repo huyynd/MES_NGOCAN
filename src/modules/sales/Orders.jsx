@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import { useAppSettings } from "../../appSettings.js";
 import { Link } from "react-router-dom";
 import { RotateCcw, Plus, Trash2, Pencil, ArrowLeft, Save, FileText, Printer, Copy, Upload, CheckCircle, XCircle, AlertCircle, CalendarClock } from "lucide-react";
 import { resource, salesOrders as salesOrdersApi, planning } from "../../mesApi.js";
 import { DEFAULT_STAGES, stageFactory } from "../../productionDefaults.js";
 import { usePerm } from "../../perm.jsx";
-import {  inputCls, fmt, fmtDate, fmtDateTime, statusClass, dueTone , toast, todayYmd } from "../../ui.js";
-import { PageHeader, ListHeader, Section, usePager, DataTable, UnitSelect, DateInput, Logo, SearchSelect, useSaving } from '../../components.jsx';
+import {  inputCls, fmt, fmtDate, fmtDateTime, statusClass, dueTone , toast, todayYmd, fmtDec } from "../../ui.js";
+import { PageHeader, ListHeader, Section, usePager, DataTable, UnitSelect, DateInput, Logo, SearchSelect, useSaving, LoadError, DialogBehavior, confirmClose } from '../../components.jsx';
 import { SPEC_NAMES, specShort } from "../../specs.js";
 import { SpecFields } from "../../SpecFields.jsx";
 import * as XLSX from "xlsx";
@@ -190,11 +191,12 @@ function QuickAllocateModal({ orderId, orderItems, lookups, onClose, onDone }) {
   };
 
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl p-6 space-y-4 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+        <DialogBehavior onClose={onClose} />
         <div className="flex items-center justify-between">
           <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><CalendarClock size={20} className="text-blue-600" /> Phân công nhanh</h3>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">×</button>
+          <button onClick={(e) => confirmClose(e, onClose)} className="text-slate-400 hover:text-slate-600 text-xl leading-none">×</button>
         </div>
 
         {loading ? (
@@ -208,7 +210,7 @@ function QuickAllocateModal({ orderId, orderItems, lookups, onClose, onDone }) {
                 <div className="text-sm text-emerald-700 mt-0.5">Tất cả dòng hàng trong đơn đã được phân bổ đủ số lượng vào lệnh SX. Không cần tạo thêm.</div>
               </div>
             </div>
-            <div className="flex justify-end"><button onClick={onClose} className="btn-ghost">Đóng</button></div>
+            <div className="flex justify-end"><button onClick={(e) => confirmClose(e, onClose)} className="btn-ghost">Đóng</button></div>
           </div>
         ) : (
           <>
@@ -243,7 +245,7 @@ function QuickAllocateModal({ orderId, orderItems, lookups, onClose, onDone }) {
 
             <div className="grid grid-cols-2 gap-3">
               <div><label className="block text-sm font-medium text-slate-600 mb-1.5">Ngày bắt đầu sản xuất</label>
-                <input type="date" className={inputCls} value={planned_date} onChange={(e) => setPlannedDate(e.target.value)} />
+                <DateInput className={inputCls} value={planned_date} onChange={(e) => setPlannedDate(e.target.value)} />
               </div>
             </div>
 
@@ -290,7 +292,7 @@ function QuickAllocateModal({ orderId, orderItems, lookups, onClose, onDone }) {
             </div>
 
             <div className="flex justify-end gap-2 pt-1">
-              <button onClick={onClose} className="btn-ghost">Hủy</button>
+              <button onClick={(e) => confirmClose(e, onClose)} className="btn-ghost">Hủy</button>
               <button onClick={() => guard(save)} disabled={saving} className="btn-primary"><Save size={16} /> {saving ? "Đang lưu…" : <>Tạo {batchItems.map(i => qty[i.item_id]).filter(q => Number(q) > 0).length} lệnh</>}</button>
             </div>
           </>
@@ -302,6 +304,7 @@ function QuickAllocateModal({ orderId, orderItems, lookups, onClose, onDone }) {
 
 /* ---- Form đơn hàng ---- */
 function OrderForm({ lookups, editId, copyId, onBack, onSaved, onPrint, onCreateDelivery, onOpenProductionOrder }) {
+  const S = useAppSettings(); const vatPct = S.vat_percent; // VAT hiển thị — Cài đặt hệ thống (mặc định 8%)
   const { can, fperm, fpermSecret } = usePerm();
   const fhid = (k) => fperm("orders", k) === "hidden";
   const fdis = (k) => fperm("orders", k) !== "edit";
@@ -313,13 +316,14 @@ function OrderForm({ lookups, editId, copyId, onBack, onSaved, onPrint, onCreate
   const [f, setF] = useState({ customer_id: "", order_date: today, due_date: "", status: "Mới", note: "", priority: "Trung bình", mix_ratio: [], has_vat: true });
   const [items, setItems] = useState([{ _k: 1, product_id: "", quantity: "", unit: "", specs: {}, core_weight: "", total_weight: "", note: "", planned_start_date: "", planned_end_date: "", material_type: null, unit_price: "" }]);
   const [seq, setSeq] = useState(2);
+  const [recCode, setRecCode] = useState(""); // mã bản ghi đang mở (cho câu hỏi xóa)
   const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
-  const vatRate = f.has_vat ? 1.08 : 1; // Có VAT: cộng 8% (như cũ) · Không VAT: giữ nguyên thành tiền
+  const vatRate = f.has_vat ? 1 + vatPct / 100 : 1; // Có VAT: cộng vatPct% · Không VAT: giữ nguyên thành tiền
 
   const loadData = useCallback(() => {
     if (!editId) return;
     ordersApi.get(editId).then((d) => {
-      setF({ customer_id: d.customer_id, order_date: d.order_date?.slice(0, 10) || today, due_date: d.due_date?.slice(0, 10) || "", status: d.status, note: d.note || "", priority: d.priority || "Trung bình", mix_ratio: d.mix_ratio || [], has_vat: d.has_vat !== false });
+      setRecCode(d.order_code || ""); setF({ customer_id: d.customer_id, order_date: d.order_date?.slice(0, 10) || today, due_date: d.due_date?.slice(0, 10) || "", status: d.status, note: d.note || "", priority: d.priority || "Trung bình", mix_ratio: d.mix_ratio || [], has_vat: d.has_vat !== false });
       setItems((d.items || []).map((it, i) => ({ _k: i + 1, id: it.id, product_id: it.product_id, quantity: it.quantity, unit: it.unit || "", specs: it.specs || {}, core_weight: it.core_weight ?? "", total_weight: it.total_weight ?? "", note: it.note || "", planned_start_date: it.planned_start_date?.slice(0, 10) || "", planned_end_date: it.planned_end_date?.slice(0, 10) || "", actual_start_date: it.actual_start_date || null, actual_end_date: it.actual_end_date || null, materials: it.materials || [], production_orders: it.production_orders || [], material_type: it.material_type || null, mix_ratio: it.mix_ratio || [], unit_price: it.unit_price ?? "" })));
       setSeq((d.items?.length || 0) + 1);
     }).catch((e) => toast.error("Lỗi tải đơn: " + e.message));
@@ -374,7 +378,7 @@ function OrderForm({ lookups, editId, copyId, onBack, onSaved, onPrint, onCreate
   };
 
   const del = async () => {
-    if (!confirm("Xóa đơn hàng này?")) return;
+    if (!confirm(`Xóa đơn hàng ${recCode}?`)) return;
     try { await ordersApi.remove(editId); toast.success("Đã xóa thành công"); onSaved(); } catch (e) { toast.error("Lỗi xóa: " + e.message); }
   };
 
@@ -470,7 +474,7 @@ function OrderForm({ lookups, editId, copyId, onBack, onSaved, onPrint, onCreate
                   <label>
                     <span className="block text-xs font-medium text-slate-500 mb-1">Đơn giá</span>
                     <input type="text" className={inputCls} disabled={fdis("items") || moneyPerm !== "edit"} 
-                      value={it.unit_price ? Number(it.unit_price).toLocaleString("vi-VN") : ""}
+                      value={it.unit_price ? fmt(it.unit_price) : ""}
                       placeholder="0" onChange={(e) => upItem(it._k, "unit_price", e.target.value.replace(/\D/g, ""))} />
                   </label>
                   <label>
@@ -480,7 +484,7 @@ function OrderForm({ lookups, editId, copyId, onBack, onSaved, onPrint, onCreate
                     </div>
                   </label>
                   <label>
-                    <span className="block text-xs font-medium text-slate-500 mb-1">{f.has_vat ? "Thành tiền (sau VAT 8%)" : "Thành tiền (không VAT)"}</span>
+                    <span className="block text-xs font-medium text-slate-500 mb-1">{f.has_vat ? `Thành tiền (sau VAT ${fmt(vatPct)}%)` : "Thành tiền (không VAT)"}</span>
                     <div className="px-3 py-2 rounded-lg bg-white border border-slate-200 text-blue-700 font-semibold">
                       {fmt(((Number(it.unit_price) || 0) * (Number(it.quantity) || 0)) * vatRate)} đ
                     </div>
@@ -491,7 +495,7 @@ function OrderForm({ lookups, editId, copyId, onBack, onSaved, onPrint, onCreate
               <div className="pl-8">
                 <div className="text-xs font-semibold text-slate-400 uppercase mb-1.5">Loại nguyên liệu</div>
                 <div className="flex gap-4">
-                  <label className={`flex items-center gap-2.5 px-4 py-2.5 rounded-xl border-2 cursor-pointer transition-all select-none ${
+                  <label className={`flex items-center gap-2.5 px-4 py-2.5 rounded-xl border-2 cursor-pointer transition-colors select-none ${
                     it.material_type === 'zin'
                       ? 'border-emerald-500 bg-emerald-50 text-emerald-800'
                       : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'
@@ -507,7 +511,7 @@ function OrderForm({ lookups, editId, copyId, onBack, onSaved, onPrint, onCreate
                     <span className="text-sm font-medium">Hàng zin</span>
                     <span className="text-xs text-slate-400">(100% nhựa nguyên sinh)</span>
                   </label>
-                  <label className={`flex items-center gap-2.5 px-4 py-2.5 rounded-xl border-2 cursor-pointer transition-all select-none ${
+                  <label className={`flex items-center gap-2.5 px-4 py-2.5 rounded-xl border-2 cursor-pointer transition-colors select-none ${
                     it.material_type === 'pha'
                       ? 'border-amber-500 bg-amber-50 text-amber-800'
                       : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'
@@ -555,7 +559,7 @@ function OrderForm({ lookups, editId, copyId, onBack, onSaved, onPrint, onCreate
                                     newArr[i] = { ...newArr[i], material_id: v };
                                     upItem(it._k, "mix_ratio", newArr);
                                   }}
-                                  placeholder="Chọn..."
+                                  placeholder="Chọn…"
                                   className="w-full rounded border-slate-300 text-sm py-1.5 px-2"
                                 />
                               ) : (
@@ -625,12 +629,12 @@ function OrderForm({ lookups, editId, copyId, onBack, onSaved, onPrint, onCreate
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                   <label>
                     <span className="block text-xs font-medium text-slate-500 mb-1">Bắt đầu dự kiến</span>
-                    <input type="date" className={inputCls} disabled={fdis("items")} value={it.planned_start_date || ""}
+                    <DateInput className={inputCls} disabled={fdis("items")} value={it.planned_start_date || ""}
                       onChange={(e) => upItem(it._k, "planned_start_date", e.target.value)} />
                   </label>
                   <label>
                     <span className="block text-xs font-medium text-slate-500 mb-1">Kết thúc dự kiến</span>
-                    <input type="date" className={inputCls} disabled={fdis("items")} value={it.planned_end_date || ""}
+                    <DateInput className={inputCls} disabled={fdis("items")} value={it.planned_end_date || ""}
                       onChange={(e) => upItem(it._k, "planned_end_date", e.target.value)} />
                   </label>
                   <div>
@@ -657,7 +661,7 @@ function OrderForm({ lookups, editId, copyId, onBack, onSaved, onPrint, onCreate
               <label className={`flex items-center gap-2 text-sm text-slate-700 select-none ${moneyPerm === "edit" ? "cursor-pointer" : "cursor-default"}`}>
                 <input type="checkbox" className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
                   disabled={moneyPerm !== "edit"} checked={!!f.has_vat} onChange={(e) => set("has_vat", e.target.checked)} />
-                Có VAT 8%
+                Có VAT {fmt(vatPct)}%
               </label>
               <div className="flex items-baseline gap-2">
                 <span className="text-sm text-slate-500">Tổng trước VAT:</span>
@@ -666,7 +670,7 @@ function OrderForm({ lookups, editId, copyId, onBack, onSaved, onPrint, onCreate
                 </span>
               </div>
               <div className="flex items-baseline gap-2">
-                <span className="text-sm text-slate-500">{f.has_vat ? "Tổng sau VAT (8%):" : "Tổng (không VAT):"}</span>
+                <span className="text-sm text-slate-500">{f.has_vat ? `Tổng sau VAT (${fmt(vatPct)}%):` : "Tổng (không VAT):"}</span>
                 <span className="text-lg font-bold text-blue-700">
                   {fmt(items.reduce((s, it) => s + (Number(it.unit_price) || 0) * (Number(it.quantity) || 0) * vatRate, 0))} đ
                 </span>
@@ -692,11 +696,15 @@ function OrderForm({ lookups, editId, copyId, onBack, onSaved, onPrint, onCreate
 
 /* ---- Phiếu đặt hàng (in được) ---- */
 function OrderVoucher({ id, onBack }) {
+  const S = useAppSettings();
   const { fpermSecret } = usePerm();
   const showMoney = fpermSecret("orders", "amounts") !== "hidden";
   const [o, setO] = useState(null);
-  useEffect(() => { ordersApi.get(id).then(setO).catch((e) => toast.error("Lỗi: " + e.message)); }, [id]);
-  if (!o) return <div className="text-slate-400 text-sm py-10">Đang tải phiếu…</div>;
+  const [loadErr, setLoadErr] = useState(""); const [tryN, setTryN] = useState(0);
+  useEffect(() => { ordersApi.get(id).then(setO).catch((e) => setLoadErr(e.message || "Lỗi máy chủ")); }, [id, tryN]);
+  if (!o) return loadErr
+    ? <LoadError className="mt-6" message={`Không tải được phiếu (${loadErr})`} onRetry={() => { setLoadErr(""); setTryN((n) => n + 1); }} />
+    : <div className="text-slate-400 text-sm py-10">Đang tải phiếu…</div>;
   const totalQty = (o.items || []).reduce((s, it) => s + Number(it.quantity || 0), 0);
   const totalAmount = (o.items || []).reduce((s, it) => s + (Number(it.unit_price) || 0) * (Number(it.quantity) || 0), 0);
 
@@ -711,7 +719,7 @@ function OrderVoucher({ id, onBack }) {
         <div className="flex items-center gap-4 border-b-2 border-blue-700 pb-3 mb-4">
           <Logo className="h-14 w-auto shrink-0" />
           <div className="flex-1 text-center">
-            <div className="text-sm font-semibold text-slate-700">CÔNG TY TNHH THƯƠNG MẠI SẢN XUẤT XNK BAO BÌ NGỌC AN THƯ</div>
+            <div className="text-sm font-semibold text-slate-700">{S.company_name}</div>
             <h2 className="text-xl font-bold text-slate-900 mt-2 uppercase">Phiếu đặt hàng</h2>
             <div className="text-sm text-slate-600 mt-0.5">Số: <b>{o.order_code}</b></div>
           </div>
@@ -874,7 +882,8 @@ function ExcelImportModal({ onClose, onDone }) {
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className={`bg-white rounded-2xl shadow-2xl w-full flex flex-col max-h-[90vh] ${step === 2 ? 'max-w-6xl' : 'max-w-lg'}`}>
+      <div className={`bg-white rounded-xl shadow-2xl w-full flex flex-col max-h-[90vh] ${step === 2 ? 'max-w-6xl' : 'max-w-lg'}`}>
+        <DialogBehavior onClose={onClose} locked={loading} />
         <div className="p-5 border-b border-slate-100 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-full bg-green-100 text-green-600 flex items-center justify-center">
@@ -890,7 +899,7 @@ function ExcelImportModal({ onClose, onDone }) {
               {step === 2 && <p className="text-xs text-slate-400">Vui lòng kiểm tra và loại bỏ các dòng bị lỗi</p>}
             </div>
           </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">×</button>
+          <button onClick={(e) => confirmClose(e, onClose)} disabled={loading} className="text-slate-400 hover:text-slate-600 text-xl leading-none">×</button>
         </div>
 
         <div className="p-5 space-y-4 overflow-y-auto min-h-0">
@@ -904,7 +913,7 @@ function ExcelImportModal({ onClose, onDone }) {
                   {file ? (
                     <><CheckCircle className="mx-auto mb-2 text-green-500" size={28} />
                     <p className="font-medium text-green-700">{file.name}</p>
-                    <p className="text-xs text-green-500 mt-1">{(file.size / 1024).toFixed(1)} KB</p></>
+                    <p className="text-xs text-green-500 mt-1">{fmtDec(file.size / 1024, 1)} KB</p></>
                   ) : (
                     <><Upload className="mx-auto mb-2 text-slate-400" size={28} />
                     <p className="text-slate-500">Kéo thả hoặc click để chọn file Excel</p>
@@ -913,9 +922,9 @@ function ExcelImportModal({ onClose, onDone }) {
                 </div>
               </label>
               <div className="flex gap-3 justify-end">
-                <button onClick={onClose} className="btn-ghost">Hủy</button>
+                <button onClick={(e) => confirmClose(e, onClose)} disabled={loading} className="btn-ghost">Hủy</button>
                 <button onClick={handlePreview} disabled={!file || loading} className="btn-primary disabled:opacity-50">
-                  {loading ? 'Đang đọc...' : 'Tiếp tục'}
+                  {loading ? 'Đang đọc…' : 'Tiếp tục'}
                 </button>
               </div>
             </>
@@ -991,7 +1000,7 @@ function ExcelImportModal({ onClose, onDone }) {
               <div className="flex gap-3 justify-end pt-2">
                 <button onClick={() => setStep(1)} className="btn-ghost" disabled={loading}>Quay lại</button>
                 <button onClick={handleConfirm} disabled={previewData.length === 0 || loading || previewData.some(d => !d.isValid)} className="btn-primary disabled:opacity-50">
-                  {loading ? 'Đang nhập...' : <><Save size={16} /> Xác nhận nhập ({previewData.length})</>}
+                  {loading ? 'Đang nhập…' : <><Save size={16} /> Xác nhận nhập ({previewData.length})</>}
                 </button>
               </div>
             </div>
@@ -1042,8 +1051,10 @@ export default function OrdersModule({ lookups, focusId, onFocusConsumed, onCrea
   const [showImport, setShowImport] = useState(false);
   const openForm = ({ edit = null, copy = null } = {}) => { setEditId(edit); setCopyId(copy); setView("form"); };
 
+  const [listLoading, setListLoading] = useState(true);
   const load = useCallback(async () => {
-    try { setRows(await ordersApi.list({})); } catch (e) { toast.error("Lỗi tải đơn hàng: " + e.message); }
+    setListLoading(true);
+    try { setRows(await ordersApi.list({})); } catch (e) { toast.error("Lỗi tải đơn hàng: " + e.message); } finally { setListLoading(false); }
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -1052,7 +1063,7 @@ export default function OrdersModule({ lookups, focusId, onFocusConsumed, onCrea
     if (focusId) { setEditId(focusId); setView("form"); onFocusConsumed?.(); }
   }, [focusId]);
 
-  const del = async (id) => { if (!confirm("Xóa đơn hàng này?")) return; try { await ordersApi.remove(id); toast.success("Đã xóa thành công"); load(); } catch (e) { toast.error("Lỗi xóa: " + e.message); } };
+  const del = async (id) => { const r = rows.find((x) => x.id === id); if (!confirm(`Xóa đơn hàng ${r?.order_code || ""}${r?.customer_name ? ` – ${r.customer_name}` : ""}?`)) return; try { await ordersApi.remove(id); toast.success("Đã xóa thành công"); load(); } catch (e) { toast.error("Lỗi xóa: " + e.message); } };
 
   const columns = [
     { key: "order_code", label: "Mã đơn", filter: "text", minWidth: "130px", render: (r) => <button onClick={() => openForm({ edit: r.id })} className="font-medium text-blue-600 hover:underline">{r.order_code}</button> },
@@ -1094,7 +1105,7 @@ export default function OrdersModule({ lookups, focusId, onFocusConsumed, onCrea
           )}
           {can("orders", "create") && <button onClick={() => openForm({})} className="btn-primary"><Plus size={16} /> Tạo đơn hàng</button>}
         </>} />
-        <DataTable columns={columns} rows={rows} rowKey={(r) => r.id} emptyText="Chưa có đơn hàng" />
+        <DataTable loading={listLoading} columns={columns} rows={rows} rowKey={(r) => r.id} emptyText="Chưa có đơn hàng" />
       </div>
 
       {view === "form" && (

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
+import { FACTORIES, EMPLOYEE_UNITS } from "../../productionDefaults.js";
 import { RotateCcw, Plus, Trash2, Pencil, Save, Upload, Download, FileDown } from "lucide-react";
 import * as XLSX from "xlsx";
 import { resource, customerOrders, machineOrders, nextCode } from "../../mesApi.js";
@@ -203,14 +204,16 @@ function MasterTable({ cfg, onOpenOrder, onOpenProductionOrder }) {
   const [editing, setEditing] = useState(null); // record hoặc {} để thêm mới
   const api = resource(cfg.resource);
 
+  const [listLoading, setListLoading] = useState(true);
   const load = useCallback(async () => {
-    try { setRows(await api.list()); } catch (e) { toast.error("Lỗi tải: " + e.message); }
+    setListLoading(true); try { setRows(await api.list()); } catch (e) { toast.error("Lỗi tải: " + e.message); } finally { setListLoading(false); }
   }, [cfg.resource]); // eslint-disable-line
 
   useEffect(() => { load(); }, [load]);
 
   const del = async (id) => {
-    if (!confirm("Xóa bản ghi này?")) return;
+    const r = rows.find((x) => x.id === id), ck = cfg.columns[0]?.key;
+    if (!confirm(`Xóa ${cfg.title.toLowerCase()} ${[r?.[ck], r?.name].filter(Boolean).join(" – ")}?`)) return;
     try { await api.remove(id); toast.success("Đã xóa thành công"); load(); } catch (e) { toast.error("Lỗi xóa: " + e.message); }
   };
 
@@ -330,7 +333,7 @@ function MasterTable({ cfg, onOpenOrder, onOpenProductionOrder }) {
         <button onClick={exportExcel} className="btn-ghost"><Download size={16} /> Xuất Excel</button>
         {can("md_" + cfg.resource, "create") && <button onClick={() => setEditing({})} className="btn-primary"><Plus size={16} /> Thêm mới</button>}
       </>} />
-      <DataTable rows={rows} rowKey={(r) => r.id} emptyText="Chưa có dữ liệu" columns={dtCols} />
+      <DataTable loading={listLoading} rows={rows} rowKey={(r) => r.id} emptyText="Chưa có dữ liệu" columns={dtCols} />
     </div>
   );
 }
@@ -367,8 +370,8 @@ function buildConfigs(lookups) {
       ],
       fields: [
         { key: "name", label: "Tên máy", required: true, full: true },
-        { key: "factory", label: "Nhà máy", type: "select", required: true, options: ["Nhà máy thổi", "Nhà máy cắt"] },
-        { key: "machine_type", label: "Loại máy", placeholder: "Máy thổi lớn / Máy cắt..." },
+        { key: "factory", label: "Nhà máy", type: "select", required: true, options: FACTORIES },
+        { key: "machine_type", label: "Loại máy", placeholder: "Máy thổi lớn / Máy cắt…" },
         { key: "production_status", label: "Trạng thái SX (tự động)", readOnly: true, badge: true },
         { key: "status", label: "Tình trạng máy", type: "select", options: ["Hoạt động", "Bảo trì", "Ngừng"], default: "Hoạt động" },
       ],
@@ -388,7 +391,7 @@ function buildConfigs(lookups) {
         { key: "purpose", label: "Mục đích sử dụng", group: "Thông tin chung" },
         { key: "status", label: "Trạng thái", type: "select", options: ["Hoạt động", "Đang kiểm đếm", "Ngừng hoạt động"], default: "Hoạt động", group: "Thông tin chung" },
         // Địa điểm & quản lý
-        { key: "factory", label: "Nhà máy", type: "select", options: ["Nhà máy 1", "Nhà máy 2", "Nhà máy 3"], group: "Địa điểm & quản lý", required: true },
+        { key: "factory", label: "Nhà máy", type: "select", options: FACTORIES, group: "Địa điểm & quản lý", required: true },
         { key: "workshop", label: "Xưởng", group: "Địa điểm & quản lý" },
         { key: "manager", label: "Người phụ trách", group: "Địa điểm & quản lý" },
         { key: "department", label: "Bộ phận quản lý", group: "Địa điểm & quản lý" },
@@ -460,7 +463,7 @@ function buildConfigs(lookups) {
       ],
       fields: [
         { key: "name", label: "Họ và tên", required: true, full: true },
-        { key: "factory", label: "Đơn vị", type: "select", options: ["Nhà máy thổi", "Nhà máy cắt", "Quản lý"] },
+        { key: "factory", label: "Đơn vị", type: "select", options: EMPLOYEE_UNITS },
         { key: "position", label: "Chức vụ" },
         { key: "skill_level", label: "Bậc thợ", placeholder: "Bậc 1..5" },
         { key: "phone", label: "Điện thoại" },

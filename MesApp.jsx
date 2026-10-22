@@ -5,9 +5,11 @@ import * as XLSX from "xlsx";
 import {
   LayoutDashboard, Package, ShoppingCart, Warehouse, Search, Plus, Trash2,
   Upload, Download, RotateCcw, ArrowLeft, Save, CheckCircle2, Activity, Cog,
-  Factory, ClipboardList, Database, FlaskConical, ChevronDown, Users, Wrench, MapPin, Pencil, Clock, CalendarDays, QrCode, ScanLine, Shield, ShieldCheck, UserCog, LogOut, GitBranch, Hammer, Copy, Scissors, Wind, Image as ImageIcon, FileText, Eye, Check, Layers, Menu, PanelLeftClose, PanelLeftOpen, Recycle, Wallet, Scale,
+  Factory, Settings, ClipboardList, Database, FlaskConical, ChevronDown, Users, Wrench, MapPin, Pencil, Clock, CalendarDays, QrCode, ScanLine, Shield, ShieldCheck, UserCog, LogOut, GitBranch, Hammer, Copy, Scissors, Wind, Image as ImageIcon, FileText, Eye, Check, Layers, Menu, PanelLeftClose, PanelLeftOpen, Recycle, Wallet, Scale,
 } from "lucide-react";
 import { getLookups, getDashboard, auth, setToken, getToken, productRelated, nextCode, productFiles } from "./src/mesApi.js";
+import { setAppSettings } from "./src/appSettings.js";
+import SettingsScreen from "./src/modules/masterData/SettingsScreen.jsx";
 import Login from "./src/Login.jsx";
 import UsersModule from "./src/modules/auth/Users.jsx";
 import { PermProvider, usePerm } from "./src/perm.jsx";
@@ -40,7 +42,7 @@ import EmployeeReport from "./src/modules/reports/EmployeeReport.jsx";
 import OutputReport from "./src/modules/production/OutputReport.jsx";
 import ScrapModule from "./src/modules/production/ScrapModule.jsx";
 import RecyclingModule from "./src/modules/production/RecyclingModule.jsx";
-import { PageHeader, Section, ListHeader, usePager, DataTable, Logo, UnitSelect, useSaving } from "./src/components.jsx";
+import { PageHeader, Section, ListHeader, usePager, DataTable, Logo, UnitSelect, useSaving, LoadError } from "./src/components.jsx";
 
 /* =====================================================================
    MES — Quản lý Sản phẩm & Dashboard (single-file demo)
@@ -210,6 +212,7 @@ function Sidebar({ user, onLogout, collapsed, onToggle, mobileMenuOpen, onCloseM
         { key: "md:zones", label: "Khu vực", icon: MapPin, path: "/master-data/zones", perm: "md_zones" },
         { key: "md:locations", label: "Vị trí lưu trữ", icon: MapPin, path: "/master-data/locations", perm: "md_locations" },
         { key: "md:customers", label: "Khách hàng", icon: Users, path: "/master-data/customers", perm: "md_customers" },
+        { key: "settings", label: "Cài đặt hệ thống", icon: Settings, path: "/settings", adminOnly: true },
       ]
     },
     {
@@ -258,15 +261,15 @@ function Sidebar({ user, onLogout, collapsed, onToggle, mobileMenuOpen, onCloseM
   }).filter(Boolean);
 
   const itemCls = (isActive) =>
-    `w-full flex items-center ${collapsed ? "justify-center" : "gap-3 px-3"} py-2.5 rounded-lg text-sm font-medium transition-all duration-200 ${isActive ? "bg-primary text-primary-foreground shadow-md shadow-primary/20 scale-[0.98]" : "text-slate-600 hover:bg-slate-100 hover:text-slate-900 hover:scale-[0.99]"}`;
+    `w-full flex items-center ${collapsed ? "justify-center" : "gap-3 px-3"} py-2.5 rounded-lg text-sm font-medium transition-colors duration-200 ${isActive ? "bg-primary text-primary-foreground" : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"}`;
 
   return (
     <>
       {mobileMenuOpen && (
         <div className="fixed inset-0 bg-slate-900/50 z-40 md:hidden" onClick={onCloseMobile} />
       )}
-      <aside className={`fixed inset-y-0 left-0 z-50 transform ${mobileMenuOpen ? "translate-x-0" : "-translate-x-full"} md:relative md:translate-x-0 ${collapsed ? "md:w-16 w-60" : "w-64"} shrink-0 glass-panel text-slate-600 h-screen flex flex-col transition-all duration-300 shadow-glass`}>
-        <div className={`px-4 py-4 border-b border-border shrink-0 flex items-center ${collapsed ? 'justify-center' : 'gap-3'} transition-all`}>
+      <aside className={`fixed inset-y-0 left-0 z-50 transform ${mobileMenuOpen ? "translate-x-0" : "-translate-x-full"} md:relative md:translate-x-0 ${collapsed ? "md:w-16 w-60" : "w-64"} shrink-0 glass-panel text-slate-600 h-screen flex flex-col transition-[width] duration-300 shadow-glass`}>
+        <div className={`px-4 py-4 border-b border-border shrink-0 flex items-center ${collapsed ? 'justify-center' : 'gap-3'} transition-colors`}>
           <button onClick={onToggle} className="hidden md:block p-1 shrink-0 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded transition" title="Thu gọn/Mở rộng menu">
             <Menu size={20} />
           </button>
@@ -287,7 +290,7 @@ function Sidebar({ user, onLogout, collapsed, onToggle, mobileMenuOpen, onCloseM
               <input
                 value={search} onChange={e => setSearch(e.target.value)}
                 className="w-full pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40"
-                placeholder="Tìm module..."
+                placeholder="Tìm module…"
               />
             </div>
           </div>
@@ -356,14 +359,18 @@ function ProductList({ onOpen, onCreate, onCopy }) {
   const { can } = usePerm();
   const [rows, setRows] = useState([]);
 
+  const [listLoading, setListLoading] = useState(true);
   const load = useCallback(async () => {
-    try { setRows(await api.list({})); }
+    setListLoading(true);
+      try { setRows(await api.list({})); }
     catch (e) { console.error(e); toast.error("Lỗi tải danh sách: " + e.message); }
+      finally { setListLoading(false); }
   }, []);
   useEffect(() => { load(); }, [load]);
 
   const del = async (id) => {
-    if (!confirm("Xóa sản phẩm này?")) return;
+    const r = rows.find((x) => x.id === id);
+    if (!confirm(`Xóa sản phẩm ${r?.product_code || ""}${r?.product_name ? ` – ${r.product_name}` : ""}?`)) return;
     try { await api.remove(id); toast.success("Đã xóa thành công"); load(); }
     catch (e) { toast.error("Lỗi xóa sản phẩm: " + e.message); }
   };
@@ -438,7 +445,7 @@ function ProductList({ onOpen, onCreate, onCopy }) {
         <button onClick={load} className="btn-ghost"><RotateCcw size={16} /> Làm mới</button>
         {can("products", "create") && <button onClick={onCreate} className="btn-primary"><Plus size={16} /> Thêm mới</button>}
       </>} />
-      <DataTable columns={columns} rows={rows} rowKey={(p) => p.id} emptyText="Không có dữ liệu" />
+      <DataTable loading={listLoading} columns={columns} rows={rows} rowKey={(p) => p.id} emptyText="Không có dữ liệu" />
     </div>
   );
 }
@@ -728,8 +735,9 @@ function ProductDetail({ id, onBack, onDeleted, onOpenOrder, onOpenProductionOrd
       const attrs = (d.attributes || []).map((a, i) => ({ _key: i + 1, name: a.name, value: a.value }));
       setAttributes(attrs.length ? attrs : [{ _key: 1, name: "", value: "" }]);
       setKeySeq((attrs.length || 1) + 1);
-    }).catch((e) => toast.error("Lỗi tải chi tiết: " + e.message));
+    }).catch((e) => { setLoadErr(e.message || "Lỗi máy chủ"); toast.error("Lỗi tải chi tiết: " + e.message); });
   };
+  const [loadErr, setLoadErr] = useState("");
   useEffect(() => { load(); }, [id]); // eslint-disable-line
   useEffect(() => { if (id) productRelated(id).then(setRelated).catch(() => { }); }, [id]);
 
@@ -766,10 +774,10 @@ function ProductDetail({ id, onBack, onDeleted, onOpenOrder, onOpenProductionOrd
       } }
     catch (e) { toast.error("Lỗi xem tài liệu: " + e.message); }
   };
-  const delFile = async (att) => { if (!confirm("Xóa tài liệu này?")) return; try { await productFiles.remove(id, att.id); toast.success("Đã xóa tài liệu"); loadFiles(); } catch (e) { toast.error("Lỗi xóa: " + e.message); } };
+  const delFile = async (att) => { if (!confirm(`Xóa tài liệu "${att.name || ""}"?`)) return; try { await productFiles.remove(id, att.id); toast.success("Đã xóa tài liệu"); loadFiles(); } catch (e) { toast.error("Lỗi xóa: " + e.message); } };
 
   const del = async () => {
-    if (!confirm("Xóa sản phẩm này?")) return;
+    if (!confirm(`Xóa sản phẩm ${p?.product_code || ""}${p?.product_name ? ` – ${p.product_name}` : ""}?`)) return;
     try { await api.remove(id); toast.success("Đã xóa sản phẩm"); onDeleted?.(); } catch (e) { toast.error("Lỗi xóa: " + e.message); }
   };
   const [saving, guard] = useSaving();
@@ -789,7 +797,9 @@ function ProductDetail({ id, onBack, onDeleted, onOpenOrder, onOpenProductionOrd
     { key: "related", label: "Đơn hàng & Lệnh SX" },
   ];
 
-  if (!p || !form) return <div className="text-slate-400 text-sm py-10">Đang tải chi tiết sản phẩm…</div>;
+  if (!p || !form) return loadErr
+    ? <LoadError className="mt-6" message={`Không tải được chi tiết sản phẩm (${loadErr})`} onRetry={() => { setLoadErr(""); load(); }} />
+    : <div className="text-slate-400 text-sm py-10">Đang tải chi tiết sản phẩm…</div>;
 
   return (
     <div className="space-y-5">
@@ -917,8 +927,8 @@ function ProductDetail({ id, onBack, onDeleted, onOpenOrder, onOpenProductionOrd
             <tbody className="divide-y divide-slate-100">
               {p.inventory.map((w) => (
                 <tr key={w.warehouse}><td className="px-4 py-2">{w.warehouse}</td>
-                  <td className="px-4 py-2 text-right font-medium">{w.current_qty.toLocaleString()}</td>
-                  <td className="px-4 py-2 text-right text-slate-500">{w.expected_qty.toLocaleString()}</td>
+                  <td className="px-4 py-2 text-right font-medium">{fmt(w.current_qty)}</td>
+                  <td className="px-4 py-2 text-right text-slate-500">{fmt(w.expected_qty)}</td>
                   <td className="px-4 py-2">{w.unit}</td></tr>
               ))}
             </tbody>
@@ -1019,8 +1029,11 @@ function Dashboard({ onNav, onOpenOrder, onOpenProductionOrder }) {
   const { fpermSecret } = usePerm();
   const showMoney = fpermSecret("deliveries", "amounts") !== "hidden";
   const [data, setData] = useState(null);
-  useEffect(() => { getDashboard().then(setData).catch((e) => console.error("Dashboard lỗi:", e.message)); }, []);
-  if (!data) return <div className="text-slate-400 text-sm py-10">Đang tải số liệu…</div>;
+  const [loadErr, setLoadErr] = useState(""); const [tryN, setTryN] = useState(0);
+  useEffect(() => { getDashboard().then(setData).catch((e) => setLoadErr(e.message || "Lỗi máy chủ")); }, [tryN]);
+  if (!data) return loadErr
+    ? <LoadError className="mt-6" message={`Không tải được số liệu tổng quan (${loadErr})`} onRetry={() => { setLoadErr(""); setTryN((n) => n + 1); }} />
+    : <div className="text-slate-400 text-sm py-10">Đang tải số liệu…</div>;
 
   const { kpi, machines, in_progress, due_soon, status_breakdown, overdue_payments = [], finance, debt_bad_days: badDays = 30 } = data;
   const kpis = [
@@ -1188,12 +1201,12 @@ function Dashboard({ onNav, onOpenOrder, onOpenProductionOrder }) {
                           className={`text-left rounded-lg border p-3 hover:shadow-sm transition ${t ? "border-blue-300 bg-blue-50/50 hover:border-blue-400" : "border-slate-200 hover:border-slate-300"}`}>
                           <div className="flex items-start gap-3">
                             <div className={`w-12 h-12 rounded-xl flex items-center justify-center shrink-0 ${t ? "bg-blue-100 text-blue-600" : "bg-slate-100 text-slate-400"}`}>
-                              <MIcon size={28} className={t ? "animate-pulse" : ""} />
+                              <MIcon size={28} />
                             </div>
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center justify-between gap-1">
                                 <span className="font-medium text-slate-800 text-sm truncate">{m.name}</span>
-                                <span className={`w-2 h-2 rounded-full shrink-0 ${t ? "bg-emerald-500 animate-pulse" : "bg-slate-300"}`} />
+                                <span className={`w-2 h-2 rounded-full shrink-0 ${t ? "bg-emerald-500" : "bg-slate-300"}`} />
                               </div>
                               {t ? (
                                 <div className="mt-1 text-xs text-slate-600">{t.order_code} · {t.stage}<div className="text-slate-400 truncate">{t.product}</div></div>
@@ -1261,7 +1274,7 @@ export default function MesApp() {
   // Nạp dữ liệu lookup (sản phẩm, khách, máy, kho...) sau khi đăng nhập,
   // và làm mới mỗi khi đổi màn để các dropdown luôn có dữ liệu mới nhất.
   useEffect(() => {
-    if (user) getLookups().then((d) => { setLookups(d); setLookupsErr(""); }).catch((e) => {
+    if (user) getLookups().then((d) => { setLookups(d); setAppSettings(d?.settings); setLookupsErr(""); }).catch((e) => {
       // G-06: lỗi nạp danh mục → báo (1 thông báo, không lặp mỗi lần đổi màn); chưa có dữ liệu thì màn hiện nút Thử lại
       setLookupsErr(e.message || "Lỗi máy chủ");
       toast.error("Không tải được dữ liệu danh mục: " + e.message, { id: "lookups-err" });
@@ -1358,6 +1371,7 @@ export default function MesApp() {
               <Route path="/inventory/adjust" element={lookups ? <AdjustModule lookups={lookups} /> : loadingEl} />
               <Route path="/traceability/lot" element={<TraceabilityLot />} />
               <Route path="/master-data/roles" element={<RolesModule />} />
+              <Route path="/settings" element={<SettingsScreen />} />
               <Route path="/master-data/:entity" element={lookups ? <MasterDataWrapper lookups={lookups} onOpenOrder={goSalesOrder} onOpenProductionOrder={goProductionOrder} /> : loadingEl} />
               <Route path="/workschedule" element={needLookups(WorkScheduleModule)} />
               <Route path="/qrlabels" element={<QrLabelsModule />} />

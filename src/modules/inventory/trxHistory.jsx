@@ -1,5 +1,6 @@
 // Dùng chung cho các màn lịch sử giao dịch kho (K-19, K-20)
 import React from "react";
+import { DateInput } from "../../components.jsx";
 import { inputCls } from "../../ui.js";
 
 // Giao dịch làm TĂNG tồn? Theo delta có dấu; bản ghi cũ chưa có delta thì suy từ loại.
@@ -17,10 +18,10 @@ export const defaultRange = () => ({ date_from: ymd(new Date(Date.now() - 29 * 8
 export function TrxRange({ value, onChange }) {
   return (
     <div className="flex items-center gap-1.5 text-sm text-slate-500">
-      <input type="date" className={inputCls + " !w-36 !py-1"} value={value.date_from}
+      <DateInput className={inputCls + " !w-36 !py-1"} value={value.date_from}
         onChange={(e) => onChange({ ...value, date_from: e.target.value })} />
       <span>→</span>
-      <input type="date" className={inputCls + " !w-36 !py-1"} value={value.date_to}
+      <DateInput className={inputCls + " !w-36 !py-1"} value={value.date_to}
         onChange={(e) => onChange({ ...value, date_to: e.target.value })} />
     </div>
   );

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { PageHeader, ListHeader, Section, Pagination, usePager } from '../../components.jsx';
+import { PageHeader, ListHeader, Section, Pagination, usePager, LoadError, DateInput } from '../../components.jsx';
 import { reports } from '../../mesApi.js';
 import { Download, Activity, Factory, PieChart as PieChartIcon } from 'lucide-react';
 import * as XLSX from 'xlsx';
@@ -8,7 +8,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   PieChart, Pie, Cell, LineChart, Line, ComposedChart
 } from 'recharts';
-import { fmt, fmtDate, statusClass, ymd } from '../../ui.js';
+import { fmt, fmtDate, statusClass, ymd, fmtDec } from '../../ui.js';
 
 const COLORS = ['#10b981', '#ef4444', '#f59e0b', '#3b82f6'];
 
@@ -61,15 +61,17 @@ function KpiReport() {
   const [charts, setCharts] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  const [loadErr, setLoadErr] = useState(""); const [tryN, setTryN] = useState(0);
   useEffect(() => {
+    setLoading(true);
     reports.kpi().then(res => {
       setData(res.kpi);
       setCharts(res.charts);
-      setLoading(false);
-    });
-  }, []);
+    }).catch((e) => setLoadErr(e.message || "Lỗi máy chủ")).finally(() => setLoading(false));
+  }, [tryN]);
 
-  if (loading) return <div>Đang tải dữ liệu...</div>;
+  if (loading) return <div>Đang tải dữ liệu…</div>;
+  if (loadErr) return <LoadError message={`Không tải được báo cáo KPI (${loadErr})`} onRetry={() => { setLoadErr(""); setTryN((n) => n + 1); }} />;
   if (!data || !charts) return null;
 
   // Xử lý dữ liệu hiệu suất (D)
@@ -87,13 +89,13 @@ function KpiReport() {
 
   // Tỷ lệ phế phẩm (%) = scrap / (hoàn thành + scrap)
   const scrapRate = totalQty > 0
-    ? ((scrapQty / totalQty) * 100).toFixed(1)
-    : '0.0';
+    ? fmtDec((scrapQty / totalQty) * 100, 1)
+    : fmtDec(0, 1);
 
   // Tỷ lệ đạt chất lượng (%) = hoàn thành / tổng
   const passRate = totalQty > 0
-    ? ((completedQty / totalQty) * 100).toFixed(1)
-    : '100.0';
+    ? fmtDec((completedQty / totalQty) * 100, 1)
+    : fmtDec(100, 1);
 
   const qualData = totalQty > 0
     ? [
@@ -109,7 +111,7 @@ function KpiReport() {
         <KpiCard title="Tổng Lệnh Sản Xuất" value={data.total_production_orders} color="blue" />
         <KpiCard title="Lệnh Đang Sản Xuất" value={data.active_production_orders} color="emerald" />
         <KpiCard title="Máy Đang Hoạt Động" value={data.active_machines} color="amber" />
-        <KpiCard title="Tổng Số Tồn Kho" color="purple" value={
+        <KpiCard title="Tổng Số Tồn Kho" color="blue" value={
           (data.inventory_by_unit || []).length
             ? <span className={data.inventory_by_unit.length > 1 ? 'block text-xl leading-snug' : ''}>
                 {data.inventory_by_unit.map((u) => <span key={u.unit} className="block">{fmt(u.qty)} {u.unit}</span>)}
@@ -122,7 +124,7 @@ function KpiReport() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         
         {/* A. Kế hoạch vs Thực tế */}
-        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
           <h3 className="text-base font-semibold mb-4 text-slate-800">A. Kế hoạch vs Thực tế (7 ngày)</h3>
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
@@ -140,7 +142,7 @@ function KpiReport() {
         </div>
 
         {/* B. Tình trạng Lệnh SX */}
-        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
           <h3 className="text-base font-semibold mb-4 text-slate-800">B. Tình trạng Lệnh Sản Xuất</h3>
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
@@ -156,7 +158,7 @@ function KpiReport() {
         </div>
 
         {/* C. Sản lượng theo sản phẩm */}
-        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
           <h3 className="text-base font-semibold mb-4 text-slate-800">C. Top SL kế hoạch theo Sản phẩm</h3>
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
@@ -172,7 +174,7 @@ function KpiReport() {
         </div>
 
         {/* D. Hiệu suất sản xuất */}
-        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
           <h3 className="text-base font-semibold mb-4 text-slate-800">D. Hiệu suất sản xuất (%)</h3>
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
@@ -181,14 +183,14 @@ function KpiReport() {
                 <XAxis dataKey="date" fontSize={12} tickMargin={10} />
                 <YAxis fontSize={12} domain={[0, 100]} />
                 <Tooltip />
-                <Line type="monotone" dataKey="perf" name="% Hoàn thành" stroke="#8b5cf6" strokeWidth={3} dot={{r: 4}} activeDot={{r: 6}} />
+                <Line type="monotone" dataKey="perf" name="% Hoàn thành" stroke="#0ea5e9" strokeWidth={3} dot={{r: 4}} activeDot={{r: 6}} />
               </LineChart>
             </ResponsiveContainer>
           </div>
         </div>
 
         {/* E. Tình trạng tồn kho */}
-        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm relative">
+        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm relative">
           <h3 className="text-base font-semibold mb-4 text-slate-800">E. Tình trạng tồn kho</h3>
           {charts.inventoryAlert > 0 && (
              <div className="absolute top-5 right-5 bg-rose-50 text-rose-600 text-xs font-semibold px-2 py-1 rounded-md border border-rose-200">
@@ -202,14 +204,14 @@ function KpiReport() {
                 <XAxis dataKey="name" fontSize={12} />
                 <YAxis fontSize={12} />
                 <Tooltip />
-                <Bar dataKey="value" name="Số lượng" fill="#6366f1" radius={[4,4,0,0]} barSize={40} />
+                <Bar dataKey="value" name="Số lượng" fill="#0055b3" radius={[4,4,0,0]} barSize={40} />
               </BarChart>
             </ResponsiveContainer>
           </div>
         </div>
 
         {/* F. Tỷ lệ đạt chất lượng / Phế phẩm */}
-        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm relative">
+        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm relative">
           <h3 className="text-base font-semibold mb-1 text-slate-800">F. Tỷ lệ đạt chất lượng</h3>
           <p className="text-xs text-slate-400 mb-3">Phế phẩm so với sản phẩm hoàn thành</p>
           <div className="flex items-center gap-4">
@@ -232,7 +234,7 @@ function KpiReport() {
                   </Pie>
                   <Tooltip
                     formatter={(value, name) => [
-                      `${Number(value).toLocaleString('vi-VN')} sp`,
+                      `${fmt(value)} sp`,
                       name
                     ]}
                   />
@@ -259,7 +261,7 @@ function KpiReport() {
                   <span className="text-sm font-medium text-emerald-800">Hoàn thành</span>
                 </div>
                 <div className="text-right">
-                  <span className="block text-base font-bold text-emerald-700">{completedQty.toLocaleString('vi-VN')}</span>
+                  <span className="block text-base font-bold text-emerald-700">{fmt(completedQty)}</span>
                   <span className="text-[10px] text-emerald-500">{passRate}%</span>
                 </div>
               </div>
@@ -269,13 +271,13 @@ function KpiReport() {
                   <span className="text-sm font-medium text-red-800">Phế phẩm</span>
                 </div>
                 <div className="text-right">
-                  <span className="block text-base font-bold text-red-700">{scrapQty.toLocaleString('vi-VN')}</span>
+                  <span className="block text-base font-bold text-red-700">{fmt(scrapQty)}</span>
                   <span className="text-[10px] text-red-500">{scrapRate}%</span>
                 </div>
               </div>
               <div className="flex items-center justify-between px-3 py-2 rounded-xl bg-slate-50 border border-slate-100">
                 <span className="text-xs text-slate-500">Tổng đã xử lý</span>
-                <span className="text-sm font-semibold text-slate-700">{totalQty.toLocaleString('vi-VN')} sp</span>
+                <span className="text-sm font-semibold text-slate-700">{fmt(totalQty)} sp</span>
               </div>
             </div>
           </div>
@@ -291,12 +293,12 @@ function KpiCard({ title, value, color }) {
     blue: 'bg-blue-50 text-blue-700 border-blue-200',
     emerald: 'bg-emerald-50 text-emerald-700 border-emerald-200',
     amber: 'bg-amber-50 text-amber-700 border-amber-200',
-    purple: 'bg-purple-50 text-purple-700 border-purple-200'
+    purple: 'bg-blue-50 text-blue-700 border-blue-200'
   };
   return (
-    <div className={`p-6 rounded-2xl border ${colors[color]} shadow-sm`}>
+    <div className={`p-6 rounded-xl border ${colors[color]} shadow-sm`}>
       <h3 className="text-sm font-semibold mb-2 opacity-80">{title}</h3>
-      <p className="text-3xl font-bold">{value}</p>
+      <p className="text-2xl font-bold">{value}</p>
     </div>
   );
 }
@@ -309,7 +311,7 @@ const STATUS_COLORS_CHART = {
   'Đang sản xuất': '#f59e0b',
   'Chờ duyệt':    '#94a3b8',
   'Đã lên kế hoạch': '#3b82f6',
-  'Chờ nguyên vật liệu': '#a855f7',
+  'Chờ nguyên vật liệu': '#b45309', // amber đậm (cảnh báo) — khác 'Đang sản xuất'
   'Hoàn thành':   '#10b981',
   'Đã hủy':       '#ef4444',
   'Quá hạn':      '#ef4444',
@@ -373,7 +375,7 @@ function DetailedReport() {
   const orderCodes = res?.orderCodes || [];
 
   // Pagination — use shared usePager hook
-  const { slice: paged, Pager } = usePager(data, 10);
+  const { slice: paged, pager } = usePager(data, 10);
 
   // Bar chart data
   const barData = (charts.byStatus || []).map(s => ({
@@ -390,8 +392,8 @@ function DetailedReport() {
   const donutData  = (charts.statusDist || []).map(s => ({ name: s.name, value: s.value }));
   const donutTotal = donutData.reduce((a, b) => a + b.value, 0);
 
-  const inProductionPct = summary.total_orders > 0 ? ((summary.in_production / summary.total_orders) * 100).toFixed(2) : '0.00';
-  const overduePct      = summary.total_orders > 0 ? ((summary.overdue / summary.total_orders) * 100).toFixed(2) : '0.00';
+  const inProductionPct = summary.total_orders > 0 ? fmtDec((summary.in_production / summary.total_orders) * 100, 2) : fmtDec(0, 2);
+  const overduePct      = summary.total_orders > 0 ? fmtDec((summary.overdue / summary.total_orders) * 100, 2) : fmtDec(0, 2);
 
   const exportExcel = () => {
     const ws = XLSX.utils.json_to_sheet(data.map(d => ({
@@ -424,19 +426,19 @@ function DetailedReport() {
     <div className="space-y-5">
 
       {/* ── Filter bar ── */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
         <div className="flex flex-wrap gap-4 items-end">
           {/* From date */}
           <div>
             <label className="block text-xs font-medium text-slate-500 mb-1">Từ ngày</label>
-            <input type="date" value={filters.fromDate}
+            <DateInput value={filters.fromDate}
               onChange={e => setFilters({ ...filters, fromDate: e.target.value })}
               className="px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500" />
           </div>
           {/* To date */}
           <div>
             <label className="block text-xs font-medium text-slate-500 mb-1">Đến ngày</label>
-            <input type="date" value={filters.toDate}
+            <DateInput value={filters.toDate}
               onChange={e => setFilters({ ...filters, toDate: e.target.value })}
               className="px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500" />
           </div>
@@ -455,7 +457,7 @@ function DetailedReport() {
                   setFilters({ ...filters, orderCode: val });
                 }
               }}
-              placeholder="Nhập mã lệnh..."
+              placeholder="Nhập mã lệnh…"
               className="px-3 py-2 border border-slate-300 rounded-lg text-sm w-44 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500"
             />
             <datalist id="order-codes-list">
@@ -498,7 +500,7 @@ function DetailedReport() {
 
       {/* ── Summary Cards ── */}
       {loading ? (
-        <div className="text-center py-10 text-slate-500 text-sm">Đang tải dữ liệu...</div>
+        <div className="text-center py-10 text-slate-500 text-sm">Đang tải dữ liệu…</div>
       ) : (
         <>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
@@ -530,7 +532,7 @@ function DetailedReport() {
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
 
             {/* Bar: Sản lượng theo trạng thái */}
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
+            <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
               <h3 className="text-sm font-semibold text-slate-700 mb-3">Sản lượng theo trạng thái</h3>
               <div className="h-52">
                 <ResponsiveContainer width="100%" height="100%">
@@ -541,7 +543,7 @@ function DetailedReport() {
                       return m[s] || s;
                     }} />
                     <YAxis tick={{ fontSize: 10 }} />
-                    <Tooltip formatter={(v) => [`${Number(v).toLocaleString('vi-VN')} Kg`, 'Sản lượng']} />
+                    <Tooltip formatter={(v) => [`${fmt(v)} Kg`, 'Sản lượng']} />
                     <Legend wrapperStyle={{ fontSize: 11 }} />
                     <Bar dataKey="Sản lượng (Kg)" radius={[4, 4, 0, 0]}>
                       {barData.map((entry, i) => (
@@ -554,7 +556,7 @@ function DetailedReport() {
             </div>
 
             {/* Line: Sản lượng kế hoạch vs hoàn thành */}
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
+            <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
               <h3 className="text-sm font-semibold text-slate-700 mb-3">Sản lượng kế hoạch vs hoàn thành</h3>
               <div className="h-52">
                 <ResponsiveContainer width="100%" height="100%">
@@ -572,7 +574,7 @@ function DetailedReport() {
             </div>
 
             {/* Donut: Trạng thái lệnh */}
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
+            <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
               <h3 className="text-sm font-semibold text-slate-700 mb-3">Trạng thái lệnh</h3>
               <div className="flex items-center gap-4 h-52">
                 <div className="flex-1 h-full relative">
@@ -599,7 +601,7 @@ function DetailedReport() {
                 {/* Legend */}
                 <div className="space-y-1.5 text-xs min-w-[110px]">
                   {donutData.map((d, i) => {
-                    const pct = donutTotal > 0 ? ((d.value / donutTotal) * 100).toFixed(2) : '0.00';
+                    const pct = fmtDec(donutTotal > 0 ? (d.value / donutTotal) * 100 : 0, 2);
                     return (
                       <div key={i} className="flex items-center gap-1.5">
                         <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: DONUT_COLORS[i % DONUT_COLORS.length] }} />
@@ -614,7 +616,7 @@ function DetailedReport() {
           </div>
 
           {/* ── Table ── */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
             <div className="px-5 py-4 border-b border-slate-100">
               <h3 className="text-sm font-semibold text-slate-800">Danh sách lệnh sản xuất</h3>
             </div>
@@ -672,7 +674,7 @@ function DetailedReport() {
 
             {/* Pagination — shared component */}
             <div className="px-5 py-3 border-t border-slate-100">
-              <Pager />
+              {pager}
             </div>
           </div>
         </>
@@ -701,7 +703,7 @@ function SummaryCard({ icon, label, value, unit, subValue, subColor, color }) {
     red:     'bg-rose-50',
   };
   return (
-    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 flex items-start gap-3">
+    <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 flex items-start gap-3">
       <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${bg[color] || 'bg-slate-50'}`}>
         {icon}
       </div>
@@ -723,14 +725,16 @@ function MachineReport() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  const [loadErr, setLoadErr] = useState(""); const [tryN, setTryN] = useState(0);
   useEffect(() => {
+    setLoading(true);
     reports.machines().then(res => {
       setData(res);
-      setLoading(false);
-    });
-  }, []);
+    }).catch((e) => setLoadErr(e.message || "Lỗi máy chủ")).finally(() => setLoading(false));
+  }, [tryN]);
 
-  if (loading) return <div>Đang tải dữ liệu...</div>;
+  if (loading) return <div>Đang tải dữ liệu…</div>;
+  if (loadErr) return <LoadError message={`Không tải được báo cáo máy (${loadErr})`} onRetry={() => { setLoadErr(""); setTryN((n) => n + 1); }} />;
   if (!data) return null;
 
   const pieData = data.status_distribution.map(d => ({

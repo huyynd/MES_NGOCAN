@@ -9,7 +9,7 @@ import * as XLSX from "xlsx";
 import { receivables as api } from "../../mesApi.js";
 import { usePerm } from "../../perm.jsx";
 import { fmtDate, statusClass, toast, todayYmd } from "../../ui.js";
-import { ListHeader, DataTable } from "../../components.jsx";
+import { ListHeader, DataTable, LoadError, DialogBehavior } from "../../components.jsx";
 import { LevelBadge, LEVELS, vnd } from "./debtUi.jsx";
 
 function Card({ label, value, sub, icon: Icon, tone = "slate", onClick, active }) {
@@ -36,12 +36,14 @@ function Card({ label, value, sub, icon: Icon, tone = "slate", onClick, active }
 /* ---- Chi tiết công nợ 1 khách (ngăn trượt bên phải) ---- */
 function DetailDrawer({ customerId, onClose }) {
   const [d, setD] = useState(null);
-  useEffect(() => { api.detail(customerId).then(setD).catch((e) => toast.error(e.message)); }, [customerId]);
-  const bad = d?.settings?.bad_days ?? 30;
+  const [loadErr, setLoadErr] = useState(""); const [tryN, setTryN] = useState(0);
+  useEffect(() => { api.detail(customerId).then(setD).catch((e) => setLoadErr(e.message || "Lỗi máy chủ")); }, [customerId, tryN]);
+  const bad = d?.settings?.bad_days ?? null; // ngưỡng thật từ máy chủ; chưa có → không tô "quá hạn"
   return (
     <>
       <div className="fixed inset-0 bg-black/30 z-40" onClick={onClose} />
       <div className="fixed right-0 top-0 h-full w-full max-w-[640px] bg-white shadow-2xl z-50 flex flex-col">
+        <DialogBehavior onClose={onClose} dirty={false} />
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 shrink-0">
           <div>
             <div className="text-xs text-slate-400">Công nợ khách hàng</div>
@@ -49,7 +51,7 @@ function DetailDrawer({ customerId, onClose }) {
           </div>
           <div className="flex items-center gap-3">{d && <LevelBadge level={d.level} />}<button onClick={onClose} className="p-1.5 rounded-lg hover:bg-slate-100"><X size={18} /></button></div>
         </div>
-        {!d ? <div className="p-6 text-sm text-slate-400">Đang tải…</div> : (
+        {!d ? (loadErr ? <div className="p-6"><LoadError message={`Không tải được công nợ (${loadErr})`} onRetry={() => { setLoadErr(""); setTryN((n) => n + 1); }} /></div> : <div className="p-6 text-sm text-slate-400">Đang tải…</div>) : (
           <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
               {[["Phải trả", d.billed, "text-slate-800"], ["Đã trả", d.paid, "text-emerald-700"], ["Còn nợ", d.debt, "text-rose-600"], ["Trả trước", d.credit, "text-blue-700"]].map(([l, v, c]) => (
@@ -67,7 +69,7 @@ function DetailDrawer({ customerId, onClose }) {
                   <tbody className="divide-y divide-slate-100">
                     {d.notes.map((n) => {
                       const due = Number(n.due) || 0;
-                      const late = due > 0.005 && n.age_days > bad;
+                      const late = bad != null && due > 0.005 && n.age_days > bad;
                       return (
                         <tr key={n.id} className={late ? "bg-rose-50/50" : ""}>
                           <td className="px-3 py-1.5"><div className="font-medium">{n.note_code}</div>
@@ -117,7 +119,9 @@ export default function ReceivablesModule() {
   const { fpermSecret } = usePerm();
   const hidden = fpermSecret("deliveries", "amounts") === "hidden";
   const [rows, setRows] = useState([]);
-  const [settings, setSettings] = useState({ bad_days: 30, limit_amount: 300000000 });
+  const [settings, setSettings] = useState({ bad_days: null, limit_amount: null }); // S-12: chưa tải → "—"
+  const badTxt = settings.bad_days ?? "—";
+  const limitTxt = settings.limit_amount != null ? vnd(Number(settings.limit_amount)) : "—";
   const [loading, setLoading] = useState(false);
   const [levelView, setLevelView] = useState(""); // "" | debt | bad | blocked
   const [openId, setOpenId] = useState(null);
@@ -143,7 +147,7 @@ export default function ReceivablesModule() {
   const exportTopBad = () => {
     const data = topBad.map((r, i) => ({
       "Hạng": i + 1, "Mã KH": r.customer_code, "Khách hàng": r.customer_name, "Điện thoại": r.phone || "",
-      [`Nợ quá ${settings.bad_days} ngày (đ)`]: Math.round(r.overdue_debt), "Tổng nợ (đ)": Math.round(r.debt),
+      [`Nợ quá ${badTxt} ngày (đ)`]: Math.round(r.overdue_debt), "Tổng nợ (đ)": Math.round(r.debt),
       "Nợ lâu nhất (ngày)": r.oldest_days, "Trả gần nhất": r.last_pay ? fmtDate(r.last_pay) : "Chưa trả",
       "Cảnh báo": LEVELS[r.level]?.label, "Người phụ trách đòi": "", "Kết quả / hẹn trả": "",
     }));
@@ -161,7 +165,7 @@ export default function ReceivablesModule() {
     { key: "billed", label: "Phải trả", align: "right", minWidth: "120px", render: (r) => <span className="tabular-nums">{vnd(r.billed)}</span> },
     { key: "paid", label: "Đã trả", align: "right", minWidth: "120px", render: (r) => <span className="tabular-nums text-emerald-700">{vnd(r.paid)}</span> },
     { key: "debt", label: "Còn nợ", align: "right", minWidth: "130px", render: (r) => <span className={`tabular-nums font-bold ${r.debt > 0.005 ? "text-rose-600" : "text-slate-300"}`}>{vnd(r.debt)}</span> },
-    { key: "overdue_debt", label: `Nợ quá ${settings.bad_days} ngày`, align: "right", minWidth: "130px", render: (r) => r.overdue_debt > 0.005 ? <span className="tabular-nums font-semibold text-rose-600">{vnd(r.overdue_debt)}</span> : <span className="text-slate-300">—</span> },
+    { key: "overdue_debt", label: `Nợ quá ${badTxt} ngày`, align: "right", minWidth: "130px", render: (r) => r.overdue_debt > 0.005 ? <span className="tabular-nums font-semibold text-rose-600">{vnd(r.overdue_debt)}</span> : <span className="text-slate-300">—</span> },
     { key: "oldest_days", label: "Nợ lâu nhất", align: "right", minWidth: "100px", render: (r) => r.debt > 0.005 ? <span className={r.oldest_days > settings.bad_days ? "text-rose-600 font-medium" : "text-slate-600"}>{r.oldest_days} ngày</span> : <span className="text-slate-300">—</span> },
     { key: "credit", label: "Trả trước", align: "right", minWidth: "110px", render: (r) => r.credit > 0.005 ? <span className="tabular-nums text-blue-700">{vnd(r.credit)}</span> : <span className="text-slate-300">—</span> },
     { key: "level", label: "Cảnh báo", filter: "select", minWidth: "130px", filterValue: (r) => LEVELS[r.level]?.label, options: Object.values(LEVELS).map((l) => l.label),
@@ -172,7 +176,7 @@ export default function ReceivablesModule() {
     if (!shown.length) return toast.error("Danh sách đang trống");
     const data = shown.map((r) => ({
       "Mã KH": r.customer_code, "Khách hàng": r.customer_name, "Phải trả (đ)": Math.round(r.billed), "Đã trả (đ)": Math.round(r.paid),
-      "Còn nợ (đ)": Math.round(r.debt), [`Nợ quá ${settings.bad_days} ngày (đ)`]: Math.round(r.overdue_debt),
+      "Còn nợ (đ)": Math.round(r.debt), [`Nợ quá ${badTxt} ngày (đ)`]: Math.round(r.overdue_debt),
       "Nợ lâu nhất (ngày)": r.debt > 0.005 ? r.oldest_days : "", "Trả trước (đ)": Math.round(r.credit), "Cảnh báo": LEVELS[r.level]?.label,
     }));
     const ws = XLSX.utils.aoa_to_sheet([[`Báo cáo công nợ · ngày ${fmtDate(todayYmd())}`], []]);
@@ -195,7 +199,7 @@ export default function ReceivablesModule() {
           {blockedList.length > 0 && (
             <div className="flex items-start gap-3 rounded-xl border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-800">
               <Ban size={18} className="mt-0.5 shrink-0" />
-              <div><b>{blockedList.length} khách nợ vượt hạn mức {vnd(settings.limit_amount)} đ — đang bị chặn tạo phiếu giao:</b> {blockedList.map((r) => `${r.customer_name} (${vnd(r.debt)} đ)`).join(", ")}</div>
+              <div><b>{blockedList.length} khách nợ vượt hạn mức {limitTxt} đ — đang bị chặn tạo phiếu giao:</b> {blockedList.map((r) => `${r.customer_name} (${vnd(r.debt)} đ)`).join(", ")}</div>
             </div>
           )}
         </div>
@@ -207,7 +211,7 @@ export default function ReceivablesModule() {
           <div className="flex items-center gap-2 px-4 py-3 bg-amber-50 border-b border-amber-200 text-amber-800">
             <AlertTriangle size={18} className="shrink-0" />
             <span className="font-semibold">Top {topBad.length} khách nợ xấu cần đòi</span>
-            <span className="text-sm">· {badList.length} khách có phiếu giao nợ quá {settings.bad_days} ngày · tổng quá hạn <b>{vnd(sum("overdue_debt", badList))} đ</b></span>
+            <span className="text-sm">· {badList.length} khách có phiếu giao nợ quá {badTxt} ngày · tổng quá hạn <b>{vnd(sum("overdue_debt", badList))} đ</b></span>
             <button onClick={exportTopBad} className="ml-auto btn-ghost !py-1 text-sm"><Download size={14} /> Xuất danh sách</button>
           </div>
           <div className="overflow-x-auto">
@@ -252,8 +256,8 @@ export default function ReceivablesModule() {
         <Card label="Phải trả" value={vnd(sum("billed"))} sub="Tổng tiền phiếu giao đã giao" icon={Receipt} />
         <Card label="Đã trả" value={vnd(sum("paid"))} sub="Tổng phiếu thanh toán" icon={Wallet} tone="emerald" />
         <Card label="Còn nợ" value={vnd(sum("debt"))} sub={`${debtList.length} khách đang nợ`} icon={Users} tone="rose" onClick={() => pick("debt")} active={levelView === "debt"} />
-        <Card label={`Nợ quá ${settings.bad_days} ngày`} value={vnd(sum("overdue_debt"))} sub={`${badList.length} khách nợ xấu`} icon={Clock} tone="rose" onClick={() => pick("bad")} active={levelView === "bad"} />
-        <Card label="Vượt hạn mức" value={blockedList.length} sub={`Nợ > ${vnd(settings.limit_amount)} đ`} icon={Ban} tone={blockedList.length ? "rose" : "slate"} onClick={() => pick("blocked")} active={levelView === "blocked"} />
+        <Card label={`Nợ quá ${badTxt} ngày`} value={vnd(sum("overdue_debt"))} sub={`${badList.length} khách nợ xấu`} icon={Clock} tone="rose" onClick={() => pick("bad")} active={levelView === "bad"} />
+        <Card label="Vượt hạn mức" value={blockedList.length} sub={`Nợ > ${limitTxt} đ`} icon={Ban} tone={blockedList.length ? "rose" : "slate"} onClick={() => pick("blocked")} active={levelView === "blocked"} />
         <Card label="Trả trước" value={vnd(sum("credit"))} sub="Tiền khách trả dư" icon={Wallet} tone="blue" />
       </div>
 
@@ -263,7 +267,7 @@ export default function ReceivablesModule() {
         <span className="ml-auto text-xs text-slate-400">Bấm tên khách để xem chi tiết phiếu giao / phiếu thanh toán</span>
       </div>
 
-      <DataTable columns={columns} rows={shown} rowKey={(r) => r.customer_id} emptyText={loading ? "Đang tải…" : "Không có khách nào"} />
+      <DataTable columns={columns} rows={shown} rowKey={(r) => r.customer_id} loading={loading} emptyText="Không có khách nào" />
 
       {openId && <DetailDrawer customerId={openId} onClose={() => setOpenId(null)} />}
     </div>

@@ -10,6 +10,7 @@ const EPS = 0.005; // tiền làm tròn 2 chữ số
 
 // Trạng thái phiếu giao có tính tiền (đã giao) — dùng ĐỊNH NGHĨA CHUNG ở money.js, không tự khai báo lại.
 const { PAYABLE_NOTE_STATUSES: PAYABLE_STATUSES } = require('./money');
+const { getAppSettings } = require('./settings');
 
 // TUỔI NỢ (số ngày) của 1 phiếu giao — MỘT quy tắc cho mọi màn: tính từ ngày giao; phiếu thiếu ngày giao
 // thì tính từ ngày tạo phiếu (không bỏ sót / không màn tính màn bỏ). alias = tên/alias bảng delivery_notes.
@@ -17,13 +18,9 @@ const debtAgeSql = (alias = 'd') => `(CURRENT_DATE - COALESCE(${alias}.delivery_
 
 // Ngưỡng công nợ từ app_settings (mặc định 30 ngày / 300 triệu nếu chưa cấu hình)
 async function getDebtSettings(conn) {
-  const rows = (await conn.query(
-    `SELECT key, value FROM app_settings WHERE key IN ('debt_bad_days', 'debt_limit_amount')`)).rows;
-  const m = Object.fromEntries(rows.map((r) => [r.key, Number(r.value)]));
-  return {
-    bad_days: Number.isFinite(m.debt_bad_days) ? m.debt_bad_days : 30,
-    limit_amount: Number.isFinite(m.debt_limit_amount) ? m.debt_limit_amount : 300000000,
-  };
+  // đọc qua helper chung (core/lib/settings.js) — mặc định 30 ngày / 300 triệu
+  const s = await getAppSettings(conn);
+  return { bad_days: s.debt_bad_days, limit_amount: s.debt_limit_amount };
 }
 
 // Tính lại số đã trả = Σ phần thu chưa hủy, và TỰ đặt trạng thái thanh toán:

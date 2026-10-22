@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from "react";
 import { Shield, Plus, Edit, Trash2, Users, AlertCircle, Search, RotateCcw, Save } from "lucide-react";
-import { ListHeader, DataTable, Section, useSaving, useRemembered } from "../../components.jsx";
+import { ListHeader, DataTable, Section, useSaving, useRemembered, DialogBehavior, confirmClose } from "../../components.jsx";
 import { roles, users } from "../../mesApi.js";
-import { toast } from "../../ui.js";
+import { toast, inputCls, statusClass } from "../../ui.js";
 import { PermissionEditor } from "./PermissionEditor.jsx";
 
 function RoleForm({ record, onBack, onSaved }) {
@@ -38,28 +38,28 @@ function RoleForm({ record, onBack, onSaved }) {
         <h2 className="text-xl font-bold text-slate-800">{isEdit ? "Sửa vai trò" : "Thêm vai trò mới"}</h2>
         <div className="flex items-center gap-2">
           <button onClick={onBack} className="px-4 py-2 text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg text-sm font-medium transition-colors">Hủy</button>
-          <button onClick={() => guard(save)} disabled={saving} className="px-4 py-2 disabled:opacity-60 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium flex items-center gap-2 transition-colors"><Save size={16} /> {saving ? "Đang lưu…" : "Lưu"}</button>
+          <button onClick={() => guard(save)} disabled={saving} className="btn-primary disabled:opacity-60"><Save size={16} /> {saving ? "Đang lưu…" : "Lưu"}</button>
         </div>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-1">Mã vai trò (tự sinh nếu để trống)</label>
-          <input className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none text-sm" value={f.role_code} onChange={(e) => set("role_code", e.target.value)} placeholder="VD: VT001..." disabled={isEdit} />
+          <input className={inputCls} value={f.role_code} onChange={(e) => set("role_code", e.target.value)} placeholder="VD: VT001…" disabled={isEdit} />
         </div>
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-1">Tên vai trò <span className="text-rose-500">*</span></label>
-          <input className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none text-sm" value={f.name} onChange={(e) => set("name", e.target.value)} placeholder="Nhập tên..." />
+          <input className={inputCls} value={f.name} onChange={(e) => set("name", e.target.value)} placeholder="Nhập tên…" />
         </div>
         <div className="md:col-span-2">
           <label className="block text-sm font-medium text-slate-700 mb-1">Trạng thái</label>
-          <select className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none text-sm" value={f.status} onChange={(e) => set("status", e.target.value)}>
+          <select className={inputCls} value={f.status} onChange={(e) => set("status", e.target.value)}>
             <option>Hoạt động</option>
             <option>Không hoạt động</option>
           </select>
         </div>
         <div className="md:col-span-2">
           <label className="block text-sm font-medium text-slate-700 mb-1">Mô tả</label>
-          <textarea className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none text-sm resize-none" rows="3" value={f.description} onChange={(e) => set("description", e.target.value)} placeholder="Mô tả vai trò này làm gì..."></textarea>
+          <textarea className={inputCls + " resize-none"} rows="3" value={f.description} onChange={(e) => set("description", e.target.value)} placeholder="Mô tả vai trò này làm gì…"></textarea>
         </div>
       </div>
     </div>
@@ -165,7 +165,7 @@ export default function RolesModule() {
           <>
             <div className="relative mr-2">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-              <input type="text" placeholder="Tìm vai trò..." value={q} onChange={(e) => setQ(e.target.value)} className="pl-9 pr-3 py-1.5 bg-white border border-slate-300 rounded-lg text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 w-48 md:w-64" />
+              <input type="text" placeholder="Tìm vai trò…" value={q} onChange={(e) => setQ(e.target.value)} className="pl-9 pr-3 py-1.5 bg-white border border-slate-300 rounded-lg text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 w-48 md:w-64" />
             </div>
             <button onClick={fetchRoles} className="btn-ghost"><RotateCcw size={16} /> Làm mới</button>
             <button onClick={() => setEditingRole({})} className="btn-primary"><Plus size={16} /> Thêm mới</button>
@@ -173,6 +173,7 @@ export default function RolesModule() {
         )} />
         <div className="bg-white rounded-xl shadow-sm border border-slate-200">
           <DataTable
+            loading={loading}
             rows={filteredRoles}
             rowKey={(r) => r.id}
             columns={[
@@ -180,12 +181,12 @@ export default function RolesModule() {
               { key: "name", label: "Tên vai trò", render: (r) => <div className="font-semibold text-slate-800">{r.name}</div> },
               { key: "description", label: "Mô tả" },
               { key: "status", label: "Trạng thái", render: (r) => (
-                <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${r.status === 'Hoạt động' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>{r.status}</span>
+                <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${statusClass(r.status)}`}>{r.status}</span>
               )},
               { key: "_actions", label: "", align: "right", render: (r) => (
                 <div className="flex items-center justify-end gap-2">
                   <button onClick={() => handleRoleSelect(r)} className="px-3 py-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-lg text-sm font-medium transition">Cấu hình</button>
-                  <button onClick={() => setEditingRole(r)} className="p-1.5 text-slate-400 hover:text-indigo-600 transition" title="Sửa vai trò"><Edit size={16} /></button>
+                  <button onClick={() => setEditingRole(r)} className="p-1.5 text-slate-400 hover:text-blue-600 transition" title="Sửa vai trò"><Edit size={16} /></button>
                   <button onClick={() => handleDeleteRole(r)} className="p-1.5 text-slate-400 hover:text-rose-600 transition" title="Xóa vai trò"><Trash2 size={16} /></button>
                 </div>
               )}
@@ -223,7 +224,7 @@ export default function RolesModule() {
             <div className="space-y-4">
               <div className="flex items-center justify-between">
                 <h3 className="font-semibold text-slate-800 flex items-center gap-2"><Users size={18}/> Danh sách tài khoản mang vai trò {selectedRole.name}</h3>
-                <button onClick={() => toast.info("Gắn tài khoản vào vai trò đang phát triển...")} className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 font-medium flex items-center gap-1"><Plus size={16}/> Thêm tài khoản</button>
+                <button onClick={() => toast.info("Gắn tài khoản vào vai trò đang phát triển…")} className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 font-medium flex items-center gap-1"><Plus size={16}/> Thêm tài khoản</button>
               </div>
               <DataTable
                 rows={roleUsers}
@@ -234,7 +235,7 @@ export default function RolesModule() {
                   { key: "team", label: "Tổ/Đội" },
                   { key: "status", label: "Trạng thái" },
                   { key: "_actions", label: "", align: "right", render: (u) => (
-                    <button onClick={() => setEditingUser(u)} className="px-3 py-1 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 rounded text-sm font-medium">Quyền riêng</button>
+                    <button onClick={() => setEditingUser(u)} className="px-3 py-1 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded text-sm font-medium">Quyền riêng</button>
                   )}
                 ]}
               />
@@ -245,13 +246,14 @@ export default function RolesModule() {
 
       {editingUser && (
         <div className="fixed inset-0 bg-slate-900/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-5xl max-h-[90vh] flex flex-col overflow-hidden">
-            <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-indigo-50">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-5xl max-h-[90vh] flex flex-col overflow-hidden">
+            <DialogBehavior onClose={() => setEditingUser(null)} />
+            <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-blue-50">
               <div>
-                <h3 className="text-lg font-bold text-indigo-900">Quyền bổ sung: {editingUser.full_name || editingUser.username}</h3>
-                <div className="text-sm text-indigo-700 flex items-center gap-1"><AlertCircle size={14}/> Các quyền dưới đây sẽ ĐƯỢC CỘNG THÊM hoặc GHI ĐÈ lên quyền gốc của vai trò {selectedRole.name}</div>
+                <h3 className="text-lg font-bold text-blue-900">Quyền bổ sung: {editingUser.full_name || editingUser.username}</h3>
+                <div className="text-sm text-blue-700 flex items-center gap-1"><AlertCircle size={14}/> Các quyền dưới đây sẽ ĐƯỢC CỘNG THÊM hoặc GHI ĐÈ lên quyền gốc của vai trò {selectedRole.name}</div>
               </div>
-              <button onClick={() => setEditingUser(null)} className="p-2 text-slate-400 hover:bg-white rounded-lg transition"><Trash2 size={20}/></button>
+              <button onClick={(e) => confirmClose(e, () => setEditingUser(null))} aria-label="Đóng" className="p-2 text-slate-400 hover:bg-white rounded-lg transition"><Trash2 size={20}/></button>
             </div>
             <div className="flex-1 overflow-y-auto p-4 bg-slate-50">
               <PermissionEditor roleName={editingUser.username} initialPerms={editingUser.permissions || {}} onSave={handleSaveUserPerms} onCancel={() => setEditingUser(null)} />

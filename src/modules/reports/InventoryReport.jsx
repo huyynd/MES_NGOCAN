@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
+import { useAppSettings } from "../../appSettings.js";
 import {
   Warehouse, Download, RefreshCcw, TrendingUp, TrendingDown,
   Package, AlertTriangle, CheckCircle2, BarChart2
@@ -10,7 +11,7 @@ import {
 } from "recharts";
 import { ListHeader, Section } from "../../components.jsx";
 import { inventory } from "../../mesApi.js";
-import { fmt, fmtDate, toast, todayYmd } from "../../ui.js";
+import { fmt, fmtDate, toast, todayYmd, fmtDateTime } from "../../ui.js";
 import * as XLSX from "xlsx";
 import { usePerm } from "../../perm.jsx";
 
@@ -18,7 +19,7 @@ import { usePerm } from "../../perm.jsx";
 // ĐVT chuẩn để so khớp ("Kg" / "kg " → "kg"); trống → "—"
 const unitOf = (u) => (u || "").trim().toLowerCase() || "—";
 
-const DONUT_COLORS =["#3b82f6", "#10b981", "#f59e0b", "#6366f1", "#ec4899", "#14b8a6"];
+const DONUT_COLORS =["#3b82f6", "#10b981", "#f59e0b", "#64748b", "#ec4899", "#14b8a6"];
 
 /* ─── KPI Card ─────────────────────────────────────────────────── */
 function KpiCard({ label, value, sub, icon: Icon, color = "blue", trend }) {
@@ -27,7 +28,7 @@ function KpiCard({ label, value, sub, icon: Icon, color = "blue", trend }) {
     green: { bg: "bg-emerald-50", icon: "text-emerald-500", val: "text-emerald-700", border: "border-emerald-100" },
     amber: { bg: "bg-amber-50",   icon: "text-amber-500",   val: "text-amber-700",   border: "border-amber-100" },
     rose:  { bg: "bg-rose-50",    icon: "text-rose-500",    val: "text-rose-700",    border: "border-rose-100" },
-    violet:{ bg: "bg-violet-50",  icon: "text-violet-500",  val: "text-violet-700",  border: "border-violet-100" },
+    violet:{ bg: "bg-sky-50",  icon: "text-sky-500",  val: "text-sky-700",  border: "border-sky-100" },
   };
   const c = palette[color] || palette.blue;
   return (
@@ -92,6 +93,7 @@ export default function InventoryReport(props) {
 }
 
 function InventoryReportBody({ lookups }) {
+  const S = useAppSettings(); const nearK = S.near_min_percent / 100; // Cài đặt hệ thống (mặc định 120%)
   const { can, isAdmin } = usePerm(); // eslint-disable-line no-unused-vars
   const [stockData, setStockData]   = useState([]);
   const [txnData, setTxnData]       = useState([]);
@@ -185,13 +187,13 @@ function InventoryReportBody({ lookups }) {
     });
   });
 
-  // Near min (within 120%)
+  // Gần định mức: tồn ≥ tối thiểu và < near_min_percent% tối thiểu
   const nearMinItems = filteredStock.filter(p => {
     if (!p.warehouse_limits?.length) return false;
     return p.warehouse_limits.some(w => {
       const qty = p.warehouse_totals?.[w.warehouse_id] || 0;
       const min = Number(w.min_quantity);
-      return w.min_quantity != null && qty >= min && qty < min * 1.2;
+      return w.min_quantity != null && qty >= min && qty < min * nearK;
     });
   });
 
@@ -260,7 +262,7 @@ function InventoryReportBody({ lookups }) {
 
     // Sheet 2: Giao dịch
     const ws2 = XLSX.utils.json_to_sheet(recentTxns.map(t => ({
-      "Thời gian": new Date(t.created_at).toLocaleString("vi-VN"),
+      "Thời gian": fmtDateTime(t.created_at),
       "Loại": t.trx_type, "Mã SP": t.product_code, "Tên SP": t.product_name,
       "Số lượng": t.quantity, "Kho": t.warehouse_name || "", "Ghi chú": t.note || "",
     })));
@@ -433,7 +435,7 @@ function InventoryReportBody({ lookups }) {
                   <XAxis dataKey="name" tick={{ fontSize: 11 }} tickLine={false} />
                   <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
                   <Tooltip content={<CustomTooltip />} />
-                  <Bar dataKey="value" name="Tồn kho" fill="#6366f1" radius={[4, 4, 0, 0]} barSize={40}>
+                  <Bar dataKey="value" name="Tồn kho" fill="#0055b3" radius={[4, 4, 0, 0]} barSize={40}>
                     {warehouseBarData.map((_, i) => (
                       <Cell key={i} fill={DONUT_COLORS[i % DONUT_COLORS.length]} />
                     ))}
@@ -502,7 +504,7 @@ function InventoryReportBody({ lookups }) {
               {[...lowStockItems, ...nearMinItems.filter(p => !lowStockItems.includes(p))].map(p => {
                 const alertLimits = (p.warehouse_limits || []).filter(w => {
                   const qty = p.warehouse_totals?.[w.warehouse_id] || 0;
-                  return w.min_quantity != null && qty < Number(w.min_quantity) * 1.2;
+                  return w.min_quantity != null && qty < Number(w.min_quantity) * nearK;
                 });
                 return alertLimits.map(w => {
                   const qty = p.warehouse_totals?.[w.warehouse_id] || 0;
@@ -523,11 +525,11 @@ function InventoryReportBody({ lookups }) {
                         <div className="flex items-center gap-2">
                           {isLow ? (
                             <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-rose-100 text-rose-700">
-                              🔴 Dưới tối thiểu ({pct}%)
+                              <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-rose-500 mr-1 align-middle" />Dưới tối thiểu ({pct}%)
                             </span>
                           ) : (
                             <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-100 text-amber-700">
-                              🟡 Sắp dưới mức ({pct}%)
+                              <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 mr-1 align-middle" />Sắp dưới mức ({pct}%)
                             </span>
                           )}
                         </div>
@@ -614,7 +616,7 @@ function InventoryReportBody({ lookups }) {
                         <div className="flex items-center gap-2">
                           <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
                             <div
-                              className="h-full rounded-full transition-all"
+                              className="h-full rounded-full transition-[width]"
                               style={{
                                 width: `${pct}%`,
                                 background: DONUT_COLORS[idx % DONUT_COLORS.length],
