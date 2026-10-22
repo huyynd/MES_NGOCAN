@@ -493,7 +493,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
           {meta?.status === 'Hoàn thành' && !locked && <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200">⚠ Hoàn thành · cần bổ sung phân công</span>}
           {can("production", "edit") && !matsIssued && !locked && <button onClick={requestMats} disabled={pmBusy} className="btn-ghost text-amber-700 border-amber-300 hover:bg-amber-50"><PackageCheck size={16} /> Yêu cầu NVL</button>}
           {can("production", "edit") && !locked && <button onClick={() => setEditing(true)} className="btn-ghost"><Pencil size={16} /> Sửa</button>}
-          {can("production", "delete") && <button onClick={del} className="btn-ghost" style={{ color: "#e11d48" }}><Trash2 size={16} /> Xóa</button>}
+          {can("production", "delete") && ["Chờ duyệt", "Đã hủy"].includes(f.status) && <button onClick={del} className="btn-ghost" style={{ color: "#e11d48" }}><Trash2 size={16} /> Xóa</button>}
         </>) : (<>
           {editId && <button onClick={() => { setEditing(false); loadData(); }} className="btn-ghost">Hủy</button>}
           <button onClick={save} disabled={saving} className="btn-primary disabled:opacity-60 disabled:cursor-not-allowed"><Save size={16} /> {saving ? "Đang lưu…" : "Lưu lệnh sản xuất"}</button>
@@ -919,7 +919,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
             <div className="p-4 overflow-y-auto space-y-3 text-sm">
               <p>Thông số: <b>{cutModal.spec_label}</b></p>
               <p>Cần cắt: <b>{fmt(cutQty)} kg</b> · Tồn cuộn khả dụng: <b className={enough ? "text-emerald-600" : "text-rose-600"}>{fmt(cutModal.total_kg + blowQty)} kg</b>{blowQty > 0 && <span className="text-slate-500"> (gồm {fmt(blowQty)} kg từ Thổi cùng đợt)</span>}</p>
-              {!enough && <p className="text-rose-600 font-medium">⚠ Không đủ cuộn để cắt — hệ thống sẽ chặn khi xác nhận.</p>}
+              {!enough && <p className="text-rose-600 font-medium">⚠ Không đủ cuộn để cắt — vẫn cho xác nhận (tạm thời), chỉ trừ phần cuộn đang có.</p>}
               <p className="text-slate-500">Các lô sẽ bị trừ (ưu tiên lô của lệnh rồi FIFO). Tích <b>"Đã hết cuộn"</b> để xóa phần kg dư của lô sau khi cắt (ghi "Điều chỉnh – Hao hụt cắt"):</p>
               <div className="border border-slate-200 rounded-lg divide-y divide-slate-100">
                 {cutModal.lots.length === 0 && <div className="p-3 text-slate-400">Không có lô cuộn khớp thông số.</div>}
@@ -1163,7 +1163,7 @@ export default function ProductionModule({ lookups, focusId, onFocusConsumed, on
     { key: "_act", label: "", align: "right", render: (r) => (<>
         <button onClick={() => setScheduling(r)} disabled={!can("production", "update")} className="text-slate-400 hover:text-blue-600 p-1" title="Lập lịch / xếp máy"><CalendarClock size={16} /></button>
         {can("production", "create") && <button onClick={() => openForm({ copy: r.id })} title="Sao chép" className="text-slate-400 hover:text-blue-600 p-1"><Copy size={16} /></button>}
-        {can("production", "delete") && <button onClick={() => del(r.id)} title="Xóa" className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={16} /></button>}
+        {can("production", "delete") && ["Chờ duyệt", "Đã hủy"].includes(r.status) && <button onClick={() => del(r.id)} title="Xóa" className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={16} /></button>}
       </>) },
   ];
 

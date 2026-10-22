@@ -5,6 +5,7 @@ import { inventory } from "../../mesApi.js";
 import { usePerm } from "../../perm.jsx";
 import { inputCls, fmt, toast, fmtDateTime } from "../../ui.js";
 import { trxIsIn, defaultRange, TrxRange, byColumn } from "./trxHistory.jsx";
+import { specKeyLabel } from "../../specs.js";
 
 const Field = ({ label, required, children }) => (
   <div>
@@ -15,7 +16,7 @@ const Field = ({ label, required, children }) => (
   </div>
 );
 
-const specLabel = (k) => (String(k || "").split("|").filter(Boolean).join(" · ") || "Không thông số");
+const specLabel = (k) => specKeyLabel(k, "Không thông số");
 
 function TransferForm({ lookups, onSaved }) {
   const [form, setForm] = useState({

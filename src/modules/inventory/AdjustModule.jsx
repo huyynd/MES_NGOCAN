@@ -5,6 +5,7 @@ import { inventory } from "../../mesApi.js";
 import { usePerm } from "../../perm.jsx";
 import { inputCls, fmt, toast, fmtDateTime } from "../../ui.js";
 import { trxIsIn, defaultRange, TrxRange, byColumn } from "./trxHistory.jsx";
+import { specKeyLabel } from "../../specs.js";
 
 const Field = ({ label, required, children }) => (
   <div>
@@ -21,7 +22,7 @@ const ADJUST_REASONS = [
 ];
 
 const NEW_LINE = "__new__";
-const specLabel = (k) => (String(k || "").split("|").filter(Boolean).join(" · ") || "Không thông số");
+const specLabel = (k) => specKeyLabel(k, "Không thông số");
 const lineKey = (r) => `${r.spec_key}§${r.lot_code || ""}`;
 const emptyForm = () => ({
   product_id: "", location_id: "", line: "", new_lot: "", actual_qty: "", unit: "",

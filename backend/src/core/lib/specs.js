@@ -55,4 +55,10 @@ function specsFromBody(b, base = null) {
   return cleanSpecs(o);
 }
 
-module.exports = { SPEC_NAMES, cleanSpecs, buildSpecKey, legacyAttrs, specsFromBody, splitLegacySize };
+// Thứ tự HIỂN THỊ (giống form FE: Rộng trước Dài) — khác SPEC_NAMES (thứ tự khóa), đừng dùng để dựng spec_key.
+const DISPLAY_NAMES = ['Số lớp', 'Chiều ngang (Rộng)', 'Chiều dài', 'Độ dày', 'Màu sắc'];
+const specValuesLabel = (specs) => { const s = cleanSpecs(specs); return DISPLAY_NAMES.map((n) => s[n]).filter(Boolean); };
+// Nhãn từ spec_key ("Số lớp|Dài|Rộng|Dày|Màu") → đảo về Rộng · Dài
+const specKeyValues = (key) => { const p = String(key || '').split('|'); if (p.length >= 3) [p[1], p[2]] = [p[2], p[1]]; return p.filter(Boolean); };
+
+module.exports = { SPEC_NAMES, cleanSpecs, buildSpecKey, legacyAttrs, specsFromBody, splitLegacySize, specValuesLabel, specKeyValues };

@@ -392,7 +392,7 @@ function OrderForm({ lookups, editId, copyId, onBack, onSaved, onPrint, onCreate
             <button onClick={() => setAllocating(true)} className="btn-primary"><CalendarClock size={16} /> Phân công nhanh</button>
           )}
           {can("orders", "edit") && <button onClick={() => setEditing(true)} className="btn-ghost"><Pencil size={16} /> Sửa</button>}
-          {can("orders", "delete") && <button onClick={del} className="btn-ghost" style={{ color: "#e11d48" }}><Trash2 size={16} /> Xóa</button>}
+          {can("orders", "delete") && ["Mới", "Đã hủy"].includes(f.status) && <button onClick={del} className="btn-ghost" style={{ color: "#e11d48" }}><Trash2 size={16} /> Xóa</button>}
         </>) : (<>
           {editId && <button onClick={() => { setEditing(false); loadData(); }} className="btn-ghost">Hủy</button>}
           <button onClick={() => guard(save)} disabled={saving} className="btn-primary"><Save size={16} /> {saving ? "Đang lưu…" : "Lưu đơn hàng"}</button>
@@ -1088,7 +1088,7 @@ export default function OrdersModule({ lookups, focusId, onFocusConsumed, onCrea
         <button onClick={() => { setVoucherId(r.id); setView("voucher"); }} title="Xem phiếu" className="text-slate-400 hover:text-emerald-600 p-1"><FileText size={15} /></button>
         {can("orders", "create") && <button onClick={() => openForm({ copy: r.id })} title="Sao chép thành đơn mới" className="text-slate-400 hover:text-blue-600 p-1"><Copy size={15} /></button>}
         {can("orders", "edit") && <button onClick={() => openForm({ edit: r.id })} title="Sửa" className="text-slate-400 hover:text-blue-600 p-1"><Pencil size={15} /></button>}
-        {can("orders", "delete") && <button onClick={() => del(r.id)} title="Xóa" className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={15} /></button>}
+        {can("orders", "delete") && ["Mới", "Đã hủy"].includes(r.status) && <button onClick={() => del(r.id)} title="Xóa" className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={15} /></button>}
       </>) },
   ];
 

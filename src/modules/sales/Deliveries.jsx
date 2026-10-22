@@ -8,7 +8,7 @@ import { DebtBanner } from "./debtUi.jsx";
 const ordersApi = resource("sales-orders");
 import { usePerm } from "../../perm.jsx";
 import {  inputCls, fmt, fmtDate, statusClass , toast, todayYmd } from "../../ui.js";
-import { specShort } from "../../specs.js";
+import { specShort, specKeyLabel } from "../../specs.js";
 import { PageHeader, Section, ListHeader, DataTable, Logo, UnitSelect, SearchSelect, useSaving, LoadError, DialogBehavior, confirmClose, DateInput } from "../../components.jsx";
 
 // Bảng chuyển trạng thái (khớp backend). "Giao hàng" chỉ đặt qua nút Giao hàng (trừ tồn).
@@ -88,7 +88,7 @@ const NO_ORDER = ""; // giá trị cột Đơn hàng = "không theo đơn"
 
 // K-12: Khách trả hàng — liệt kê đúng phần đã xuất khi giao (SP · lô · thông số · vị trí),
 // nhập lại vào vị trí người nhập chọn (mặc định chỗ đã xuất). Không đổi công nợ.
-const specLabel = (k) => (String(k || "").split("|").filter(Boolean).join(" · ") || "—");
+const specLabel = (k) => specKeyLabel(k, "—");
 function ReturnModal({ id, noteCode, lookups, onClose, onSaved }) {
   const [data, setData] = useState(null);
   const [qty, setQty] = useState({});   // trx_id → SL trả
@@ -405,7 +405,7 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
             <button onClick={() => setReturning(true)} className="btn-ghost"><RotateCcw size={16} /> Khách trả hàng</button>}
           <button onClick={() => onPrint?.(editId)} className="btn-ghost"><Printer size={16} /> In phiếu</button>
           {can("deliveries", "edit") && <button onClick={() => setEditing(true)} className="btn-ghost"><Pencil size={16} /> Sửa</button>}
-          {can("deliveries", "delete") && f.status === "Đã hủy" && <button onClick={del} className="btn-ghost" style={{ color: "#e11d48" }}><Trash2 size={16} /> Xóa</button>}
+          {can("deliveries", "delete") && ["Bản nháp", "Đã hủy"].includes(f.status) &&<button onClick={del} className="btn-ghost" style={{ color: "#e11d48" }}><Trash2 size={16} /> Xóa</button>}
         </>) : (<>
           {editId && <button onClick={() => { setEditing(false); load(); }} className="btn-ghost">Hủy</button>}
           <button onClick={() => guard(save)} disabled={blockedNew || saving} className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
@@ -754,7 +754,7 @@ export default function DeliveriesModule({ lookups, focusOrderId, onFocusConsume
     { key: "_act", label: "", align: "right", render: (r) => (<>
         <button onClick={() => { setVoucherId(r.id); setView("voucher"); }} title="In phiếu" className="text-slate-400 hover:text-emerald-600 p-1"><FileText size={15} /></button>
         <button onClick={() => { setEditId(r.id); setView("form"); }} title="Sửa" className="text-slate-400 hover:text-blue-600 p-1"><Pencil size={15} /></button>
-        {can("deliveries", "delete") && r.status === "Đã hủy" && <button onClick={() => del(r.id)} title="Xóa" className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={15} /></button>}
+        {can("deliveries", "delete") && ["Bản nháp", "Đã hủy"].includes(r.status) &&<button onClick={() => del(r.id)} title="Xóa" className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={15} /></button>}
       </>) },
   ];
 

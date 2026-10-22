@@ -5,7 +5,7 @@ const { guardDelete } = require('../../core/lib/deleteGuard');
 const { applyStock, stockErrorResponse, whOutboundOkSql } = require('../../core/lib/stock');
 const { nextSlipCode, nextCode } = require('../../core/lib/codes');
 const { currentUser } = require('../../core/requestContext');
-const { buildSpecKey } = require('../../core/lib/specs');
+const { buildSpecKey, specKeyValues } = require('../../core/lib/specs');
 
 const num = (v) => (v === '' || v == null ? 0 : Number(v) || 0);
 const EMPTY_SPEC = buildSpecKey({});
@@ -447,7 +447,7 @@ exports.ship = async (req, res) => {
       const avail = (r) => (left.has(rowKey(r)) ? left.get(rowKey(r)) : Number(r.quantity));
       const onHand = stockRows.reduce((s, r) => s + avail(r), 0);
       if (need > onHand + 1e-6) {
-        shortages.push({ name: l.product_name + (strict ? ` (đúng thông số ${l.spec_key.split('|').filter(Boolean).join(', ')})` : ''), unit: l.unit || '', on_hand: onHand, need, lack: need - onHand });
+        shortages.push({ name: l.product_name + (strict ? ` (đúng thông số ${specKeyValues(l.spec_key).join(', ')})` : ''), unit: l.unit || '', on_hand: onHand, need, lack: need - onHand });
       } else {
         let remain = need;
         for (const sr of stockRows) {
@@ -517,8 +517,8 @@ exports.ship = async (req, res) => {
 exports.remove = async (req, res) => {
   try {
     const g = await guardDelete('delivery_notes', req.params.id, {
-      allow: ['Đã hủy'],
-      message: 'Không thể xóa phiếu đang xử lý / đã thu tiền. Chỉ xóa được phiếu ở trạng thái "Đã hủy" — vui lòng chuyển phiếu sang "Đã hủy" trước, rồi mới xóa.',
+      allow: ['Bản nháp', 'Đã hủy'],
+      message: 'Không thể xóa phiếu đang xử lý / đã thu tiền. Chỉ xóa được phiếu "Bản nháp" hoặc "Đã hủy" — vui lòng chuyển phiếu sang "Đã hủy" trước, rồi mới xóa.',
     });
     if (g.notFound) return res.status(404).json({ message: 'Không tìm thấy phiếu' });
     if (g.blocked) return res.status(400).json({ message: g.message });

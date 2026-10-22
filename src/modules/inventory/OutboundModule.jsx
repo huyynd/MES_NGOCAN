@@ -5,6 +5,7 @@ import { inventory } from "../../mesApi.js";
 import { usePerm } from "../../perm.jsx";
 import { inputCls, fmt, fmtDate, toast, todayYmd, fmtDateTime } from "../../ui.js";
 import { defaultRange, TrxRange, byColumn } from "./trxHistory.jsx";
+import { specKeyLabel } from "../../specs.js";
 
 const Field = ({ label, required, children }) => (
   <div>
@@ -22,7 +23,7 @@ const emptyLine = () => ({
   _k: Math.random(), product_id: "", quantity: "", unit: "", lot_code: "", spec_key: "", rows: null, note: ""
 });
 
-const specLabel = (k) => (String(k || "").split("|").filter(Boolean).join(" · ") || "Không thông số");
+const specLabel = (k) => specKeyLabel(k, "Không thông số");
 const newRef = () => `XK${new Date().toISOString().replace(/\D/g, '').slice(2, 14)}${Math.floor(Math.random() * 90 + 10)}`;
 
 // Tồn của 1 dòng phiếu tại vị trí xuất, tách theo thông số / lô (K-04/K-05: không gộp lẫn màu, kích thước)

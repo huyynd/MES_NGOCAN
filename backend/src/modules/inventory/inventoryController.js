@@ -1,6 +1,6 @@
 // backend/controllers/inventoryController.js
 const db = require('../../core/db');
-const { buildSpecKey, legacyAttrs, specsFromBody } = require('../../core/lib/specs');
+const { buildSpecKey, legacyAttrs, specsFromBody, specKeyValues } = require('../../core/lib/specs');
 const { upUnit } = require('../../core/lib/units');
 const { getDataScope } = require('../../core/dataScope');
 const { applyStock, stockErrorResponse } = require('../../core/lib/stock');
@@ -67,7 +67,7 @@ async function resolveOutSpec(client, { product_id, location_id, lot_code, spec_
   }
   return { spec_key: buildSpecKey({}), specs: {} };
 }
-const specLabel = (k) => (String(k || '').split('|').filter(Boolean).join(' · ') || 'không thông số');
+const specLabel = (k) => (specKeyValues(k).join(' · ') || 'không thông số');
 function specErrorResponse(res, err) {
   if (err && err.code === 'SPEC_CHOICE') { res.status(400).json({ message: err.message, code: err.code }); return true; }
   return false;

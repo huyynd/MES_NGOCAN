@@ -274,8 +274,8 @@ exports.update = async (req, res) => {
 exports.remove = async (req, res) => {
   try {
     const g = await guardDelete('sales_orders', req.params.id, {
-      allow: ['Đã hủy'],
-      message: 'Không thể xóa đơn hàng đang xử lý. Chỉ xóa được đơn ở trạng thái "Đã hủy" — vui lòng chuyển đơn sang "Đã hủy" trước, rồi mới xóa.',
+      allow: ['Mới', 'Đã hủy'],
+      message: 'Không thể xóa đơn hàng đang xử lý. Chỉ xóa được đơn "Mới" hoặc "Đã hủy" — vui lòng chuyển đơn sang "Đã hủy" trước, rồi mới xóa.',
       dependents: ORDER_DEPENDENTS,
     });
     if (g.notFound) return res.status(404).json({ message: 'Không tìm thấy đơn hàng' });

@@ -1,6 +1,6 @@
 // backend/controllers/productionController.js
 const db = require('../../core/db');
-const { buildSpecKey, legacyAttrs, specsFromBody, cleanSpecs } = require('../../core/lib/specs');
+const { buildSpecKey, legacyAttrs, specsFromBody, cleanSpecs, specValuesLabel } = require('../../core/lib/specs');
 const { upUnit } = require('../../core/lib/units');
 const { guardDelete } = require('../../core/lib/deleteGuard');
 const { getDataScope } = require('../../core/dataScope');
@@ -171,7 +171,7 @@ async function locOf(client, whType) {
 
 // Nhãn thông số dễ đọc cho thông báo lỗi ("60×40 · 2 dem · Trắng")
 function specLabel(specs) {
-  const vals = Object.values(cleanSpecs(specs || {}));
+  const vals = specValuesLabel(specs || {});
   return vals.length ? vals.join(' · ') : '(không có thông số)';
 }
 
@@ -221,9 +221,11 @@ async function postTaskStock(client, po, task, finishLots = []) {
       ORDER BY (s.lot_code = $3) DESC, s.created_at ASC
       FOR UPDATE OF s`, [rollId, specKey, po.order_code])).rows;
     const total = lots.reduce((s, r) => s + Number(r.quantity), 0);
-    if (total < q - 1e-6) {
-      throw new Error(`Kho BTP chỉ còn ${total} kg cuộn [${specLabel(specs)}]. Không đủ để cắt ${q} kg.`);
-    }
+    // TẠM BỎ CHẶN (chờ điều chỉnh logic): thiếu cuộn vẫn cho cắt — chỉ trừ phần cuộn đang có, vẫn nhập đủ bao bì.
+    // if (total < q - 1e-6) {
+    //   throw new Error(`Kho BTP chỉ còn ${total} kg cuộn [${specLabel(specs)}]. Không đủ để cắt ${q} kg.`);
+    // }
+    if (total < q - 1e-6) console.warn(`[Cắt] ${po.order_code}: BTP chỉ còn ${total} kg cuộn, cắt ${q} kg — đã bỏ qua chặn.`);
 
     const finishSet = new Set((finishLots || []).map(String));
     let need = q;

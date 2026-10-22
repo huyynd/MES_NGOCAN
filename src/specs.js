@@ -25,6 +25,13 @@ export const cleanSpecs = (specs = {}) => {
 // khoá gom nhóm (phải khớp backend)
 export const buildSpecKey = (specs = {}) => SPEC_NAMES.map((n) => String(specs?.[n] || "").trim()).join("|");
 
+// nhãn từ spec_key của backend (thứ tự khóa "Số lớp|Dài|Rộng|Dày|Màu") → hiển thị Rộng · Dài như form
+export const specKeyLabel = (key, empty = "—") => {
+  const p = String(key || "").split("|");
+  if (p.length >= 3) [p[1], p[2]] = [p[2], p[1]];
+  return p.filter(Boolean).join(" · ") || empty;
+};
+
 // nhãn đầy đủ: "Số lớp: 2 lớp · Chiều dài: 120 mm · ..."
 export const specLabel = (specs = {}) => SPEC_NAMES.filter((n) => specs?.[n]).map((n) => `${n}: ${specs[n]}`).join(" · ");
 
