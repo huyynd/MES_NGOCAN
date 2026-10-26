@@ -35,6 +35,22 @@ async function main() {
     console.log(`Cutoff: ${CUTOFF} — chế độ: ${APPLY ? 'XÓA THẬT' : 'CHẠY THỬ (sẽ ROLLBACK)'}`);
     console.log(`DB: ${process.env.DATABASE_URL ? 'DATABASE_URL (từ xa)' : `${process.env.PGHOST || 'localhost'}/${process.env.PGDATABASE || 'mes'}`}\n`);
     await client.query('BEGIN');
+    // Không cho chạy hai lần cleanup đồng thời trên cùng database.
+    const lock = (await client.query("SELECT pg_try_advisory_xact_lock(20261001, 1) AS ok")).rows[0];
+    if (!lock.ok) throw new Error('Một phiên cleanup khác đang chạy — dừng để tránh xung đột.');
+
+    // Snapshot số lượng tồn: việc dọn chứng từ không được làm thay đổi tồn thực tế.
+    await client.query('CREATE TEMP TABLE cleanup_stock_before ON COMMIT DROP AS SELECT id, quantity FROM inventory_stock');
+
+    // Cấm chạy lại với tồn đầu kỳ đã gộp: truy vấn gộp bao gồm cả dòng cũ,
+    // còn DELETE lại giữ nó, dẫn đến cộng trùng lịch sử.
+    const existingOpening = (await client.query(
+      "SELECT COUNT(*)::int AS n FROM inventory_transactions WHERE ref_code = 'TON-DAU-KY' AND created_at < $1::date",
+      [CUTOFF]
+    )).rows[0].n;
+    if (existingOpening > 0) {
+      throw new Error('Đã tồn tại ' + existingOpening + ' dòng TON-DAU-KY trước cutoff. Không chạy lại để tránh cộng trùng. Cần kiểm tra lịch sử kho trước.');
+    }
 
     // ---------- 1. Xác định tập cần xóa ----------
     await client.query(`CREATE TEMP TABLE x_dn ON COMMIT DROP AS
@@ -101,6 +117,19 @@ async function main() {
     const custs = (await client.query(`SELECT customer_id FROM x_cust WHERE customer_id IS NOT NULL`)).rows;
     for (const { customer_id } of custs) await rebuildCustomer(client, customer_id);
     console.log(`\nPhân bổ lại công nợ cho ${custs.length} khách.`);
+
+    const stockDiff = (await client.query(`
+      SELECT COUNT(*)::int AS n
+      FROM (
+        (SELECT id, quantity FROM inventory_stock
+         EXCEPT ALL SELECT id, quantity FROM cleanup_stock_before)
+        UNION ALL
+        (SELECT id, quantity FROM cleanup_stock_before
+         EXCEPT ALL SELECT id, quantity FROM inventory_stock)
+      ) diff
+    `)).rows[0].n;
+    if (stockDiff > 0) throw new Error('Đối chiếu tồn kho thất bại: có ' + stockDiff + ' dòng chênh lệch. Đã chặn COMMIT.');
+    console.log('Đối chiếu tồn kho: số lượng không đổi.');
 
     if (keptSo.length) console.log(`\nGIỮ LẠI ${keptSo.length} đơn cũ vì còn phiếu giao/LSX sau cutoff: ${keptSo.map((r) => r.order_code).join(', ')}`);
     const neg = await count(`SELECT COUNT(*) n FROM inventory_stock WHERE quantity < 0 AND $1::text IS NOT NULL`);
