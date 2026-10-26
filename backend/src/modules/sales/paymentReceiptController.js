@@ -5,7 +5,7 @@
 // Quyền: xem = canViewAmounts, ghi/hủy = canEditAmounts (quyền tiền của Phiếu giao hàng).
 const db = require('../../core/db');
 const { canViewAmounts, canEditAmounts } = require('../../core/lib/money');
-const { PAYABLE_STATUSES, debtAgeSql, allocateCustomer, rebuildCustomer, customerDebts } = require('../../core/lib/receivables');
+const { OPENING_SQL, PAYABLE_STATUSES, debtAgeSql, allocateCustomer, rebuildCustomer, customerDebts } = require('../../core/lib/receivables');
 
 const num = (v) => (v === '' || v == null ? 0 : Number(v) || 0);
 const PAY_METHODS = ['Tiền mặt', 'Chuyển khoản'];
@@ -26,16 +26,26 @@ const RECEIPT_SELECT = `
   LEFT JOIN users u1 ON u1.id = r.created_by
   LEFT JOIN users u2 ON u2.id = r.cancelled_by
   LEFT JOIN (SELECT receipt_id, SUM(amount) AS allocated, COUNT(DISTINCT delivery_note_id) AS note_count
-             FROM delivery_payments WHERE receipt_id IS NOT NULL AND is_cancelled = FALSE
+             FROM (SELECT receipt_id, amount, delivery_note_id FROM delivery_payments
+                    WHERE receipt_id IS NOT NULL AND is_cancelled = FALSE
+                   UNION ALL -- phần trừ vào Nợ đầu kỳ (đếm như 1 "phiếu")
+                   SELECT receipt_id, amount, NULL FROM opening_balance_payments) x
              GROUP BY receipt_id) a ON a.receipt_id = r.id`;
 
-// Phiếu giao được phiếu thanh toán này trả (từng phần phân bổ)
+// Phiếu giao được phiếu thanh toán này trả (từng phần phân bổ); phần trừ vào Nợ đầu kỳ đứng đầu
 async function allocationsOf(conn, receiptId) {
   return (await conn.query(`
-    SELECT p.id, p.amount, p.is_cancelled, p.cancel_reason, d.id AS delivery_note_id, d.note_code,
-           d.delivery_date, d.total_amount, d.paid_amount, d.status
-    FROM delivery_payments p JOIN delivery_notes d ON d.id = p.delivery_note_id
-    WHERE p.receipt_id = $1 ORDER BY d.delivery_date, d.created_at`, [receiptId])).rows;
+    SELECT op.customer_id AS id, SUM(op.amount) AS amount, FALSE AS is_cancelled, NULL AS cancel_reason, NULL::uuid AS delivery_note_id,
+           'Nợ đầu kỳ' AS note_code, o.cutoff_date AS delivery_date, o.total_debt AS total_amount, o.paid_before AS paid_amount,
+           NULL AS status, TRUE AS is_opening
+    FROM opening_balance_payments op JOIN customer_opening_balances o ON o.customer_id = op.customer_id
+    WHERE op.receipt_id = $1 GROUP BY op.customer_id, o.cutoff_date, o.total_debt, o.paid_before
+    UNION ALL
+    SELECT * FROM (
+      SELECT p.id, p.amount, p.is_cancelled, p.cancel_reason, d.id, d.note_code,
+             d.delivery_date, d.total_amount, d.paid_amount, d.status, FALSE
+      FROM delivery_payments p JOIN delivery_notes d ON d.id = p.delivery_note_id
+      WHERE p.receipt_id = $1 ORDER BY d.delivery_date, d.created_at) n`, [receiptId])).rows;
 }
 
 // Kiểm tra + chuẩn hóa dữ liệu phiếu (dùng cho tạo & sửa)
@@ -124,7 +134,12 @@ exports.create = async (req, res) => {
     const allocations = await allocationsOf(db, r.id);
     const paidOff = allocations.filter((a) => a.status === 'Đã thanh toán').map((a) => a.note_code);
     let msg = `Đã lưu phiếu ${r.receipt_code}`;
-    if (allocations.length) msg += ` — trừ vào ${allocations.length} phiếu giao`;
+    const toOpening = allocations.find((a) => a.is_opening);
+    const noteCount = allocations.length - (toOpening ? 1 : 0);
+    const parts = [];
+    if (toOpening) parts.push(`nợ đầu kỳ ${Math.round(num(toOpening.amount)).toLocaleString('vi-VN')} đ`);
+    if (noteCount) parts.push(`${noteCount} phiếu giao`);
+    if (parts.length) msg += ` — trừ vào ${parts.join(' và ')}`;
     if (paidOff.length) msg += `, ${paidOff.length} phiếu đã thanh toán đủ`;
     if (num(full.unallocated) > 0) msg += `. Dư ${Math.round(num(full.unallocated)).toLocaleString('vi-VN')} đ giữ làm tiền trả trước`;
     res.status(201).json({ message: msg, ...full, allocations });
@@ -199,6 +214,12 @@ exports.customerSummary = async (req, res) => {
       FROM delivery_notes
       WHERE customer_id = $1 AND is_deleted = FALSE AND status = ANY($2::text[]) AND total_amount - paid_amount > 0.005
       ORDER BY COALESCE(delivery_date, created_at::date), created_at`, [req.params.customerId, PAYABLE_STATUSES])).rows; // = thứ tự trừ nợ thật (allocateCustomer)
+    // Nợ đầu kỳ còn lại = khoản trừ ĐẦU TIÊN
+    const op = (await db.query(OPENING_SQL, [req.params.customerId])).rows[0];
+    if (op && num(op.due) > 0.005) {
+      notes.unshift({ id: 'opening', is_opening: true, note_code: 'Nợ đầu kỳ', delivery_date: op.cutoff_date, due: op.due, total_amount: op.due, paid_amount: 0,
+        age_days: Math.floor((Date.now() - new Date(op.cutoff_date).getTime()) / 86400000) });
+    }
     const orders = (await db.query(`
       SELECT id, order_code, order_date, status FROM sales_orders
       WHERE customer_id = $1 AND is_deleted = FALSE AND status <> 'Đã hủy' ORDER BY order_date DESC, order_code DESC`,
@@ -229,6 +250,55 @@ exports.receivableDetail = async (req, res) => {
       WHERE customer_id = $1 AND is_deleted = FALSE AND status = ANY($2::text[])
       ORDER BY delivery_date DESC NULLS LAST, created_at DESC`, [cid, PAYABLE_STATUSES])).rows;
     const receipts = (await db.query(`${RECEIPT_SELECT} WHERE r.customer_id = $1 ORDER BY r.pay_date DESC, r.created_at DESC`, [cid])).rows;
-    res.json({ ...(rows[0] || {}), settings, notes, receipts });
+    const opening = (await db.query(
+      `SELECT o.*, x.due, x.excess FROM customer_opening_balances o CROSS JOIN LATERAL (${OPENING_SQL}) x WHERE o.customer_id = $1`,
+      [cid])).rows[0] || null;
+    res.json({ ...(rows[0] || {}), settings, notes, receipts, opening, can_edit_amounts: canEditAmounts(req) });
   } catch (err) { console.error(err); res.status(500).json({ message: 'Lỗi khi lấy chi tiết công nợ' }); }
+};
+
+// NỢ ĐẦU KỲ — lưu (tạo / sửa) cho 1 khách { cutoff_date, total_debt, paid_before, note }.
+// Sau khi lưu → phân bổ lại toàn bộ tiền của khách (nợ đầu kỳ là khoản cũ nhất, trừ trước).
+exports.saveOpening = async (req, res) => {
+  if (!canEditAmounts(req)) return noEdit(res);
+  const cid = req.params.customerId;
+  const b = req.body || {};
+  const total = Math.round(num(b.total_debt) * 100) / 100;
+  const paid = Math.round(num(b.paid_before) * 100) / 100;
+  if (!isUuid(cid)) return res.status(400).json({ message: 'Khách hàng không tồn tại.' });
+  if (!isYmd(b.cutoff_date)) return res.status(400).json({ message: 'Vui lòng nhập Ngày chốt hợp lệ.' });
+  if (total < 0 || paid < 0) return res.status(400).json({ message: 'Tổng nợ / Đã trả không được âm.' });
+  if (total === 0 && paid === 0) return res.status(400).json({ message: 'Nhập Tổng nợ hoặc Đã trả (muốn bỏ thì bấm Xóa).' });
+  const client = await db.pool.connect();
+  try {
+    const c = (await client.query(`SELECT 1 FROM customers WHERE id = $1 AND is_deleted = FALSE`, [cid])).rowCount;
+    if (!c) return res.status(400).json({ message: 'Khách hàng không tồn tại.' });
+    await client.query('BEGIN');
+    await client.query(`
+      INSERT INTO customer_opening_balances (customer_id, cutoff_date, total_debt, paid_before, note, created_by, updated_by)
+      VALUES ($1, $2, $3, $4, $5, $6, $6)
+      ON CONFLICT (customer_id) DO UPDATE SET cutoff_date = EXCLUDED.cutoff_date, total_debt = EXCLUDED.total_debt,
+        paid_before = EXCLUDED.paid_before, note = EXCLUDED.note, updated_by = EXCLUDED.updated_by, updated_at = now()`,
+      [cid, String(b.cutoff_date).slice(0, 10), total, paid, (b.note || '').trim() || null, req.userId || null]);
+    await rebuildCustomer(client, cid);
+    await client.query('COMMIT');
+    res.json({ message: 'Đã lưu nợ đầu kỳ' });
+  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi lưu nợ đầu kỳ' }); }
+  finally { client.release(); }
+};
+
+exports.deleteOpening = async (req, res) => {
+  if (!canEditAmounts(req)) return noEdit(res);
+  const cid = req.params.customerId;
+  if (!isUuid(cid)) return res.status(400).json({ message: 'Khách hàng không tồn tại.' });
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`DELETE FROM opening_balance_payments WHERE customer_id = $1`, [cid]);
+    await client.query(`DELETE FROM customer_opening_balances WHERE customer_id = $1`, [cid]);
+    await rebuildCustomer(client, cid); // gỡ phần đầu kỳ dư đã trừ vào phiếu giao + phân bổ lại
+    await client.query('COMMIT');
+    res.json({ message: 'Đã xóa nợ đầu kỳ' });
+  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi xóa nợ đầu kỳ' }); }
+  finally { client.release(); }
 };

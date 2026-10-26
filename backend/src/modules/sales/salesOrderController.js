@@ -3,6 +3,7 @@ const db = require('../../core/db');
 const { buildSpecKey, legacyAttrs, specsFromBody } = require('../../core/lib/specs');
 const { upUnit } = require('../../core/lib/units');
 const { guardDelete, findDependent } = require('../../core/lib/deleteGuard');
+const { lsxProgressByItems } = require('../../core/lib/lsxProgress');
 
 // Trạng thái hợp lệ (khớp CHECK sales_orders_status_check) — chặn status rác → 500
 const ORDER_STATUSES = ['Mới', 'Đang sản xuất', 'Hoàn thành sản xuất', 'Chuyển hàng 1 phần', 'Đang vận chuyển',
@@ -76,10 +77,9 @@ exports.getById = async (req, res) => {
     const showAmt = canViewAmounts(req);
     const totalAmount = items.rows.reduce((s, it) => s + Number(it.unit_price || 0) * Number(it.quantity || 0), 0);
     // Làm giàu từng dòng: lệnh SX + tag NVL (định mức / tồn / cần bổ sung / đã dùng)
+    const lsxByItem = await lsxProgressByItems(db, items.rows.map((it) => it.id));
     const enriched = await Promise.all(items.rows.map(async (it) => {
-      const orders = (await db.query(`
-        SELECT id, order_code, quantity, unit, status FROM production_orders
-        WHERE sales_order_item_id = $1 AND is_deleted = FALSE ORDER BY created_at`, [it.id])).rows;
+      const orders = lsxByItem.get(it.id) || [];
       const materials = await lineMaterials(it);
       const row = { ...it, production_orders: orders, materials };
       if (showAmt) row.amount = Number(it.unit_price || 0) * Number(it.quantity || 0);

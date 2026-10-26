@@ -11,5 +11,7 @@ router.put('/payment-receipts/:id', receipts.update);
 router.post('/payment-receipts/:id/cancel', receipts.cancel);
 router.get('/receivables', receipts.receivables);
 router.get('/receivables/:customerId', receipts.receivableDetail);
+router.put('/receivables/:customerId/opening', receipts.saveOpening);
+router.delete('/receivables/:customerId/opening', receipts.deleteOpening);
 
 module.exports = router;

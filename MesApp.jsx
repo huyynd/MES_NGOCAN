@@ -1357,7 +1357,7 @@ export default function MesApp() {
               /> : loadingEl} />
 
               <Route path="/planning" element={lookups ? <PlanningModule lookups={lookups} onOpenOrder={goProductionOrder} onOpenProduct={(id) => goProductDetail(id, "/planning")} initialTab={planningTab} onTabChange={setPlanningTab} /> : loadingEl} />
-              <Route path="/production" element={lookups ? <ProductionModule lookups={lookups} focusId={focusOrderId} onFocusConsumed={() => setFocusOrderId(null)}
+              <Route path="/production" element={lookups ? <ProductionModule lookups={lookups} focusId={focusOrderId} onFocusConsumed={() => setFocusOrderId(null)} onOpenSalesOrder={goSalesOrder}
                 onExit={prodOrderBack ? () => { const b = prodOrderBack; setProdOrderBack(null); navigate(b); } : null} /> : loadingEl} />
               <Route path="/orderstatus" element={lookups ? <OrderStatusModule lookups={lookups} onOpenOrder={goProductionOrder} /> : loadingEl} />
               <Route path="/execution" element={needLookups(ExecutionModule)} />
@@ -1385,9 +1385,9 @@ export default function MesApp() {
               <Route path="/bom" element={needLookups(BomModule)} />
               <Route path="/process" element={needLookups(ProcessModule)} />
               <Route path="/orders" element={lookups ? <OrdersModule lookups={lookups} focusId={focusSalesOrderId} onFocusConsumed={() => setFocusSalesOrderId(null)} onCreateDelivery={goNewDelivery} onOpenProductionOrder={goProductionOrder} /> : loadingEl} />
-              <Route path="/deliveries" element={lookups ? <DeliveriesModule lookups={lookups} focusOrderId={deliveryOrderId} onFocusConsumed={() => setDeliveryOrderId(null)} /> : loadingEl} />
+              <Route path="/deliveries" element={lookups ? <DeliveriesModule lookups={lookups} focusOrderId={deliveryOrderId} onFocusConsumed={() => setDeliveryOrderId(null)} onOpenOrder={goSalesOrder} onOpenProductionOrder={goProductionOrder} /> : loadingEl} />
               <Route path="/payment-receipts" element={lookups ? <PaymentReceiptsModule lookups={lookups} /> : loadingEl} />
-              <Route path="/receivables" element={<ReceivablesModule />} />
+              <Route path="/receivables" element={lookups ? <ReceivablesModule lookups={lookups} /> : loadingEl} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </div>

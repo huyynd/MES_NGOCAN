@@ -6,6 +6,7 @@ const { applyStock, stockErrorResponse, whOutboundOkSql } = require('../../core/
 const { nextSlipCode, nextCode } = require('../../core/lib/codes');
 const { currentUser } = require('../../core/requestContext');
 const { buildSpecKey, specKeyValues } = require('../../core/lib/specs');
+const { lsxProgressByItems } = require('../../core/lib/lsxProgress');
 
 const num = (v) => (v === '' || v == null ? 0 : Number(v) || 0);
 const EMPTY_SPEC = buildSpecKey({});
@@ -114,6 +115,9 @@ exports.getById = async (req, res) => {
       LEFT JOIN sales_orders so ON so.id = it.sales_order_id
       WHERE di.delivery_note_id = $1 ORDER BY di.line_no`, [req.params.id]);
     const d = rows[0];
+    // Kèm LSX + tiến độ Thổi/Cắt của từng dòng (hiển thị ở chi tiết phiếu)
+    const lsxByItem = await lsxProgressByItems(db, items.rows.map((it) => it.sales_order_item_id));
+    for (const it of items.rows) it.production_orders = lsxByItem.get(it.sales_order_item_id) || [];
     if (!canViewAmounts(req)) {
       delete d.total_amount; delete d.paid_amount;
       return res.json({ ...d, items: items.rows.map(stripMoneyItem) });

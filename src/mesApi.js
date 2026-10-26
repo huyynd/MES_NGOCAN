@@ -89,6 +89,8 @@ export const paymentReceipts = {
 export const receivables = {
   list: () => http(`/receivables`),
   detail: (customerId) => http(`/receivables/${customerId}`),
+  saveOpening: (customerId, data) => http(`/receivables/${customerId}/opening`, body("PUT", data)),
+  removeOpening: (customerId) => http(`/receivables/${customerId}/opening`, { method: "DELETE" }),
 };
 
 export const processes = resource("processes");

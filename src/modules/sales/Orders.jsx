@@ -6,7 +6,7 @@ import { resource, salesOrders as salesOrdersApi, planning } from "../../mesApi.
 import { DEFAULT_STAGES, stageFactory } from "../../productionDefaults.js";
 import { usePerm } from "../../perm.jsx";
 import {  inputCls, fmt, fmtDate, fmtDateTime, statusClass, dueTone , toast, todayYmd, fmtDec } from "../../ui.js";
-import { PageHeader, ListHeader, Section, usePager, DataTable, UnitSelect, DateInput, Logo, SearchSelect, useSaving, LoadError, DialogBehavior, confirmClose } from '../../components.jsx';
+import { PageHeader, ListHeader, Section, usePager, DataTable, UnitSelect, DateInput, Logo, SearchSelect, useSaving, LoadError, DialogBehavior, confirmClose, LsxProgressChip } from '../../components.jsx';
 import { SPEC_NAMES, specShort } from "../../specs.js";
 import { SpecFields } from "../../SpecFields.jsx";
 import * as XLSX from "xlsx";
@@ -71,14 +71,7 @@ function LsxLinks({ orders, onOpenProductionOrder }) {
       <div className="text-xs font-semibold text-slate-400 uppercase mb-1.5">Lệnh sản xuất</div>
       {orders && orders.length ? (
         <div className="flex flex-wrap gap-2">
-          {orders.map((o) => (
-            <span key={o.id} className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs">
-              <a href="#" onClick={(e) => { e.preventDefault(); onOpenProductionOrder && onOpenProductionOrder(o.id); }} className="font-semibold text-blue-600 hover:underline" title="Đến màn Lệnh sản xuất">{o.order_code}</a>
-              <span className="text-slate-400">·</span>
-              <span className="text-slate-500">{fmt(o.quantity)} {o.unit}</span>
-              <span className={"px-1.5 py-0.5 rounded-full text-[10px] " + statusClass(o.status)}>{o.status}</span>
-            </span>
-          ))}
+          {orders.map((o) => <LsxProgressChip key={o.id} o={o} onOpen={onOpenProductionOrder} />)}
         </div>
       ) : (
         <div className="text-xs text-slate-400 italic">Chưa có lệnh sản xuất — tạo ở màn Kế hoạch SX.</div>

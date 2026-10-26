@@ -8,7 +8,11 @@ const { applyStock, stockErrorResponse, whOutboundOkSql, whInboundOkSql } = requ
 const { nextSlipCode } = require('../../core/lib/codes');
 
 // Công đoạn cuối của 1 lệnh: 'Cắt' nếu có task Cắt, ngược lại 'Thổi'
-const FINAL_STAGE = `(CASE WHEN EXISTS (SELECT 1 FROM production_tasks tf WHERE tf.production_order_id = po.id AND tf.stage = 'Cắt') THEN 'Cắt' ELSE 'Thổi' END)`;
+// Thành phẩm (bao bì) luôn tính theo Cắt, kể cả khi chưa có dòng Cắt — khớp finalStageOf() (cần alias p = products).
+const FINAL_STAGE = `(CASE WHEN (CASE WHEN jsonb_array_length(p.product_types) > 0
+                                 THEN p.product_types ? 'Thành phẩm' AND NOT p.product_types ? 'Bán thành phẩm'
+                                 ELSE p.product_type = 'Thành phẩm' END) THEN 'Cắt'
+                         WHEN EXISTS (SELECT 1 FROM production_tasks tf WHERE tf.production_order_id = po.id AND tf.stage = 'Cắt') THEN 'Cắt' ELSE 'Thổi' END)`;
 
 // GET /api/production/machine-availability — độ sẵn sàng của máy (tải công việc chưa hoàn thành)
 exports.machineAvailability = async (_req, res) => {
@@ -43,7 +47,7 @@ const SELECT_JOIN = `
          p.product_name, p.product_code, p.product_type,
          c.name AS customer_name, c.phone AS customer_phone, c.address AS customer_address,
          m.name AS machine_name, m.factory AS machine_factory,
-         so.order_code AS sales_order_code,
+         so.order_code AS sales_order_code, so.order_date AS sales_order_date,
          (SELECT COUNT(*)::int FROM production_tasks t WHERE t.production_order_id = po.id) AS task_count,
          (SELECT COUNT(*)::int FROM production_tasks t WHERE t.production_order_id = po.id AND t.status = 'Hoàn thành') AS task_done,
          COALESCE((SELECT SUM(COALESCE(t.actual_qty, t.quantity)) FROM production_tasks t
@@ -286,8 +290,16 @@ function orderStructureError(productType, stages, productTypes) {
   const hasCut = stages.includes('Cắt');
   const hasBlow = stages.includes('Thổi');
   if (isBTP && !isTP && hasCut) return 'Sản phẩm này chỉ là Bán thành phẩm (cuộn) — hãy xóa công đoạn Cắt (chỉ cần Thổi).';
-  if (!isBTP && hasBlow && !hasCut) return 'Sản phẩm này là Thành phẩm (bao bì) — phải có công đoạn Cắt, không được chỉ có Thổi.';
+  // Thành phẩm chưa có Cắt: KHÔNG chặn khi lưu (thổi hôm nay, mai mới thêm lần cắt) —
+  // recomputeOrder giữ lệnh ở "Đang sản xuất" cho tới khi Cắt đủ (xem finalStageOf).
   return null;
+}
+
+// Công đoạn cuối quyết định sản lượng lệnh: Thành phẩm (bao bì) luôn là Cắt, kể cả khi chưa có dòng Cắt nào.
+function finalStageOf(productType, productTypes, stages) {
+  const types = (Array.isArray(productTypes) && productTypes.length) ? productTypes : (productType ? [productType] : []);
+  if (types.includes('Thành phẩm') && !types.includes('Bán thành phẩm')) return 'Cắt';
+  return stages.includes('Cắt') ? 'Cắt' : 'Thổi';
 }
 
 /**
@@ -295,10 +307,12 @@ function orderStructureError(productType, stages, productTypes) {
  * và backflush kho khi hoàn thành lần đầu. Dùng cho cả saveTasks lẫn quét QR.
  */
 async function recomputeOrder(client, poId) {
-  const ord = (await client.query(`SELECT quantity, sales_order_id, sales_order_item_id, inventory_posted, posted_qty FROM production_orders WHERE id = $1`, [poId])).rows[0];
+  const ord = (await client.query(
+    `SELECT po.quantity, po.sales_order_id, po.sales_order_item_id, po.inventory_posted, po.posted_qty, p.product_type, p.product_types
+     FROM production_orders po LEFT JOIN products p ON p.id = po.product_id WHERE po.id = $1`, [poId])).rows[0];
   if (!ord) return;
   const tks = (await client.query(`SELECT stage, status, quantity, actual_qty FROM production_tasks WHERE production_order_id = $1`, [poId])).rows;
-  const finalStage = tks.some(t => t.stage === 'Cắt') ? 'Cắt' : 'Thổi';
+  const finalStage = finalStageOf(ord.product_type, ord.product_types, tks.map(t => t.stage));
   const qtyOf = (t) => (t.actual_qty == null ? Number(t.quantity) : Number(t.actual_qty)) || 0;
   const produced = tks.filter(t => t.stage === finalStage && t.status === 'Hoàn thành').reduce((s, t) => s + qtyOf(t), 0);
 

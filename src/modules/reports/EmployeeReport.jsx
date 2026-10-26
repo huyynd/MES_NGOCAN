@@ -12,7 +12,7 @@ import { reports } from "../../mesApi.js";
 import { fmt, fmtDate, statusClass, toast, ymd, todayYmd, monthStartYmd, fmtDec } from "../../ui.js";
 import * as XLSX from "xlsx";
 import { usePerm } from "../../perm.jsx";
-import { ListHeader, Section } from "../../components.jsx";
+import { ListHeader, Section, DateInput } from "../../components.jsx";
 
 /* ── helpers ── */
 const today = todayYmd; // ngày theo giờ VN (toISOString là UTC → lệch 1 ngày trước 7h sáng)
@@ -645,7 +645,7 @@ function EmployeeReportBody() {
               ].map(({ label, type, value, set }) => (
                 <div key={label}>
                   <label className="block text-xs font-medium text-slate-500 mb-1">{label}</label>
-                  <input type={type} value={value} onChange={e => set(e.target.value)}
+                  <DateInput value={value} onChange={e => set(e.target.value)}
                     className="w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-400/40" />
                 </div>
               ))}

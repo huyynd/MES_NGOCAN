@@ -4,13 +4,13 @@
 //   Nợ xấu    = có phiếu giao còn nợ quá N ngày (app_settings.debt_bad_days, mặc định 30) → cảnh báo
 //   Vượt hạn mức = nợ > app_settings.debt_limit_amount (mặc định 300 triệu) → không cho tạo phiếu giao mới
 import React, { useState, useEffect, useCallback } from "react";
-import { RotateCcw, Download, X, AlertTriangle, Ban, Wallet, Users, Receipt, Clock } from "lucide-react";
+import { RotateCcw, Download, X, AlertTriangle, Ban, Wallet, Users, Receipt, Clock, Plus, Save, Trash2 } from "lucide-react";
 import * as XLSX from "xlsx";
-import { receivables as api } from "../../mesApi.js";
+import { receivables as api, paymentReceipts } from "../../mesApi.js";
 import { usePerm } from "../../perm.jsx";
-import { fmtDate, statusClass, toast, todayYmd } from "../../ui.js";
-import { ListHeader, DataTable, LoadError, DialogBehavior } from "../../components.jsx";
-import { LevelBadge, LEVELS, vnd } from "./debtUi.jsx";
+import { fmtDate, statusClass, toast, todayYmd, inputCls } from "../../ui.js";
+import { ListHeader, DataTable, LoadError, DialogBehavior, SearchSelect, DateInput } from "../../components.jsx";
+import { LevelBadge, LEVELS, vnd, MoneyInput } from "./debtUi.jsx";
 
 function Card({ label, value, sub, icon: Icon, tone = "slate", onClick, active }) {
   const t = {
@@ -33,11 +33,88 @@ function Card({ label, value, sub, icon: Icon, tone = "slate", onClick, active }
   );
 }
 
+/* ---- Nhập / sửa NỢ ĐẦU KỲ (chốt sổ công nợ cũ) của 1 khách ----
+   Còn nợ đầu kỳ = Tổng nợ − Đã trả → khoản nợ cũ nhất, Phiếu thanh toán trừ vào đây trước. */
+function OpeningDialog({ customers, customerId, opening, onClose, onSaved }) {
+  const [f, setF] = useState({
+    customer_id: customerId || "", cutoff_date: opening?.cutoff_date?.slice(0, 10) || "2026-09-30",
+    total_debt: opening?.total_debt ?? "", paid_before: opening?.paid_before ?? "", note: opening?.note || "",
+  });
+  const [busy, setBusy] = useState(false);
+  const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
+  const rest = (Number(f.total_debt) || 0) - (Number(f.paid_before) || 0);
+  const save = async () => {
+    if (!f.customer_id) return toast.error("Vui lòng chọn khách hàng");
+    setBusy(true);
+    try { const r = await api.saveOpening(f.customer_id, f); toast.success(r.message || "Đã lưu"); onSaved(f.customer_id); }
+    catch (e) { toast.error(e.message); } finally { setBusy(false); }
+  };
+  const remove = async () => {
+    if (!confirm("Xóa nợ đầu kỳ của khách này? Các phiếu thanh toán sẽ được trừ lại vào phiếu giao.")) return;
+    setBusy(true);
+    try { const r = await api.removeOpening(f.customer_id); toast.success(r.message || "Đã xóa"); onSaved(f.customer_id); }
+    catch (e) { toast.error(e.message); } finally { setBusy(false); }
+  };
+  const lbl = "block text-xs font-medium text-slate-500 mb-1";
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4">
+      <DialogBehavior onClose={onClose} dirty={false} />
+      <div className="w-full max-w-md rounded-xl bg-white shadow-2xl">
+        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3.5">
+          <div className="font-semibold text-slate-800">{opening ? "Sửa nợ đầu kỳ" : "Nhập nợ đầu kỳ"}</div>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-slate-100"><X size={18} /></button>
+        </div>
+        <div className="space-y-3.5 px-5 py-4 text-sm">
+          <div><label className={lbl}>Khách hàng *</label>
+            <SearchSelect value={f.customer_id} onChange={(v) => set("customer_id", v)} disabled={!!customerId}
+              options={customers.map((c) => ({ value: c.id, label: c.name }))} placeholder="-- Chọn khách hàng --" /></div>
+          <div><label className={lbl}>Ngày chốt sổ *</label><DateInput className={inputCls} value={f.cutoff_date} onChange={(e) => set("cutoff_date", e.target.value)} /></div>
+          <div className="grid grid-cols-2 gap-3">
+            <div><label className={lbl}>Tổng nợ (đ)</label><MoneyInput value={f.total_debt} onChange={(v) => set("total_debt", v)} placeholder="0" /></div>
+            <div><label className={lbl}>Đã trả (đ)</label><MoneyInput value={f.paid_before} onChange={(v) => set("paid_before", v)} placeholder="0" /></div>
+          </div>
+          <div className={`rounded-lg px-3 py-2 ${rest > 0.005 ? "bg-rose-50 text-rose-700" : rest < -0.005 ? "bg-blue-50 text-blue-700" : "bg-slate-50 text-slate-500"}`}>
+            {rest > 0.005 ? <>Còn nợ đầu kỳ: <b>{vnd(rest)} đ</b> — phiếu thanh toán sẽ trừ vào khoản này trước.</>
+              : rest < -0.005 ? <>Khách trả dư: <b>{vnd(-rest)} đ</b> — giữ làm tiền trả trước.</> : "Không còn nợ."}
+          </div>
+          <div><label className={lbl}>Ghi chú</label><input className={inputCls} value={f.note} onChange={(e) => set("note", e.target.value)} placeholder="vd: chốt theo sổ tay đến 30/09/2026" /></div>
+        </div>
+        <div className="flex items-center gap-2 border-t border-slate-200 px-5 py-3">
+          {opening && <button onClick={remove} disabled={busy} className="btn-ghost text-rose-600"><Trash2 size={15} /> Xóa</button>}
+          <button onClick={onClose} className="btn-ghost ml-auto">Hủy</button>
+          <button onClick={save} disabled={busy} className="btn-primary"><Save size={15} /> Lưu</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ---- Chi tiết công nợ 1 khách (ngăn trượt bên phải) ---- */
-function DetailDrawer({ customerId, onClose }) {
+function DetailDrawer({ customerId, customers, onClose, onChanged }) {
   const [d, setD] = useState(null);
   const [loadErr, setLoadErr] = useState(""); const [tryN, setTryN] = useState(0);
+  const [editOpening, setEditOpening] = useState(false);
   useEffect(() => { api.detail(customerId).then(setD).catch((e) => setLoadErr(e.message || "Lỗi máy chủ")); }, [customerId, tryN]);
+  const op = d?.opening;
+  // Xuất sổ công nợ 1 khách: tổng hợp + nợ đầu kỳ + phiếu giao + các lần thanh toán (ngày, số tiền)
+  const exportCustomer = () => {
+    const aoa = [[`Công nợ khách hàng: ${d.customer_name} (${d.customer_code || ""}) · ngày ${fmtDate(todayYmd())}`], [],
+      ["Phải trả (đ)", "Đã trả (đ)", "Còn nợ (đ)", "Trả trước (đ)"],
+      [Math.round(d.billed), Math.round(d.paid), Math.round(d.debt), Math.round(d.credit)], []];
+    if (op) aoa.push(["NỢ ĐẦU KỲ"], ["Ngày chốt", "Tổng nợ (đ)", "Đã trả (đ)", "Ghi chú"],
+      [fmtDate(op.cutoff_date), Math.round(op.total_debt), Math.round(op.paid_before), op.note || ""], []);
+    aoa.push(["CÁC LẦN THANH TOÁN"], ["Ngày thanh toán", "Số phiếu", "Hình thức", "Số HĐ", "Người trả", "Số tiền (đ)", "Ghi chú"]);
+    const paid = d.receipts.filter((r) => !r.is_cancelled).sort((a, b) => String(a.pay_date).localeCompare(String(b.pay_date)));
+    paid.forEach((r) => aoa.push([fmtDate(r.pay_date), r.receipt_code, r.method, r.invoice_no || "", r.payer_name || "", Math.round(r.amount), r.content || ""]));
+    aoa.push(["Tổng", "", "", "", "", Math.round(paid.reduce((s, r) => s + Number(r.amount || 0), 0))], []);
+    aoa.push(["PHIẾU GIAO HÀNG"], ["Ngày giao", "Số phiếu", "Tổng (đ)", "Đã trả (đ)", "Còn nợ (đ)", "Trạng thái"]);
+    [...d.notes].reverse().forEach((n) => aoa.push([fmtDate(n.delivery_date), n.note_code, Math.round(n.total_amount), Math.round(n.paid_amount), Math.round(n.due), n.status]));
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws["!cols"] = [{ wch: 16 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 18 }, { wch: 15 }, { wch: 24 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Công nợ");
+    XLSX.writeFile(wb, `cong-no-${(d.customer_code || d.customer_name || "khach").replace(/[\\/:*?"<>|\s]+/g, "-")}-${todayYmd()}.xlsx`);
+  };
   const bad = d?.settings?.bad_days ?? null; // ngưỡng thật từ máy chủ; chưa có → không tô "quá hạn"
   return (
     <>
@@ -49,7 +126,8 @@ function DetailDrawer({ customerId, onClose }) {
             <div className="text-xs text-slate-400">Công nợ khách hàng</div>
             <div className="text-lg font-bold text-slate-800">{d?.customer_name || "…"}</div>
           </div>
-          <div className="flex items-center gap-3">{d && <LevelBadge level={d.level} />}<button onClick={onClose} className="p-1.5 rounded-lg hover:bg-slate-100"><X size={18} /></button></div>
+          <div className="flex items-center gap-3">{d && <LevelBadge level={d.level} />}
+            {d && <button onClick={exportCustomer} className="btn-ghost !py-1 text-sm" title="Xuất công nợ + các lần thanh toán của khách này"><Download size={14} /> Xuất Excel</button>}<button onClick={onClose} className="p-1.5 rounded-lg hover:bg-slate-100"><X size={18} /></button></div>
         </div>
         {!d ? (loadErr ? <div className="p-6"><LoadError message={`Không tải được công nợ (${loadErr})`} onRetry={() => { setLoadErr(""); setTryN((n) => n + 1); }} /></div> : <div className="p-6 text-sm text-slate-400">Đang tải…</div>) : (
           <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
@@ -58,6 +136,25 @@ function DetailDrawer({ customerId, onClose }) {
                 <div key={l} className="rounded-lg bg-slate-50 px-3 py-2"><div className="text-slate-500 text-xs">{l}</div><div className={`font-bold tabular-nums ${c}`}>{vnd(v)}</div></div>
               ))}
             </div>
+
+            {(op || d.can_edit_amounts) && (
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-xs font-semibold uppercase text-slate-400">Nợ đầu kỳ</div>
+                  {d.can_edit_amounts && <button onClick={() => setEditOpening(true)} className="text-xs text-blue-600 hover:underline">{op ? "Sửa" : "+ Nhập nợ đầu kỳ"}</button>}
+                </div>
+                {op ? (
+                  <div className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    <div><div className="text-xs text-slate-500">Chốt ngày</div><div className="font-medium">{fmtDate(op.cutoff_date)}</div></div>
+                    <div><div className="text-xs text-slate-500">Tổng nợ</div><div className="font-medium tabular-nums">{vnd(op.total_debt)}</div></div>
+                    <div><div className="text-xs text-slate-500">Đã trả</div><div className="font-medium tabular-nums text-emerald-700">{vnd(op.paid_before)}</div></div>
+                    <div><div className="text-xs text-slate-500">{Number(op.excess) > 0.005 ? "Dư chưa trừ" : "Còn nợ"}</div>
+                      <div className={`font-semibold tabular-nums ${Number(op.due) > 0.005 ? "text-rose-600" : Number(op.excess) > 0.005 ? "text-blue-700" : "text-slate-300"}`}>{vnd(Number(op.excess) > 0.005 ? op.excess : Math.max(Number(op.due) || 0, 0))}</div></div>
+                    {op.note && <div className="col-span-full text-xs text-slate-400">{op.note}</div>}
+                  </div>
+                ) : <div className="text-xs text-slate-400 italic">Chưa nhập.</div>}
+              </div>
+            )}
 
             <div>
               <div className="text-xs font-semibold uppercase text-slate-400 mb-2">Phiếu giao hàng ({d.notes.length})</div>
@@ -111,11 +208,15 @@ function DetailDrawer({ customerId, onClose }) {
           </div>
         )}
       </div>
+      {editOpening && <OpeningDialog customers={customers} customerId={customerId} opening={op} onClose={() => setEditOpening(false)}
+        onSaved={() => { setEditOpening(false); setD(null); setTryN((n) => n + 1); onChanged?.(); }} />}
     </>
   );
 }
 
-export default function ReceivablesModule() {
+export default function ReceivablesModule({ lookups }) {
+  const customers = lookups?.customers || [];
+  const [newOpening, setNewOpening] = useState(false);
   const { fpermSecret } = usePerm();
   const hidden = fpermSecret("deliveries", "amounts") === "hidden";
   const [rows, setRows] = useState([]);
@@ -172,7 +273,7 @@ export default function ReceivablesModule() {
       render: (r) => <LevelBadge level={r.level} /> },
   ];
 
-  const exportExcel = () => {
+  const exportExcel = async () => {
     if (!shown.length) return toast.error("Danh sách đang trống");
     const data = shown.map((r) => ({
       "Mã KH": r.customer_code, "Khách hàng": r.customer_name, "Phải trả (đ)": Math.round(r.billed), "Đã trả (đ)": Math.round(r.paid),
@@ -184,6 +285,18 @@ export default function ReceivablesModule() {
     ws["!cols"] = [{ wch: 10 }, { wch: 32 }, { wch: 15 }, { wch: 15 }, { wch: 15 }, { wch: 18 }, { wch: 12 }, { wch: 14 }, { wch: 14 }];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Công nợ");
+    // Sheet 2: các lần thanh toán (ngày + số tiền) của đúng các khách đang hiển thị
+    try {
+      const ids = new Set(shown.map((r) => r.customer_id));
+      const list = ((await paymentReceipts.list()) || []).filter((r) => !r.is_cancelled && ids.has(r.customer_id))
+        .sort((a, b) => (a.customer_name || "").localeCompare(b.customer_name || "") || String(a.pay_date).localeCompare(String(b.pay_date)));
+      const ws2 = XLSX.utils.json_to_sheet(list.map((r) => ({
+        "Mã KH": r.customer_code, "Khách hàng": r.customer_name, "Ngày thanh toán": fmtDate(r.pay_date), "Số phiếu": r.receipt_code,
+        "Hình thức": r.method, "Số HĐ": r.invoice_no || "", "Số tiền (đ)": Math.round(r.amount),
+      })));
+      ws2["!cols"] = [{ wch: 10 }, { wch: 32 }, { wch: 15 }, { wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 15 }];
+      XLSX.utils.book_append_sheet(wb, ws2, "Thanh toán");
+    } catch (e) { toast.error("Không tải được danh sách thanh toán: " + e.message); }
     XLSX.writeFile(wb, `cong-no-${todayYmd()}.xlsx`);
   };
 
@@ -191,6 +304,7 @@ export default function ReceivablesModule() {
     <div className="space-y-5">
       <ListHeader title="Báo cáo công nợ" actions={<>
         <button onClick={load} disabled={loading} className="btn-ghost"><RotateCcw size={16} className={loading ? "animate-spin" : ""} /> Làm mới</button>
+        <button onClick={() => setNewOpening(true)} className="btn-ghost"><Plus size={16} /> Nợ đầu kỳ</button>
         <button onClick={exportExcel} className="btn-primary"><Download size={16} /> Xuất Excel</button>
       </>} />
 
@@ -269,7 +383,9 @@ export default function ReceivablesModule() {
 
       <DataTable columns={columns} rows={shown} rowKey={(r) => r.customer_id} loading={loading} emptyText="Không có khách nào" />
 
-      {openId && <DetailDrawer customerId={openId} onClose={() => setOpenId(null)} />}
+      {openId && <DetailDrawer customerId={openId} customers={customers} onClose={() => setOpenId(null)} onChanged={load} />}
+      {newOpening && <OpeningDialog customers={customers} onClose={() => setNewOpening(false)}
+        onSaved={(cid) => { setNewOpening(false); load(); setOpenId(cid); }} />}
     </div>
   );
 }

@@ -9,7 +9,7 @@ const ordersApi = resource("sales-orders");
 import { usePerm } from "../../perm.jsx";
 import {  inputCls, fmt, fmtDate, statusClass , toast, todayYmd } from "../../ui.js";
 import { specShort, specKeyLabel } from "../../specs.js";
-import { PageHeader, Section, ListHeader, DataTable, Logo, UnitSelect, SearchSelect, useSaving, LoadError, DialogBehavior, confirmClose, DateInput } from "../../components.jsx";
+import { PageHeader, Section, ListHeader, DataTable, Logo, UnitSelect, SearchSelect, useSaving, LoadError, DialogBehavior, confirmClose, DateInput, LsxProgressChip } from "../../components.jsx";
 
 // Bảng chuyển trạng thái (khớp backend). "Giao hàng" chỉ đặt qua nút Giao hàng (trừ tồn).
 // Bản nháp chỉ được Hủy; sau khi đã giao không cho Hủy — hàng trả lại dùng nút "Khách trả hàng" (nhập lại kho).
@@ -171,7 +171,7 @@ function ReturnModal({ id, noteCode, lookups, onClose, onSaved }) {
   );
 }
 
-function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrint }) {
+function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrint, onOpenOrder, onOpenProductionOrder }) {
   const { can, fpermSecret } = usePerm();
   const moneyPerm = fpermSecret("deliveries", "amounts");
   const showMoney = moneyPerm !== "hidden";
@@ -394,6 +394,8 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
   };
 
   const numCls = inputCls + " text-right no-spin";
+  // Bề rộng ô số theo ch (1 ch = 1 chữ số), co giãn theo zoom: SL ~5 chữ số + thập phân, đơn giá ~8 chữ số
+  const qtyW = { minWidth: "11ch" }, priceW = { minWidth: "12ch" };
   const dash = <span className="text-slate-300">—</span>;
   return (
     <div className="space-y-5">
@@ -509,11 +511,11 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
                     <td className={"px-2 py-1.5 text-right " + (overStock ? "text-rose-600 font-semibold" : "text-slate-600")}>{inf ? fmt(inf.stock) : dash}</td>
                     <td className="px-2 py-1.5">
                       <input type="number" min="0" className={numCls + " font-semibold text-blue-700" + (overOrder || overStock ? " !border-amber-400 !ring-2 !ring-amber-200" : "")}
-                        value={r.quantity ?? ""} onChange={(e) => upRow(r._k, { quantity: e.target.value })} disabled={!r.product_id}
+                        style={qtyW} value={r.quantity ?? ""} onChange={(e) => upRow(r._k, { quantity: e.target.value })} disabled={!r.product_id}
                         title={overStock ? `Giao ${fmt(giao)} vượt tồn ${fmt(inf.stock)} — không đủ tồn sẽ không giao được` : overOrder ? `Giao dư ${fmt(giao - inf.remaining)} so với còn phải giao — vẫn cho giao` : inf?.suggested != null ? `Gợi ý ${fmt(inf.suggested)}` : undefined} />
                     </td>
                     <td className="px-2 py-1.5 text-slate-500">{r.unit || "—"}</td>
-                    {showMoney && <td className="px-2 py-1.5"><input type="number" min="0" className={numCls} disabled={!moneyEdit || !r.product_id} value={r.unit_price ?? ""} onChange={(e) => upRow(r._k, { unit_price: e.target.value })} /></td>}
+                    {showMoney && <td className="px-2 py-1.5"><input type="number" min="0" className={numCls} disabled={!moneyEdit || !r.product_id} style={priceW} value={r.unit_price ?? ""} onChange={(e) => upRow(r._k, { unit_price: e.target.value })} /></td>}
                     {showMoney && <td className="px-3 py-1.5 text-right font-semibold text-slate-800">{r.product_id ? fmt(amountOf(r)) : "—"}</td>}
                     <td className="px-2 py-1.5 text-center"><button type="button" onClick={() => rmRow(r._k)} className="text-slate-400 hover:text-rose-600" title="Xóa dòng"><Trash2 size={15} /></button></td>
                   </tr>
@@ -549,6 +551,7 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
             <thead className="bg-slate-50 text-slate-500 text-xs uppercase">
               <tr>
                 <th className="text-left px-4 py-2.5 w-36">Đơn hàng</th>
+                <th className="text-left px-4 py-2.5">Lệnh SX · tiến độ</th>
                 <th className="text-left px-4 py-2.5">Sản phẩm</th>
                 <th className="text-left px-4 py-2.5">Thông số</th>
                 <th className="text-right px-3 py-2.5 w-28">SL giao</th>
@@ -560,7 +563,16 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
             <tbody className="divide-y divide-slate-100">
               {savedItems.map((it) => (
                 <tr key={it.id}>
-                  <td className="px-4 py-1.5 font-medium text-blue-700">{it.sales_order_code || <span className="text-slate-400 font-normal">Không theo đơn</span>}</td>
+                  <td className="px-4 py-1.5 font-medium text-blue-700">
+                    {it.sales_order_code
+                      ? <a href="#" onClick={(e) => { e.preventDefault(); onOpenOrder?.(it.sales_order_id); }} className="hover:underline" title="Mở đơn hàng">{it.sales_order_code}</a>
+                      : <span className="text-slate-400 font-normal">Không theo đơn</span>}
+                  </td>
+                  <td className="px-4 py-1.5">
+                    {it.production_orders?.length
+                      ? <div className="flex flex-wrap gap-1.5">{it.production_orders.map((o) => <LsxProgressChip key={o.id} o={o} onOpen={onOpenProductionOrder} />)}</div>
+                      : <span className="text-slate-400">—</span>}
+                  </td>
                   <td className="px-4 py-1.5 font-medium text-slate-800">{it.product_name || "—"}</td>
                   <td className="px-4 py-1.5 text-slate-500">{specShort(it.specs) || "—"}</td>
                   <td className="px-3 py-1.5 text-right font-semibold">{fmt(it.actual_quantity ?? it.quantity)}</td>
@@ -569,7 +581,7 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
                   {showMoney && <td className="px-4 py-1.5 text-right font-semibold text-slate-800">{fmt(it.amount)}</td>}
                 </tr>
               ))}
-              {!savedItems.length && <tr><td colSpan={showMoney ? 7 : 5} className="px-4 py-8 text-center text-slate-400">Phiếu chưa có dòng hàng.</td></tr>}
+              {!savedItems.length && <tr><td colSpan={showMoney ? 8 : 6}className="px-4 py-8 text-center text-slate-400">Phiếu chưa có dòng hàng.</td></tr>}
             </tbody>
           </table>
           )}
@@ -712,7 +724,7 @@ function DeliveryVoucher({ id, onBack }) {
 }
 
 /* ---- Module chính ---- */
-export default function DeliveriesModule({ lookups, focusOrderId, onFocusConsumed }) {
+export default function DeliveriesModule({ lookups, focusOrderId, onFocusConsumed, onOpenOrder, onOpenProductionOrder }) {
   const { can, fpermSecret } = usePerm();
   const showMoney = fpermSecret("deliveries", "amounts") !== "hidden";
   const [view, setView] = useState("list");
@@ -737,7 +749,7 @@ export default function DeliveriesModule({ lookups, focusOrderId, onFocusConsume
   const resetToList = () => { setView("list"); setEditId(null); setNewOrderId(null); };
   if (view === "form") return <DeliveryForm key={editId || "new"} lookups={lookups} editId={editId} initialOrderId={newOrderId}
     onBack={() => { resetToList(); load(); }} onSaved={(newId) => { if (newId) { setEditId(newId); setNewOrderId(null); } else resetToList(); load(); }}
-    onPrint={(id) => { setVoucherId(id); setView("voucher"); }} />;
+    onPrint={(id) => { setVoucherId(id); setView("voucher"); }} onOpenOrder={onOpenOrder} onOpenProductionOrder={onOpenProductionOrder} />;
   if (view === "voucher") return <DeliveryVoucher id={voucherId} onBack={() => setView("list")} />;
 
   const columns = [

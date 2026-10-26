@@ -21,7 +21,7 @@ const ReadOnly = ({ children }) => (
 );
 
 /* ---- Form tạo / sửa lệnh sản xuất ---- */
-function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
+function ProductionForm({ lookups, editId, copyId, onBack, onSaved, onOpenSalesOrder }) {
   const { can, fperm, isAdmin } = usePerm();
   const fhid = (k) => fperm("production", k) === "hidden";
   const fdis = (k) => fperm("production", k) !== "edit";
@@ -487,6 +487,9 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved }) {
           {!editId ? (copyId ? "Tạo lệnh sản xuất (sao chép)" : "Tạo lệnh sản xuất") : editing ? "Sửa lệnh sản xuất" : "Chi tiết lệnh sản xuất"}
           {meta?.order_code && <span className="text-slate-400 font-normal">· {meta.order_code}</span>}
           {editId && meta?.status && <span className={`inline-flex px-2.5 py-0.5 rounded-full text-sm font-medium ${statusClass(meta.status)}`}>{meta.status}</span>}
+          {editId && meta?.sales_order_code && (onOpenSalesOrder
+            ? <button type="button" onClick={() => onOpenSalesOrder(meta.sales_order_id)} className="text-sm font-normal text-blue-600 hover:underline" title="Mở đơn hàng">Đơn {meta.sales_order_code}</button>
+            : <span className="text-sm font-normal text-slate-500">Đơn {meta.sales_order_code}</span>)}
         </span>} onBack={onBack}
         actions={editId && !editing ? (<>
           {locked && <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-500 border border-slate-200"><Lock size={12} aria-hidden="true" /> Đã {meta?.status} · không thể sửa</span>}
@@ -1081,7 +1084,7 @@ export function ScheduleModal({ lookups, order, onClose, onSaved }) {
   );
 }
 
-export default function ProductionModule({ lookups, focusId, onFocusConsumed, onExit }) {
+export default function ProductionModule({ lookups, focusId, onFocusConsumed, onExit, onOpenSalesOrder }) {
   const { can } = usePerm();
   const [view, setView] = useState("list");
   const [mode, setMode] = useState("table"); // table | gantt
@@ -1123,7 +1126,7 @@ export default function ProductionModule({ lookups, focusId, onFocusConsumed, on
 
   if (view === "form")
     return <ProductionForm key={editId || "new"} lookups={lookups} editId={editId} copyId={copyId}
-      onBack={backFromForm}
+      onBack={backFromForm} onOpenSalesOrder={onOpenSalesOrder}
       onSaved={(newId) => { if (newId) { setEditId(newId); setCopyId(null); } else { setView("list"); setEditId(null); setCopyId(null); } load(); }} />;
 
   const columns = [
@@ -1141,6 +1144,10 @@ export default function ProductionModule({ lookups, focusId, onFocusConsumed, on
         if (!d && !s) return "—";
         return `${d ? fmtDate(d) : ""}${s ? " · " + s : ""}`.replace(/^ · | · $/, '');
       } },
+    { key: "sales_order_code", label: "Đơn hàng", filter: "text", minWidth: "110px", render: (r) => r.sales_order_code
+        ? (onOpenSalesOrder ? <button onClick={() => onOpenSalesOrder(r.sales_order_id)} className="text-blue-600 hover:underline">{r.sales_order_code}</button> : r.sales_order_code)
+        : "—" },
+    { key: "sales_order_date", label: "Ngày xuống đơn", filter: "date", minWidth: "120px", render: (r) => r.sales_order_date ? fmtDate(r.sales_order_date) : "—" },
     { key: "due_date", label: "Ngày giao", filter: "date", render: (r) => fmtDate(r.due_date) },
     { key: "_progress", label: "Tiến độ", render: (r) => r.task_count > 0 ? (
         <div className="w-28">

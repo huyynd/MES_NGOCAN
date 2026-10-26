@@ -2702,3 +2702,31 @@ ON CONFLICT (key) DO NOTHING;
 --     Kho đang ghi "Nhà máy 1/2/3" (giá trị cũ, không dùng cho phân quyền) → để trống (chủ dự án chốt).
 UPDATE public.warehouses SET factory = NULL WHERE factory IN ('Nhà máy 1', 'Nhà máy 2', 'Nhà máy 3');
 -- ---------------------------------------------------------------------
+
+-- 31) NỢ ĐẦU KỲ (2026-10-26): chốt sổ công nợ cũ — mỗi khách 1 dòng (ngày chốt, tổng nợ, đã trả).
+--   Còn nợ đầu kỳ = tổng nợ − đã trả, coi là khoản nợ CŨ NHẤT của khách → Phiếu thanh toán trừ vào đây trước
+--   (phần trừ ghi ở opening_balance_payments). Đã trả > tổng nợ → phần dư là tiền trả trước, trừ vào phiếu giao
+--   bằng delivery_payments.from_opening = TRUE. Không tính doanh thu, không đụng kho.
+CREATE TABLE IF NOT EXISTS public.customer_opening_balances (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  customer_id uuid NOT NULL UNIQUE REFERENCES public.customers(id),
+  cutoff_date date NOT NULL,
+  total_debt  numeric(18,2) NOT NULL DEFAULT 0 CHECK (total_debt >= 0),
+  paid_before numeric(18,2) NOT NULL DEFAULT 0 CHECK (paid_before >= 0),
+  note        text,
+  created_by  uuid REFERENCES public.users(id),
+  updated_by  uuid REFERENCES public.users(id),
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  updated_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS public.opening_balance_payments (
+  id          bigserial PRIMARY KEY,
+  customer_id uuid NOT NULL REFERENCES public.customers(id),
+  receipt_id  uuid NOT NULL REFERENCES public.payment_receipts(id),
+  amount      numeric(18,2) NOT NULL CHECK (amount > 0),
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS opening_balance_payments_cust_idx ON public.opening_balance_payments(customer_id);
+CREATE INDEX IF NOT EXISTS opening_balance_payments_rcpt_idx ON public.opening_balance_payments(receipt_id);
+ALTER TABLE public.delivery_payments ADD COLUMN IF NOT EXISTS from_opening boolean NOT NULL DEFAULT FALSE;
+-- ---------------------------------------------------------------------
