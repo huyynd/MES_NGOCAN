@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { RotateCcw, Save, RefreshCcw, History, ArrowRight } from "lucide-react";
 import { DataTable, PageHeader, UnitSelect, useRemembered } from "../../components.jsx";
 import { inventory } from "../../mesApi.js";
@@ -17,6 +17,7 @@ const Field = ({ label, required, children }) => (
 );
 
 const specLabel = (k) => specKeyLabel(k, "Không thông số");
+const newRef = () => `CK${new Date().toISOString().replace(/\D/g, '').slice(2, 14)}${Math.floor(Math.random() * 90 + 10)}`;
 
 function TransferForm({ lookups, onSaved }) {
   const [form, setForm] = useState({
@@ -25,6 +26,9 @@ function TransferForm({ lookups, onSaved }) {
   });
   const [stockRows, setStockRows] = useState(null);
   const [saving, setSaving] = useState(false);
+  // Số phiếu cố định cho mỗi lần lập: gửi lại / bấm đúp bị backend từ chối. Ref khóa ngay, state chỉ cập nhật sau render
+  const autoRef = useRef(newRef());
+  const busy = useRef(false);
   const set = (k, v) => setForm(s => ({ ...s, [k]: v }));
 
   const onProductChange = async (id) => {
@@ -43,8 +47,14 @@ function TransferForm({ lookups, onSaved }) {
   const srcRows = stockRows ? stockRows.filter(r => !form.from_location_id || r.location_id === form.from_location_id) : null;
   const specOptions = srcRows ? [...new Set(srcRows.map(r => r.spec_key))] : [];
   const spec = form.spec_key || (specOptions.length === 1 ? specOptions[0] : "");
+  // Lô tại kho nguồn theo thông số: có từ 2 lô thì bắt buộc chọn; lô đã chọn không còn ở nguồn thì coi như chưa chọn
+  const specRows = srcRows ? srcRows.filter(r => !spec || r.spec_key === spec) : [];
+  const lotOptions = [...new Set(specRows.filter(r => r.lot_code).map(r => r.lot_code))];
+  const hasNoLot = specRows.some(r => !r.lot_code);
+  const lot = lotOptions.includes(form.lot_code) ? form.lot_code : (lotOptions.length === 1 && !hasNoLot ? lotOptions[0] : "");
+  const needLot = !!form.from_location_id && !lot && !hasNoLot && lotOptions.length > 1;
   const available = srcRows
-    ? srcRows.filter(r => (!spec || r.spec_key === spec) && (!form.lot_code || r.lot_code === form.lot_code))
+    ? (lot ? specRows.filter(r => r.lot_code === lot) : hasNoLot ? specRows.filter(r => !r.lot_code) : specRows)
         .reduce((s, r) => s + Number(r.quantity || 0), 0)
     : null;
   const availableLocations = stockRows ? [...new Set(stockRows.map(r => r.location_id))] : null;
@@ -56,20 +66,24 @@ function TransferForm({ lookups, onSaved }) {
     if (!form.to_location_id) return toast.error("Chọn kho/vị trí đích");
     if (form.from_location_id === form.to_location_id) return toast.error("Kho nguồn và đích không được giống nhau");
     if (!spec && specOptions.length > 1) return toast.error("Kho nguồn có nhiều thông số — vui lòng chọn thông số cần chuyển");
+    if (needLot) return toast.error("Kho nguồn có nhiều lô — vui lòng chọn lô cần chuyển");
     // Chặn cứng ở frontend trước khi gọi API
     if (available !== null && Number(form.quantity) > available)
       return toast.error(`Không đủ tồn kho — tồn hiện có: ${available} ${form.unit}`);
 
+    if (busy.current) return;
+    busy.current = true;
     setSaving(true);
     try {
       // Gọi 1 endpoint atomic: backend thực hiện Xuất + Nhập trong 1 transaction
       const result = await inventory.transfer({
+        ref_code: autoRef.current,
         product_id: form.product_id,
         from_location_id: form.from_location_id,
         to_location_id: form.to_location_id,
         quantity: Number(form.quantity),
         unit: form.unit,
-        lot_code: form.lot_code || "",
+        lot_code: lot,
         spec_key: spec || null,
         note: form.note || "",
       });
@@ -79,10 +93,12 @@ function TransferForm({ lookups, onSaved }) {
         from_location_id: "", to_location_id: "", note: ""
       });
       setStockRows(null);
+      autoRef.current = newRef(); // chỉ đổi số phiếu khi đã thành công; lỗi mạng bấm lại vẫn cùng số
       onSaved();
     } catch (e) {
       toast.error("Lỗi chuyển kho: " + e.message);
     } finally {
+      busy.current = false;
       setSaving(false);
     }
   };
@@ -181,9 +197,16 @@ function TransferForm({ lookups, onSaved }) {
               <div className={`${inputCls} bg-slate-50 text-slate-500`}>{specOptions.length === 1 ? specLabel(specOptions[0]) : "—"}</div>
             )}
           </Field>
-          <Field label="Số lô">
-            <input className={inputCls} placeholder="Mã lô sản xuất (nếu có)" value={form.lot_code}
-              onChange={e => set("lot_code", e.target.value)} />
+          <Field label={lotOptions.length > 1 ? "Số lô *" : "Số lô"}>
+            {lotOptions.length > 1 ? (
+              <select className={`${inputCls} ${needLot ? "border-amber-400" : ""}`} value={lot} onChange={e => set("lot_code", e.target.value)}>
+                <option value="">{hasNoLot ? "(không lô)" : "-- Chọn lô --"}</option>
+                {lotOptions.map(x => {
+                  const qty = specRows.filter(r => r.lot_code === x).reduce((sum, r) => sum + Number(r.quantity || 0), 0);
+                  return <option key={x} value={x}>{x} — tồn {fmt(qty)}</option>;
+                })}
+              </select>
+            ) : <div className={`${inputCls} bg-slate-50 text-slate-500`}>{lotOptions[0] || "—"}</div>}
           </Field>
           <Field label="Ghi chú">
             <input className={inputCls} placeholder="Lý do chuyển kho…" value={form.note}
@@ -223,6 +246,7 @@ function TransferHistory() {
     { key: "quantity", label: "Số lượng", align: "right", render: r => <span className="font-semibold">{fmt(r.quantity)}</span> },
     { key: "warehouse_name", label: "Kho/Vị trí", render: r => r.warehouse_name ? `${r.warehouse_name}${r.location_name ? " · " + r.location_name : ""}` : "—" },
     byColumn,
+    { key: "ref_code", label: "Số phiếu", filter: "text", render: r => r.ref_code || "—" },
     { key: "note", label: "Chi tiết", tdClass: "text-slate-500 text-xs" },
   ];
 

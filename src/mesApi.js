@@ -125,6 +125,9 @@ export const production = {
   plannedMaterials: (id) => http(`/production-orders/${id}/planned-materials`).then((r) => r.data),
   savePlannedMaterials: (id, lines) => http(`/production-orders/${id}/planned-materials`, body("POST", { lines })),
   requestMaterials: (id, lines) => http(`/production-orders/${id}/request-materials`, body("POST", { lines })),
+  // Trả NVL thừa về kho (phiếu TNVL…)
+  materialReturns: (id) => http(`/production-orders/${id}/material-returns`).then((r) => r.data),
+  createMaterialReturn: (id, data) => http(`/production-orders/${id}/material-returns`, body("POST", data)),
 };
 
 export const planning = {
@@ -164,6 +167,7 @@ export const inventory = {
   outboundSlip: (id) => http(`/outbound-slips/${id}`).then((r) => r.data),
   confirmOutboundSlip: (id) => http(`/outbound-slips/${id}/confirm`, body("POST", {})),
   cancelOutboundSlip: (id) => http(`/outbound-slips/${id}/cancel`, body("POST", {})),
+  reverseOutboundSlip: (slip_code) => http(`/outbound-slips/reverse`, body("POST", { slip_code })),
 };
 
 export const reports = {

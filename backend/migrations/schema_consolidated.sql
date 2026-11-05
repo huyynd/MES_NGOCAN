@@ -2730,3 +2730,82 @@ CREATE INDEX IF NOT EXISTS opening_balance_payments_cust_idx ON public.opening_b
 CREATE INDEX IF NOT EXISTS opening_balance_payments_rcpt_idx ON public.opening_balance_payments(receipt_id);
 ALTER TABLE public.delivery_payments ADD COLUMN IF NOT EXISTS from_opening boolean NOT NULL DEFAULT FALSE;
 -- ---------------------------------------------------------------------
+
+-- 32) PHIẾU TRẢ VỀ KHO (2026-11-05): trả NVL thừa / hủy LSX (TNVL…), đảo phiếu xuất nhầm (DPX…).
+--   Mỗi dòng trỏ về giao dịch "Xuất" gốc để không trả vượt phần đã xuất và truy được phiếu gốc.
+CREATE TABLE IF NOT EXISTS public.material_returns (
+  id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  return_code         varchar(30) NOT NULL UNIQUE,
+  production_order_id uuid REFERENCES public.production_orders(id),
+  reason              varchar(100) NOT NULL,
+  note                text,
+  created_by          uuid,
+  created_by_name     varchar(150),
+  created_at          timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS public.material_return_items (
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  return_id     uuid NOT NULL REFERENCES public.material_returns(id) ON DELETE CASCADE,
+  source_trx_id uuid NOT NULL REFERENCES public.inventory_transactions(id),
+  product_id    uuid NOT NULL REFERENCES public.products(id),
+  quantity      numeric(14,2) NOT NULL CHECK (quantity > 0),
+  location_id   uuid REFERENCES public.locations(id)
+);
+CREATE INDEX IF NOT EXISTS idx_mr_order ON public.material_returns (production_order_id);
+CREATE INDEX IF NOT EXISTS idx_mri_return ON public.material_return_items (return_id);
+CREATE INDEX IF NOT EXISTS idx_mri_source ON public.material_return_items (source_trx_id);
+-- ---------------------------------------------------------------------
+
+-- 33) ĐƠN VỊ VIẾT HOA (2026-11-05): đưa dữ liệu về KG, CÁI… và trigger giữ viết hoa cho mọi đường ghi.
+CREATE OR REPLACE FUNCTION public.trg_unit_upper() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+  NEW.unit := NULLIF(UPPER(TRIM(NEW.unit)), '');
+  RETURN NEW;
+END $fn$;
+CREATE OR REPLACE FUNCTION public.trg_output_unit_upper() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+  NEW.output_unit := NULLIF(UPPER(TRIM(NEW.output_unit)), '');
+  RETURN NEW;
+END $fn$;
+DO $do$
+DECLARE t text;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['bom_lines','delivery_note_items','delivery_return_items','inventory_stock','outbound_slip_lines',
+    'production_material_usage','production_order_materials','production_orders','products','recycling_rolls','sales_order_items'] LOOP
+    EXECUTE format('UPDATE public.%I SET unit = NULLIF(UPPER(TRIM(unit)), '''') WHERE unit IS DISTINCT FROM NULLIF(UPPER(TRIM(unit)), '''')', t);
+    EXECUTE format('DROP TRIGGER IF EXISTS unit_upper ON public.%I', t);
+    EXECUTE format('CREATE TRIGGER unit_upper BEFORE INSERT OR UPDATE OF unit ON public.%I FOR EACH ROW EXECUTE FUNCTION public.trg_unit_upper()', t);
+  END LOOP;
+  -- CM không phải đơn vị tính (chỉ là kích thước cuộn) — các dòng ghi nhầm đưa về KG
+  FOREACH t IN ARRAY ARRAY['bom_lines','delivery_note_items','delivery_return_items','inventory_stock','outbound_slip_lines',
+    'production_material_usage','production_order_materials','production_orders','products','recycling_rolls','sales_order_items'] LOOP
+    EXECUTE format('UPDATE public.%I SET unit = ''KG'' WHERE unit = ''CM''', t);
+  END LOOP;
+  FOREACH t IN ARRAY ARRAY['boms','process_steps'] LOOP
+    EXECUTE format('UPDATE public.%I SET output_unit = NULLIF(UPPER(TRIM(output_unit)), '''') WHERE output_unit IS DISTINCT FROM NULLIF(UPPER(TRIM(output_unit)), '''')', t);
+    EXECUTE format('DROP TRIGGER IF EXISTS output_unit_upper ON public.%I', t);
+    EXECUTE format('CREATE TRIGGER output_unit_upper BEFORE INSERT OR UPDATE OF output_unit ON public.%I FOR EACH ROW EXECUTE FUNCTION public.trg_output_unit_upper()', t);
+  END LOOP;
+END $do$;
+-- ---------------------------------------------------------------------
+
+-- 34) SỔ CÁI LƯU ĐƠN VỊ (2026-11-05): mỗi giao dịch ghi ĐVT lúc phát sinh. Dữ liệu cũ lấy theo dòng tồn, không có thì theo sản phẩm.
+ALTER TABLE public.inventory_transactions ADD COLUMN IF NOT EXISTS unit character varying(30);
+UPDATE public.inventory_transactions t SET unit = COALESCE(
+    (SELECT NULLIF(s.unit, '') FROM public.inventory_stock s
+      WHERE s.product_id = t.product_id AND s.location_id IS NOT DISTINCT FROM t.location_id AND s.spec_key = t.spec_key AND s.lot_code = t.lot_code),
+    (SELECT p.unit FROM public.products p WHERE p.id = t.product_id))
+  WHERE t.unit IS NULL;
+DROP TRIGGER IF EXISTS unit_upper ON public.inventory_transactions;
+CREATE TRIGGER unit_upper BEFORE INSERT OR UPDATE OF unit ON public.inventory_transactions FOR EACH ROW EXECUTE FUNCTION public.trg_unit_upper();
+-- ---------------------------------------------------------------------
+
+-- 35) KHÁCH TRẢ HÀNG TRỪ CÔNG NỢ (2026-11-05): tổng tiền phiếu giao giảm theo giá trị hàng trả.
+--   returned_amount giữ phần đã trừ, để sửa dòng phiếu sau đó không làm mất. Phiếu trả lập trước mục này không tự trừ.
+ALTER TABLE public.delivery_notes ADD COLUMN IF NOT EXISTS returned_amount numeric(16,2) NOT NULL DEFAULT 0;
+ALTER TABLE public.delivery_returns ADD COLUMN IF NOT EXISTS amount numeric(16,2) NOT NULL DEFAULT 0;
+ALTER TABLE public.delivery_return_items ADD COLUMN IF NOT EXISTS unit_price numeric(16,2) NOT NULL DEFAULT 0;
+ALTER TABLE public.delivery_return_items ADD COLUMN IF NOT EXISTS amount numeric(16,2) NOT NULL DEFAULT 0;
+--   Số đã giao của đơn = SL giao − returned_qty
+ALTER TABLE public.delivery_note_items ADD COLUMN IF NOT EXISTS returned_qty numeric(14,2) NOT NULL DEFAULT 0;
+-- ---------------------------------------------------------------------

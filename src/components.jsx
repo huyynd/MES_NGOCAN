@@ -122,7 +122,7 @@ export function useSaving() {
 }
 
 export function UnitSelect({ value, onChange, disabled = false, className }) {
-  const v = value || "";
+  const v = (value || "").trim().toUpperCase();
   const opts = v && !UNITS.includes(v) ? [v, ...UNITS] : UNITS;
   return (
     <select className={className || inputCls} disabled={disabled} value={v} onChange={(e) => onChange(e.target.value)}>

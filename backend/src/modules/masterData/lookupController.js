@@ -79,7 +79,7 @@ exports.all = async (_req, res) => {
       locations: locations.rows,
       employees: employees.rows,
       shiftList: shiftRows.rows, // [{id, name}] cho lịch làm việc
-      units: ['cái', 'cuộn', 'kg', 'bao', 'thùng', 'm'],
+      units: ['CÁI', 'CUỘN', 'KG', 'BAO', 'THÙNG', 'M'],
       shifts: shiftRows.rows.length ? shiftRows.rows.map((s) => s.name) : ['Ca 1', 'Ca 2', 'Ca 3'],
       colors: byName('Màu sắc'),
       sizes: byName('Kích thước'),

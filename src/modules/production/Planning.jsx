@@ -469,7 +469,7 @@ function MaterialTab({ onOpenProduct }) {
     { key: "material_code", label: "Mã NVL", filter: "text", render: (r) => <button onClick={() => onOpenProduct?.(r.material_id)} className="font-medium text-blue-600 hover:underline">{r.material_code}</button> },
     { key: "material_name", label: "Nguyên vật liệu", filter: "select", tdClass: "text-slate-800" },
     { key: "required_qty", label: "Cần dùng", align: "right", render: (r) => fmt(r.required_qty) },
-    { key: "on_hand_qty", label: "Tồn kho", align: "right", tdClass: "text-slate-500", render: (r) => fmt(r.on_hand_qty) },
+    { key: "on_hand_qty", label: "Khả dụng", align: "right", tdClass: "text-slate-500", render: (r) => fmt(r.on_hand_qty) },
     { key: "to_purchase_qty", label: "Cần mua", align: "right", render: (r) => <span className={`font-bold ${r.to_purchase_qty > 0 ? "text-rose-600" : "text-emerald-600"}`}>{fmt(r.to_purchase_qty)}</span> },
     { key: "unit", label: "ĐVT", filter: "select" },
   ];

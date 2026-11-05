@@ -54,6 +54,8 @@ function AdjustForm({ lookups, onSaved }) {
   // rồi áp chênh lệch vào 1 vị trí → chênh lệch sai hoàn toàn.
   const locLines = rows && form.location_id ? rows.filter(r => r.location_id === form.location_id) : [];
   const selected = form.line && form.line !== NEW_LINE ? locLines.find(r => lineKey(r) === form.line) : null;
+  // Dòng tồn đã có: đơn vị theo dòng đó, không đổi được (đổi đơn vị mà không quy đổi số lượng là sai số). Chỉ dòng mới mới chọn.
+  const unit = selected?.unit || form.unit;
   const system_qty = form.line === NEW_LINE ? 0 : selected ? Number(selected.quantity || 0) : null;
 
   const delta = system_qty !== null && form.actual_qty !== ""
@@ -78,10 +80,10 @@ function AdjustForm({ lookups, onSaved }) {
         lot_code: selected ? (selected.lot_code || "") : form.new_lot.trim(),
         quantity: Number(form.actual_qty),
         expected_qty: system_qty,
-        unit: form.unit,
+        unit,
         note: `[Điều chỉnh] ${form.reason}${form.note ? " – " + form.note : ""} (HT: ${fmt(system_qty)} → TT: ${fmt(form.actual_qty)})`,
       });
-      toast.success(`Đã điều chỉnh tồn kho thành công! (${delta > 0 ? "+" : ""}${fmt(delta)} ${form.unit})`);
+      toast.success(`Đã điều chỉnh tồn kho thành công! (${delta > 0 ? "+" : ""}${fmt(delta)} ${unit})`);
       setForm(emptyForm());
       setRows(null);
       onSaved();
@@ -147,7 +149,7 @@ function AdjustForm({ lookups, onSaved }) {
               <div className={`text-3xl font-bold ${system_qty !== null ? "text-slate-700" : "text-slate-300"}`}>
                 {system_qty !== null ? fmt(system_qty) : "—"}
               </div>
-              <div className="text-xs text-slate-400 mt-1">{form.unit}</div>
+              <div className="text-xs text-slate-400 mt-1">{unit}</div>
             </div>
             <div className="flex flex-col items-center gap-2">
               {delta === null ? (
@@ -161,7 +163,7 @@ function AdjustForm({ lookups, onSaved }) {
               )}
               {delta !== null && delta !== 0 && (
                 <span className={`text-lg font-bold ${delta > 0 ? "text-emerald-600" : "text-rose-600"}`}>
-                  {delta > 0 ? "+" : ""}{fmt(delta)} {form.unit}
+                  {delta > 0 ? "+" : ""}{fmt(delta)} {unit}
                 </span>
               )}
               {delta === 0 && <span className="text-slate-400 text-sm">Không chênh lệch</span>}
@@ -179,7 +181,7 @@ function AdjustForm({ lookups, onSaved }) {
                 value={form.actual_qty}
                 onChange={e => set("actual_qty", e.target.value)}
               />
-              <div className="text-xs text-slate-400 mt-1">{form.unit}</div>
+              <div className="text-xs text-slate-400 mt-1">{unit}</div>
             </div>
           </div>
         </div>
@@ -192,7 +194,7 @@ function AdjustForm({ lookups, onSaved }) {
           </Field>
           <div className="flex items-end gap-3">
             <Field label="Đơn vị">
-              <UnitSelect value={form.unit} onChange={v => set("unit", v)} />
+              <UnitSelect value={unit} disabled={!!selected} onChange={v => set("unit", v)} />
             </Field>
           </div>
         </div>

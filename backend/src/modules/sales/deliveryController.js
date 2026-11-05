@@ -1,5 +1,6 @@
 // backend/controllers/deliveryController.js — Phiếu giao hàng & thanh toán
 const db = require('../../core/db');
+const { stockAvailabilityRows, assertAvailable } = require('../../core/lib/availability');
 const { upUnit } = require('../../core/lib/units');
 const { guardDelete } = require('../../core/lib/deleteGuard');
 const { applyStock, stockErrorResponse, whOutboundOkSql } = require('../../core/lib/stock');
@@ -64,7 +65,7 @@ async function checkDeliveryDate(client, v) {
 }
 // Thanh toán: khách trả 1 cục qua PHIẾU THANH TOÁN (paymentReceiptController) — tiền tự phân bổ vào
 // các phiếu giao cũ nhất trước (core/lib/receivables.js). Phiếu giao không còn ghi nhận thu lẻ.
-const { allocateCustomer, debtBlockMessage } = require('../../core/lib/receivables');
+const { allocateCustomer, rebuildCustomer, recomputePaid, debtBlockMessage } = require('../../core/lib/receivables');
 
 // Lịch sử được trả của 1 phiếu: từng phần phân bổ từ phiếu thanh toán (hoặc lần thu cũ trước đây)
 async function paymentsOf(conn, noteId) {
@@ -139,7 +140,7 @@ exports.fromOrder = async (req, res) => {
              it.quantity AS ordered,
              COALESCE((SELECT SUM(po.posted_qty) FROM production_orders po
                        WHERE po.sales_order_item_id = it.id AND po.is_deleted = FALSE), 0) AS produced,
-             COALESCE((SELECT SUM(COALESCE(di.actual_quantity, di.quantity)) FROM delivery_note_items di
+             COALESCE((SELECT SUM(COALESCE(di.actual_quantity, di.quantity) - di.returned_qty) FROM delivery_note_items di
                        JOIN delivery_notes dn ON dn.id = di.delivery_note_id
                        WHERE di.sales_order_item_id = it.id AND ${moneyNoteFilter('dn')}), 0) AS delivered
       FROM sales_order_items it JOIN products p ON p.id = it.product_id
@@ -178,11 +179,11 @@ exports.deliverable = async (req, res) => {
                it.quantity AS ordered,
                COALESCE((SELECT SUM(po.posted_qty) FROM production_orders po
                          WHERE po.sales_order_item_id = it.id AND po.is_deleted = FALSE), 0) AS produced,
-               COALESCE((SELECT SUM(COALESCE(di.actual_quantity, di.quantity)) FROM delivery_note_items di
+               COALESCE((SELECT SUM(COALESCE(di.actual_quantity, di.quantity) - di.returned_qty) FROM delivery_note_items di
                          JOIN delivery_notes dn ON dn.id = di.delivery_note_id
                          WHERE di.sales_order_item_id = it.id AND dn.is_deleted = FALSE
                            AND ${moneyNoteFilter('dn')}), 0) AS delivered,
-               COALESCE((SELECT SUM(COALESCE(di.actual_quantity, di.quantity)) FROM delivery_note_items di
+               COALESCE((SELECT SUM(COALESCE(di.actual_quantity, di.quantity) - di.returned_qty) FROM delivery_note_items di
                          JOIN delivery_notes dn ON dn.id = di.delivery_note_id
                          WHERE di.sales_order_item_id = it.id AND dn.is_deleted = FALSE AND dn.status = 'Bản nháp'
                            AND ($3::uuid IS NULL OR dn.id <> $3::uuid)), 0) AS in_draft
@@ -223,17 +224,17 @@ exports.deliverable = async (req, res) => {
 };
 
 // Cập nhật trạng thái ĐƠN HÀNG sau khi giao: còn lại > 0 → "Chuyển hàng 1 phần"; = 0 (tất cả dòng) → "Hoàn thành"
-async function updateOrderStatusAfterDelivery(client, salesOrderId) {
+async function updateOrderStatusAfterDelivery(client, salesOrderId, afterReturn = false) {
   if (!salesOrderId) return;
   const rows = (await client.query(`
     SELECT it.quantity AS ordered,
-           COALESCE((SELECT SUM(COALESCE(di.actual_quantity, di.quantity)) FROM delivery_note_items di
+           COALESCE((SELECT SUM(COALESCE(di.actual_quantity, di.quantity) - di.returned_qty) FROM delivery_note_items di
                      JOIN delivery_notes dn ON dn.id = di.delivery_note_id
                      WHERE di.sales_order_item_id = it.id AND ${moneyNoteFilter('dn')}), 0) AS delivered
     FROM sales_order_items it WHERE it.sales_order_id = $1`, [salesOrderId])).rows;
   if (!rows.length) return;
   const anyDelivered = rows.some((r) => Number(r.delivered) > 0);
-  if (!anyDelivered) return; // chưa giao gì thì không đổi trạng thái
+  if (!anyDelivered && !afterReturn) return; // chưa giao gì thì không đổi trạng thái (trả hết hàng thì vẫn phải rời "Hoàn thành")
   const allDone = rows.every((r) => Number(r.delivered) >= Number(r.ordered) - 1e-6);
   const newStatus = allDone ? 'Hoàn thành' : 'Chuyển hàng 1 phần';
   await client.query(
@@ -365,6 +366,10 @@ exports.update = async (req, res) => {
     const fields = ['customer_id', 'delivery_date', 'status', 'note'];
     const cols = [], vals = []; let i = 1;
     for (const f of fields) if (b[f] !== undefined) { cols.push(`${f} = $${i++}`); vals.push(b[f] === '' ? null : b[f]); }
+    if (b.items !== undefined && (await client.query(`SELECT 1 FROM delivery_notes WHERE id = $1 AND returned_amount > 0`, [req.params.id])).rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: 'Phiếu đã có hàng trả — không sửa được dòng hàng.' });
+    }
     if (b.items !== undefined) { cols.push(`sales_order_id = $${i++}`); vals.push(await orderIdOfItems(client, b.items)); }
     // paid_amount KHÔNG nhận từ client nữa — chỉ tính lại từ lịch sử thanh toán (recomputePaid)
     cols.push(`updated_at = now()`);
@@ -372,7 +377,7 @@ exports.update = async (req, res) => {
     if (!r.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ message: 'Không tìm thấy phiếu' }); }
     if (b.items !== undefined) {
       const total = await saveItems(client, req.params.id, b.items);
-      await client.query(`UPDATE delivery_notes SET total_amount = $1 WHERE id = $2`, [total, req.params.id]);
+      await client.query(`UPDATE delivery_notes SET total_amount = GREATEST($1::numeric - returned_amount, 0) WHERE id = $2`, [total, req.params.id]);
     }
     // Cập nhật trạng thái MỌI đơn liên quan (kể cả đơn vừa bị bỏ khỏi phiếu)
     const ordersAfter = await orderIdsOfNote(client, req.params.id);
@@ -435,6 +440,9 @@ exports.ship = async (req, res) => {
     const left = new Map(); // `${location_id}|${lot_code}|${spec_key}` → lượng còn lại sau các dòng trước
     const rowKey = (r) => `${r.location_id}|${r.lot_code || ''}|${r.spec_key}`;
     const shortages = [], allocations = [];
+    // Chỉ lấy phần KHẢ DỤNG của từng dòng tồn — không lấn phần phiếu chờ đang giữ
+    const freeRows = await stockAvailabilityRows(client, lines.map((l) => l.product_id));
+    const freeOf = new Map(freeRows.map((f) => [`${f.product_id}|${rowKey(f)}`, f.available]));
     for (const l of lines) {
       const need = Number(l.qty);
       const strict = l.spec_key !== EMPTY_SPEC;
@@ -446,9 +454,9 @@ exports.ship = async (req, res) => {
          WHERE s.product_id = $1 AND s.quantity > 0 AND w.warehouse_type IN ('NVL','BTP','TP')
            AND ${whOutboundOkSql('w', 'lo')}
            AND (NOT $3::boolean OR s.spec_key = $2)
-         ORDER BY (s.lot_code = ANY($4::text[])) DESC, (s.spec_key = $2) DESC, (w.warehouse_type = 'TP') DESC, s.id ASC`,
+         ORDER BY (s.lot_code = ANY($4::text[])) DESC, (s.spec_key = $2) DESC, (w.warehouse_type = 'TP') DESC, s.created_at ASC, s.id ASC`, // FIFO: lô vào kho sớm nhất trước (id là mã ngẫu nhiên, chỉ để thứ tự cố định)
         [l.product_id, l.spec_key, strict, l.own_lots]);
-      const avail = (r) => (left.has(rowKey(r)) ? left.get(rowKey(r)) : Number(r.quantity));
+      const avail = (r) => (left.has(rowKey(r)) ? left.get(rowKey(r)) : (freeOf.get(`${l.product_id}|${rowKey(r)}`) || 0));
       const onHand = stockRows.reduce((s, r) => s + avail(r), 0);
       if (need > onHand + 1e-6) {
         shortages.push({ name: l.product_name + (strict ? ` (đúng thông số ${specKeyValues(l.spec_key).join(', ')})` : ''), unit: l.unit || '', on_hand: onHand, need, lack: need - onHand });
@@ -466,8 +474,8 @@ exports.ship = async (req, res) => {
       }
     }
     if (shortages.length) {
-      const msg = 'Không đủ tồn kho để giao — vui lòng sản xuất/nhập kho trước:\n' +
-        shortages.map((x) => `• ${x.name}: tồn ${x.on_hand} ${x.unit}, cần giao ${x.need} ${x.unit} → thiếu ${x.lack} ${x.unit}`).join('\n');
+      const msg = 'Không đủ số lượng khả dụng để giao (đã trừ phần phiếu chờ đang giữ):\n' +
+        shortages.map((x) => `• ${x.name}: khả dụng ${x.on_hand} ${x.unit}, cần giao ${x.need} ${x.unit} → thiếu ${x.lack} ${x.unit}`).join('\n');
       return res.status(400).json({ message: msg, shortages });
     }
     // Vị trí ĐẠI DIỆN ở đầu phiếu = nơi lấy nhiều nhất; vị trí thật của từng phần nằm ở dòng phiếu (K-11)
@@ -488,6 +496,8 @@ exports.ship = async (req, res) => {
       `UPDATE delivery_notes SET status = 'Giao hàng', delivery_date = ${VN_TODAY_SQL}, updated_at = now()
        WHERE id = $1 AND status = 'Bản nháp' AND is_deleted = FALSE RETURNING id`, [req.params.id]);
     if (!claim.rows.length) { await client.query('ROLLBACK'); return res.status(409).json({ message: 'Phiếu đã được giao hoặc đang được xử lý — vui lòng tải lại.' }); }
+    // Hàng đã lên phiếu Chờ xuất khác là đang giữ — không giao lấn sang
+    await assertAvailable(client, allocations.map((a) => ({ product_id: a.product_id, qty: a.quantity, location_id: a.location_id, spec_key: a.spec_key, lot_code: a.lot_code })));
     // Sinh mã phiếu xuất kho PXK00001… (D1: khóa theo bảng — giao đồng thời không trùng mã)
     const slipCode = await nextSlipCode(client);
     const slip = (await client.query(
@@ -537,7 +547,8 @@ exports.remove = async (req, res) => {
 // Nguồn: các giao dịch "Xuất" của phiếu xuất kho sinh ra khi giao phiếu này (mỗi giao dịch = 1 phần đã trừ:
 // SP · lô · thông số · vị trí). Trả hàng nhập lại ĐÚNG SP/lô/thông số đó, vào vị trí người nhập chọn
 // (mặc định = vị trí đã xuất). Không trả quá phần đã giao trừ phần đã trả trước đó.
-// Công nợ / số đã giao của đơn KHÔNG tự đổi (chưa chốt nghiệp vụ).
+// Giá trị hàng trả (SL × đơn giá trên phiếu giao) TRỪ VÀO CÔNG NỢ: giảm tổng tiền phiếu; đã thu dư thành tiền trả trước.
+// Số đã giao của đơn KHÔNG tự đổi.
 const RETURNABLE_SQL = `
   SELECT t.id AS trx_id, t.product_id, p.product_code, p.product_name, t.lot_code, t.spec_key, t.specs,
          t.location_id, l.name AS location_name, w.name AS warehouse_name, st.unit,
@@ -578,7 +589,7 @@ exports.createReturn = async (req, res) => {
     await client.query('BEGIN');
     // Khóa phiếu giao: 2 lần trả cùng lúc phải xếp hàng → không trả vượt số đã giao
     const dn = (await client.query(
-      `SELECT id, note_code, status FROM delivery_notes WHERE id = $1 AND is_deleted = FALSE FOR UPDATE`, [req.params.id])).rows[0];
+      `SELECT id, note_code, status, customer_id FROM delivery_notes WHERE id = $1 AND is_deleted = FALSE FOR UPDATE`, [req.params.id])).rows[0];
     if (!dn) { await client.query('ROLLBACK'); return res.status(404).json({ message: 'Không tìm thấy phiếu giao hàng' }); }
     if (!PAYABLE_NOTE_STATUSES.includes(dn.status)) {
       await client.query('ROLLBACK');
@@ -595,15 +606,32 @@ exports.createReturn = async (req, res) => {
       }
     }
 
+    // Đơn giá theo dòng phiếu giao cùng SP + thông số (nhiều dòng khác giá → bình quân theo số đã giao).
+    // Dòng phiếu không thông số (bán tồn kho, lấy biến thể bất kỳ) → khớp theo SP.
+    const noteItems = (await client.query(
+      `SELECT product_id, specs, COALESCE(actual_quantity, quantity) AS qty, amount FROM delivery_note_items WHERE delivery_note_id = $1`, [dn.id])).rows
+      .map((x) => ({ product_id: x.product_id, spec_key: buildSpecKey(x.specs || {}), qty: Number(x.qty) || 0, amount: Number(x.amount) || 0 }));
+    const priceOf = (s) => {
+      let m = noteItems.filter((x) => x.product_id === s.product_id && x.spec_key === s.spec_key);
+      if (!m.length) m = noteItems.filter((x) => x.product_id === s.product_id && x.spec_key === EMPTY_SPEC);
+      if (!m.length) m = noteItems.filter((x) => x.product_id === s.product_id);
+      const q = m.reduce((a, x) => a + x.qty, 0);
+      return q > 0 ? m.reduce((a, x) => a + x.amount, 0) / q : 0;
+    };
+
     const code = await nextCode(client, { table: 'delivery_returns', col: 'return_code', prefix: 'TH', width: 5 });
     const who = currentUser();
     const ret = (await client.query(
       `INSERT INTO delivery_returns (return_code, delivery_note_id, return_date, note, created_by, created_by_name)
        VALUES ($1,$2,COALESCE($3::date, ${VN_TODAY_SQL}),$4,$5,$6) RETURNING id, return_code`,
       [code, dn.id, return_date || null, note || null, who?.id || null, who?.name || null])).rows[0];
+    let returnAmount = 0;
     for (const it of items) {
       const s = src.get(it.trx_id);
       const qty = Number(it.quantity);
+      const unitPrice = priceOf(s);
+      const lineAmount = Math.round(qty * unitPrice * 100) / 100;
+      returnAmount += lineAmount;
       // Nhập lại đúng SP · lô · thông số đã giao (applyStock kiểm vị trí còn hoạt động / cho phép nhập)
       await applyStock(client, {
         product_id: s.product_id, location_id: it.location_id, delta: qty, unit: s.unit,
@@ -611,12 +639,39 @@ exports.createReturn = async (req, res) => {
         trx_type: 'Nhập', ref_code: ret.return_code, note: `Khách trả hàng (phiếu giao ${dn.note_code})${note ? ' | ' + note : ''}`,
       });
       await client.query(
-        `INSERT INTO delivery_return_items (return_id, source_trx_id, product_id, quantity, unit, lot_code, spec_key, location_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-        [ret.id, s.trx_id, s.product_id, qty, s.unit || null, s.lot_code || '', s.spec_key, it.location_id]);
+        `INSERT INTO delivery_return_items (return_id, source_trx_id, product_id, quantity, unit, lot_code, spec_key, location_id, unit_price, amount)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        [ret.id, s.trx_id, s.product_id, qty, s.unit || null, s.lot_code || '', s.spec_key, it.location_id, unitPrice, lineAmount]);
     }
+    // Trừ công nợ: giảm tổng tiền phiếu rồi phân bổ lại tiền của khách (đã thu vượt tổng mới → thành tiền trả trước)
+    await client.query(`UPDATE delivery_returns SET amount = $2 WHERE id = $1`, [ret.id, returnAmount]);
+    // Giảm số đã giao: ghi phần trả vào các dòng phiếu cùng SP + thông số, dòng không thông số khớp theo SP
+    for (const it of items) {
+      const s = src.get(it.trx_id);
+      let remain = Number(it.quantity);
+      const lines = (await client.query(
+        `SELECT id, specs, COALESCE(actual_quantity, quantity) - returned_qty AS room FROM delivery_note_items
+          WHERE delivery_note_id = $1 AND product_id = $2 ORDER BY line_no`, [dn.id, s.product_id])).rows;
+      const exact = lines.filter((l) => buildSpecKey(l.specs || {}) === s.spec_key);
+      for (const l of [...exact, ...lines.filter((x) => !exact.includes(x))]) {
+        if (remain <= 1e-6) break;
+        const take = Math.min(remain, Number(l.room));
+        if (take <= 0) continue;
+        await client.query(`UPDATE delivery_note_items SET returned_qty = returned_qty + $2::numeric WHERE id = $1`, [l.id, take]);
+        remain -= take;
+      }
+    }
+    await client.query(
+      `UPDATE delivery_notes SET returned_amount = returned_amount + $2::numeric, total_amount = GREATEST(total_amount - $2::numeric, 0), updated_at = now() WHERE id = $1`,
+      [dn.id, returnAmount]);
+    await rebuildCustomer(client, dn.customer_id);
+    await recomputePaid(client, dn.id);
+    for (const soId of await orderIdsOfNote(client, dn.id)) await updateOrderStatusAfterDelivery(client, soId, true);
     await client.query('COMMIT');
-    res.status(201).json({ message: `Đã lập phiếu trả hàng ${ret.return_code} và nhập lại kho.`, return_code: ret.return_code });
+    res.status(201).json({
+      message: `Đã lập phiếu trả hàng ${ret.return_code} và nhập lại kho${canViewAmounts(req) ? `, trừ công nợ ${Math.round(returnAmount).toLocaleString('vi-VN')} đ` : ', đã trừ công nợ'}.`,
+      return_code: ret.return_code,
+    });
   } catch (err) {
     await client.query('ROLLBACK'); console.error(err);
     if (stockErrorResponse(res, err)) return;

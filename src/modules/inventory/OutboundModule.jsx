@@ -34,9 +34,13 @@ function lineStock(l, locId) {
   const spec = l.spec_key || (specs.length === 1 ? specs[0] : "");
   const specRows = spec ? locRows.filter(r => r.spec_key === spec) : locRows;
   const lots = [...new Set(specRows.filter(r => r.lot_code).map(r => r.lot_code))];
-  const lot = l.lot_code || (lots.length === 1 ? lots[0] : "");
-  const available = (lot ? specRows.filter(r => r.lot_code === lot) : specRows).reduce((s, r) => s + Number(r.quantity || 0), 0);
-  return { available, specs, lots, spec, lot };
+  const hasNoLot = specRows.some(r => !r.lot_code);
+  // Trống mà có nhiều lô = chưa chọn; có hàng "không lô" thì trống nghĩa là lấy phần đó
+  const lot = l.lot_code || (lots.length === 1 && !hasNoLot ? lots[0] : "");
+  const needLot = !lot && !hasNoLot && lots.length > 1;
+  // Khả dụng = tồn − phần phiếu chờ đang giữ của đúng vị trí, thông số, lô
+  const available = (lot ? specRows.filter(r => r.lot_code === lot) : hasNoLot ? specRows.filter(r => !r.lot_code) : specRows).reduce((s, r) => s + Number(r.available ?? r.quantity ?? 0), 0);
+  return { available, specs, lots, spec, lot, needLot, specRows };
 }
 
 function OutboundForm({ lookups, onSaved }) {
@@ -72,6 +76,11 @@ function OutboundForm({ lookups, onSaved }) {
   };
 
   const addLine = () => setLines(a => [...a, emptyLine()]);
+  // Lấy thêm từ lô khác: dòng mới cùng sản phẩm, thông số
+  const addLotLine = (l) => setLines(a => {
+    const i = a.findIndex(x => x._k === l._k);
+    return [...a.slice(0, i + 1), { ...emptyLine(), product_id: l.product_id, unit: l.unit, spec_key: l.spec_key, rows: l.rows }, ...a.slice(i + 1)];
+  });
   const rmLine = (k) => setLines(a => a.filter(l => l._k !== k));
 
   const save = async () => {
@@ -85,14 +94,20 @@ function OutboundForm({ lookups, onSaved }) {
       return toast.error(`Sản phẩm ${names} có nhiều thông số tại vị trí này — vui lòng chọn thông số cần xuất.`);
     }
 
+    const noLot = validLines.filter(l => l.needLot);
+    if (noLot.length) {
+      const names = noLot.map(l => (lookups.products || []).find(x => x.id === l.product_id)?.product_code || "").join(", ");
+      return toast.error(`Sản phẩm ${names} có nhiều lô — vui lòng chọn lô. Cần nhiều lô thì bấm "Thêm lô".`);
+    }
+
     // Chặn cứng: không cho phép xuất kho khi số lượng vượt tồn hiện có
     const overStock = validLines.filter(l => l.available !== null && Number(l.quantity) > l.available);
     if (overStock.length > 0) {
       const details = overStock.map(l => {
         const p = (lookups.products || []).find(x => x.id === l.product_id);
-        return `• ${p?.product_code || ""} ${p?.product_name || l.product_id}: tồn ${l.available} ${l.unit}, xuất ${l.quantity} ${l.unit}`;
+        return `• ${p?.product_code || ""} ${p?.product_name || l.product_id}: khả dụng ${l.available} ${l.unit}, xuất ${l.quantity} ${l.unit}`;
       }).join("\n");
-      return toast.error(`Không đủ tồn kho — vui lòng kiểm tra lại:\n${details}`);
+      return toast.error(`Không đủ số lượng khả dụng — vui lòng kiểm tra lại:\n${details}`);
     }
 
     if (busy.current) return;
@@ -249,14 +264,19 @@ function OutboundForm({ lookups, onSaved }) {
                         <UnitSelect value={l.unit} onChange={v => setLine(l._k, "unit", v)} />
                       </td>
                       <td className="px-3 py-2">
-                        <input className={inputCls} placeholder={st.lots.length === 1 ? st.lots[0] : "Số lô"} value={l.lot_code || ""}
-                          list={`lot-${l._k}`}
-                          onChange={e => setLine(l._k, "lot_code", e.target.value)} />
-                        {st.lots.length > 0 && (
-                          <datalist id={`lot-${l._k}`}>
-                            {st.lots.map(lot => <option key={lot} value={lot} />)}
-                          </datalist>
-                        )}
+                        {st.lots.length > 1 ? (
+                          <>
+                            <select className={`${inputCls} ${st.needLot ? "border-amber-400" : ""}`} aria-label="Chọn lô" value={l.lot_code || ""}
+                              onChange={e => setLine(l._k, "lot_code", e.target.value)}>
+                              <option value="">{st.specRows.some(r => !r.lot_code) ? "(không lô)" : "-- Chọn lô --"}</option>
+                              {st.lots.map(lot => {
+                                const free = st.specRows.filter(r => r.lot_code === lot).reduce((s, r) => s + Number(r.available ?? r.quantity ?? 0), 0);
+                                return <option key={lot} value={lot}>{lot} — khả dụng {fmt(free)}</option>;
+                              })}
+                            </select>
+                            <button type="button" onClick={() => addLotLine(l)} className="mt-1 text-xs text-blue-600 hover:underline">+ Thêm lô</button>
+                          </>
+                        ) : <span className="text-xs text-slate-500">{st.lots[0] || "—"}</span>}
                       </td>
                       <td className="px-3 py-2">
                         <input className={inputCls} placeholder="Ghi chú…" value={l.note}
@@ -424,16 +444,32 @@ function PendingSlips({ canConfirm, onConfirmed }) {
 }
 
 function OutboundHistory() {
+  const { isAdmin } = usePerm();
+  const [reversedCodes, setReversedCodes] = useState(() => new Set());
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [range, setRange] = useRemembered("outbound:range", defaultRange);
   const load = useCallback(async () => {
     setLoading(true);
-    try { setRows(await inventory.transactions({ trx_type: "Xuất", ...range, limit: 2000 })); }
+    try {
+      const [trx, reversed] = await Promise.all([
+        inventory.transactions({ trx_type: "Xuất", ...range, limit: 2000 }),
+        inventory.outboundSlips({ status: "Đã đảo" }),
+      ]);
+      setRows(trx);
+      setReversedCodes(new Set(reversed.map((s) => s.slip_code)));
+    }
     catch (e) { toast.error("Lỗi: " + e.message); }
     finally { setLoading(false); }
   }, [range]);
   useEffect(() => { load(); }, [load]);
+
+  // Đảo phiếu xác nhận nhầm (Admin) — phiếu giao hàng dùng "Khách trả hàng", server từ chối
+  const reverse = async (code) => {
+    if (!window.confirm(`Đảo phiếu ${code}?\nToàn bộ hàng của phiếu (mọi dòng) sẽ nhập lại kho, đúng lô và thông số. Chỉ dùng khi xác nhận nhầm, hàng chưa rời kho.`)) return;
+    try { const r = await inventory.reverseOutboundSlip(code); toast.success(r.message); await load(); }
+    catch (e) { toast.error(e.message); }
+  };
 
   const columns = [
     { key: "created_at", label: "Thời gian", render: r => fmtDateTime(r.created_at) },
@@ -445,6 +481,9 @@ function OutboundHistory() {
     { key: "ref_code", label: "Số phiếu", filter: "text", render: r => r.ref_code || "—" },
     byColumn,
     { key: "note", label: "Ghi chú / Mục đích", tdClass: "text-slate-400 text-xs" },
+    ...(isAdmin ? [{ key: "_reverse", label: "", render: r => reversedCodes.has(r.ref_code) ? <span className="text-xs text-slate-400">Đã đảo</span>
+      : /^PXK\d+$/.test(r.ref_code || "") && !String(r.note || "").startsWith("Giao hàng")
+      ? <button onClick={() => reverse(r.ref_code)} className="text-xs text-rose-600 hover:underline">Đảo phiếu</button> : null }] : []),
   ];
 
   return (

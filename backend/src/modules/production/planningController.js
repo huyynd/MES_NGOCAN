@@ -1,5 +1,6 @@
 // backend/controllers/planningController.js
 const db = require('../../core/db');
+const { stockAvailability } = require('../../core/lib/availability');
 
 /**
  * GET /api/planning/groups
@@ -271,8 +272,9 @@ exports.materialRequirements = async (req, res) => {
     }
 
     // 4) Tồn kho hiện có theo NVL
-    const stock = (await db.query(`SELECT product_id, SUM(quantity)::numeric AS qty FROM inventory_stock GROUP BY product_id`)).rows;
-    const onHand = new Map(stock.map(s => [s.product_id, Number(s.qty)]));
+    // Dùng số KHẢ DỤNG (trừ phiếu chờ + hàng ở kho không xuất được), không phải tồn gộp
+    const avail = await stockAvailability(db, lines.map((l) => l.material_id));
+    const onHand = new Map([...avail].map(([id, a]) => [id, a.available]));
 
     // 5) Cộng dồn nhu cầu
     const req_map = new Map(); // material_id -> {..., required}
@@ -287,7 +289,7 @@ exports.materialRequirements = async (req, res) => {
           req_map.set(l.material_id, {
             material_id: l.material_id, material_code: l.material_code, material_name: l.material_name,
             unit: l.unit || l.material_unit, required_qty: 0,
-            on_hand_qty: onHand.get(l.material_id) || 0,
+            on_hand_qty: onHand.get(String(l.material_id)) || 0,
           });
         }
         req_map.get(l.material_id).required_qty += need;

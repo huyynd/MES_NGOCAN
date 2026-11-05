@@ -14,6 +14,7 @@ router.delete('/inventory/stock/:id', requirePerm('inv_adjust:create'), inventor
 
 // Phiếu xuất kho
 router.post('/outbound-slips', requirePerm('inv_outbound:create'), inventory.createOutboundSlip);
+router.post('/outbound-slips/reverse', inventory.reverseOutboundSlip); // Admin kiểm trong controller
 router.get('/outbound-slips', inventory.listOutboundSlips);
 router.get('/outbound-slips/:id', inventory.getOutboundSlip);
 router.post('/outbound-slips/:id/confirm', requirePerm('inv_outbound:confirm'), inventory.confirmOutboundSlip);

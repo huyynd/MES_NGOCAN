@@ -88,9 +88,11 @@ function TreeTab({ lookups }) {
       if (!P.groups.has(gkey)) P.groups.set(gkey, { spec_key: gkey, specs: r.specs || {}, total: 0, lots: [] });
       const G = P.groups.get(gkey);
       G.total += Number(r.quantity) || 0;
+      G.available = (G.available || 0) + (Number(r.available) || 0);
       G.lots.push({
         id: r.id, lot_code: r.lot_order_code || r.lot_code || '', quantity: Number(r.quantity) || 0,
         unit: r.unit, warehouse_name: r.warehouse_name, zone_name: r.zone_name, location_name: r.location_name,
+        pending: Number(r.pending) || 0, blocked: Number(r.blocked) || 0, available: Number(r.available) || 0,
         expiry_date: r.expiry_date, prod_order_id: r.prod_order_id,
       });
     }
@@ -150,7 +152,8 @@ function TreeTab({ lookups }) {
       P.total += Number(r.quantity) || 0;
       P.lots.push({
         id: r.id, lot_code: r.lot_order_code || r.lot_code || '', quantity: Number(r.quantity) || 0,
-        unit: r.unit, expiry_date: r.expiry_date
+        unit: r.unit, expiry_date: r.expiry_date,
+        pending: Number(r.pending) || 0, blocked: Number(r.blocked) || 0, available: Number(r.available) || 0,
       });
     }
 
@@ -192,7 +195,7 @@ function TreeTab({ lookups }) {
         <div className="grid grid-cols-12 px-4 py-2.5 bg-slate-50 text-slate-500 text-xs uppercase tracking-wide font-semibold border-b border-slate-100">
           <div className="col-span-7">Sản phẩm / Nhóm thông số / Lô</div>
           <div className="col-span-3">Kho · Khu · Vị trí</div>
-          <div className="col-span-2 text-right">Tồn</div>
+          <div className="col-span-2 text-right">Tồn · Khả dụng</div>
         </div>
         {tree.map(p => {
           const pOpen = openState.has("P" + p.product_id);
@@ -236,7 +239,7 @@ function TreeTab({ lookups }) {
                         <span className="text-xs text-slate-400 shrink-0">· {g.lots.length} lô</span>
                       </div>
                       <div className="col-span-3 text-slate-400 text-sm">—</div>
-                      <div className="col-span-2 text-right font-semibold text-slate-700">{fmt(g.total)} <span className="text-xs font-normal text-slate-400">{p.unit}</span></div>
+                      <div className="col-span-2 text-right font-semibold text-slate-700">{fmt(g.total)} <span className="text-xs font-normal text-slate-400">{p.unit}</span>{g.available < g.total - 1e-6 && g.total > 0 && <span className="block text-[11px] font-medium text-emerald-700">khả dụng {fmt(g.available)}</span>}</div>
                     </button>
                     {gOpen && g.lots.map(lot => (
                       <div key={lot.id} className="grid grid-cols-12 px-4 py-2 items-center border-t border-slate-100 text-sm">
@@ -248,7 +251,7 @@ function TreeTab({ lookups }) {
                         <div className="col-span-3 text-slate-500">
                           {lot.warehouse_name ? `${lot.warehouse_name}${lot.zone_name ? " · " + lot.zone_name : ""}${lot.location_name ? " · " + lot.location_name : ""}` : "(chưa xác định)"}
                         </div>
-                        <div className={`col-span-2 text-right font-medium ${Number(lot.quantity) < 0 ? "text-rose-600" : "text-slate-700"}`}>{fmt(lot.quantity)} <span className="text-xs font-normal text-slate-400">{lot.unit || p.unit}</span></div>
+                        <div className={`col-span-2 text-right font-medium ${Number(lot.quantity) < 0 ? "text-rose-600" : "text-slate-700"}`}>{fmt(lot.quantity)} <span className="text-xs font-normal text-slate-400">{lot.unit || p.unit}</span><HoldNote lot={lot} /></div>
                       </div>
                     ))}
                   </div>
@@ -324,7 +327,9 @@ function TreeTab({ lookups }) {
                                 <div className="col-span-3 text-slate-500">
                                   {p.lots.length > 1 ? `${p.lots.length} lô` : (p.lots[0]?.lot_code || "(không lô)")}
                                 </div>
-                                <div className="col-span-2 text-right font-medium text-slate-700">{fmt(p.total)} <span className="text-xs font-normal text-slate-400">{p.unit}</span></div>
+                                <div className="col-span-2 text-right font-medium text-slate-700">{fmt(p.total)} <span className="text-xs font-normal text-slate-400">{p.unit}</span>
+                                  <HoldNote lot={{ pending: p.lots.reduce((s, x) => s + x.pending, 0), blocked: p.lots.reduce((s, x) => s + x.blocked, 0), available: p.lots.reduce((s, x) => s + x.available, 0) }} />
+                                </div>
                               </div>
                             );
                           })}
@@ -435,6 +440,18 @@ function TransactionsTab() {
 }
 
 /* ---- Hub Kho ---- */
+// Dòng tồn có phần đang giữ → hiện rõ giữ cho gì và còn khả dụng bao nhiêu; không giữ thì tồn = khả dụng, khỏi hiện thêm
+function HoldNote({ lot }) {
+  if (!(lot.pending > 0 || lot.blocked > 0)) return null;
+  return (
+    <span className="block text-[11px] font-normal text-slate-500">
+      {lot.pending > 0 && <>phiếu chờ {fmt(lot.pending)} · </>}
+      {lot.blocked > 0 && <>kho không xuất được {fmt(lot.blocked)} · </>}
+      <span className="font-medium text-emerald-700">khả dụng {fmt(lot.available)}</span>
+    </span>
+  );
+}
+
 export default function InventoryModule({ lookups }) {
   const [tab, setTab] = useRemembered("inv:tab", "stock");
   const tabs = [

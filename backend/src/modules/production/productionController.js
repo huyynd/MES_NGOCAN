@@ -6,6 +6,8 @@ const { guardDelete } = require('../../core/lib/deleteGuard');
 const { getDataScope } = require('../../core/dataScope');
 const { applyStock, stockErrorResponse, whOutboundOkSql, whInboundOkSql } = require('../../core/lib/stock');
 const { nextSlipCode } = require('../../core/lib/codes');
+const { stockAvailability, assertAvailable } = require('../../core/lib/availability');
+const { orderSources, remaining, netByProduct, postReturn, materialNeeds, syncPendingSlip } = require('../../core/lib/materialReturns');
 
 // Công đoạn cuối của 1 lệnh: 'Cắt' nếu có task Cắt, ngược lại 'Thổi'
 // Thành phẩm (bao bì) luôn tính theo Cắt, kể cả khi chưa có dòng Cắt — khớp finalStageOf() (cần alias p = products).
@@ -105,7 +107,7 @@ const PO_TRANSITIONS = {
   'Đã lên kế hoạch':     ['Chờ duyệt', 'Chờ nguyên vật liệu', 'Đang sản xuất', 'Hoàn thành', 'Đã hủy'],
   'Chờ nguyên vật liệu': ['Chờ duyệt', 'Đã lên kế hoạch', 'Đang sản xuất', 'Hoàn thành', 'Đã hủy'],
   'Đang sản xuất':       ['Chờ duyệt', 'Đã lên kế hoạch', 'Chờ nguyên vật liệu', 'Hoàn thành', 'Đã hủy'],
-  'Hoàn thành':          ['Đang sản xuất', 'Đã hủy'],
+  'Hoàn thành':          ['Đang sản xuất'], // Hoàn thành không hủy được
   'Đã hủy':              [],
 };
 // Trạng thái "chưa sản xuất / huỷ": lệnh đã có sản lượng nhập kho không được chuyển về (sẽ treo tồn đã nhập).
@@ -116,6 +118,17 @@ async function hasPostedStock(conn, poId) {
   const r = await conn.query(
     `SELECT COALESCE(SUM(posted_qty), 0) AS s FROM production_tasks WHERE production_order_id = $1`, [poId]);
   return Number(r.rows[0].s) > 0;
+}
+
+// Hủy lệnh: hủy phiếu NVL còn Chờ xuất; phần NVL đã xuất chưa trả nhập lại kho dưới 1 mã phiếu trả TNVL….
+// Gọi trong transaction, đã khóa phiếu rồi đến lệnh. Trả về mã phiếu trả, hoặc null nếu không có gì để trả.
+async function returnMaterialsOnCancel(client, poId, orderCode) {
+  await client.query(`UPDATE outbound_slips SET status = 'Đã hủy' WHERE prod_order_id = $1 AND status = 'Chờ xuất'`, [poId]);
+  const picks = (await orderSources(client, poId)).filter((r) => remaining(r) > 1e-6)
+    .map((source) => ({ source, quantity: remaining(source) }));
+  const code = picks.length ? await postReturn(client, { orderId: poId, reason: `Trả NVL do hủy LSX ${orderCode}`, picks }) : null;
+  await client.query(`UPDATE production_orders SET materials_issued = FALSE WHERE id = $1`, [poId]);
+  return code;
 }
 
 // ===== GHI KHO THEO SỰ KIỆN (thiết kế cuộn BTP — xem docs/ai/plans/2026-10-08-thiet-ke-cuon-btp.md) =====
@@ -211,7 +224,7 @@ async function postTaskStock(client, po, task, finishLots = []) {
     if (!btpLoc) throw new Error('Chưa có kho Bán thành phẩm (BTP) để trừ cuộn — vui lòng tạo kho trước.');
     const rollId = await resolveCutRollProduct(client, po); // cuộn cần trừ = SP đầu ra của dòng Thổi trong lệnh
     const cutOutput = task.output_product_id || po.product_id; // bao bì đầu ra (ô chọn; mặc định = SP lệnh)
-    if (upUnit(po.unit) !== 'Kg') throw new Error(`Đơn vị sản phẩm "${po.product_code}" là "${po.unit}" — công đoạn Cắt chỉ hỗ trợ đơn vị kg.`);
+    if (upUnit(po.unit) !== 'KG') throw new Error(`Đơn vị sản phẩm "${po.product_code}" là "${po.unit}" — công đoạn Cắt chỉ hỗ trợ đơn vị kg.`);
 
     const specKey = buildSpecKey(specs);
     // Các lô cuộn khả dụng ở BTP, khớp 100% thông số; ưu tiên lô của chính lệnh rồi FIFO. Khóa để chống cắt song song.
@@ -583,13 +596,36 @@ exports.update = async (req, res) => {
       cols.push(`group_key = $${i++}`); vals.push([b.product_id || '', buildSpecKey(specs)].join('||'));
     }
     if (!cols.length) return res.status(400).json({ message: 'Không có trường để cập nhật' });
-    const { rows } = await db.query(
-      `UPDATE production_orders SET ${cols.join(', ')} WHERE id = $${i} AND is_deleted = FALSE RETURNING *`,
-      [...vals, req.params.id]);
+    const updateSql = `UPDATE production_orders SET ${cols.join(', ')} WHERE id = $${i} AND is_deleted = FALSE RETURNING *`;
+    const updateVals = [...vals, req.params.id];
+    let rows, materialReturn = null;
+    if (b.status === 'Đã hủy') {
+      // Hủy + trả NVL trong 1 transaction. Khóa phiếu rồi đến lệnh (cùng thứ tự với xác nhận phiếu), kiểm lại điều kiện.
+      const client = await db.pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query(`SELECT 1 FROM outbound_slips WHERE prod_order_id = $1 ORDER BY id FOR UPDATE`, [req.params.id]);
+        const po = (await client.query(
+          `SELECT order_code, status FROM production_orders WHERE id = $1 AND is_deleted = FALSE FOR UPDATE`, [req.params.id])).rows[0];
+        const blocked = !po ? [404, 'Không tìm thấy lệnh sản xuất']
+          : po.status === 'Hoàn thành' ? [400, 'Lệnh đã Hoàn thành — không hủy được.']
+          : await hasPostedStock(client, req.params.id) ? [400, 'Lệnh đã có sản lượng nhập kho — không hủy được. Hãy đưa SL thực các lần về 0 (kho tự trừ lại) trước.'] : null;
+        if (blocked) { await client.query('ROLLBACK'); return res.status(blocked[0]).json({ message: blocked[1] }); }
+        if (po.status !== 'Đã hủy') materialReturn = await returnMaterialsOnCancel(client, req.params.id, po.order_code);
+        rows = (await client.query(updateSql, updateVals)).rows;
+        await client.query('COMMIT');
+      } catch (err) {
+        await client.query('ROLLBACK');
+        if (stockErrorResponse(res, err)) return;
+        throw err;
+      } finally { client.release(); }
+    } else {
+      rows = (await db.query(updateSql, updateVals)).rows;
+    }
     if (!rows.length) return res.status(404).json({ message: 'Không tìm thấy lệnh sản xuất' });
     // Hủy lệnh hoặc đổi SL → tính lại planned_qty của dòng đơn gắn với lệnh
     await recomputePlannedQty(db, rows[0].sales_order_item_id);
-    res.json(rows[0]);
+    res.json({ ...rows[0], material_return_code: materialReturn });
   } catch (err) { console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi cập nhật' }); }
 };
 
@@ -698,6 +734,10 @@ exports.remove = async (req, res) => {
     // M04: lệnh đã có sản lượng nhập kho thì không xoá (dù đang ở trạng thái nào) — tồn đã nhập sẽ mồ côi.
     if (await hasPostedStock(db, req.params.id)) {
       return res.status(400).json({ message: 'Lệnh đã có sản lượng nhập kho — không xoá được. Hãy đưa SL thực các lần về 0 (kho tự trừ lại) trước.' });
+    }
+    // Đã yêu cầu / xuất NVL: phải Hủy lệnh trước để hệ thống xử lý phiếu và trả NVL (xóa thẳng sẽ mất NVL)
+    if ((await db.query(`SELECT 1 FROM production_orders WHERE id = $1 AND materials_issued`, [req.params.id])).rowCount) {
+      return res.status(400).json({ message: 'Lệnh đã yêu cầu / xuất NVL — vui lòng Hủy lệnh trước (hệ thống tự trả NVL), rồi mới xóa.' });
     }
     const g = await guardDelete('production_orders', req.params.id, {
       allow: ['Đã hủy', 'Chờ duyệt'],
@@ -826,14 +866,15 @@ exports.getMaterials = async (req, res) => {
       const bl = (await db.query(
         `SELECT bl.material_id, bl.quantity, bl.unit, p.product_code, p.product_name
          FROM bom_lines bl JOIN products p ON p.id = bl.material_id WHERE bl.bom_id = $1 ORDER BY bl.line_no`, [bom.id])).rows;
+      const avail = await stockAvailability(db, bl.map((l) => l.material_id));
       lines = await Promise.all(bl.map(async (l) => {
-        const oh = (await db.query(`SELECT COALESCE(SUM(quantity),0)::numeric AS q FROM inventory_stock WHERE product_id = $1`, [l.material_id])).rows[0].q;
+        const a = avail.get(String(l.material_id));
         const suggested = Number(l.quantity) * factor;
         const recorded = Object.prototype.hasOwnProperty.call(usage, l.material_id);
         return {
           material_id: l.material_id, material_code: l.product_code, material_name: l.product_name,
           unit: l.unit, suggested_qty: suggested, used_qty: recorded ? usage[l.material_id] : suggested,
-          on_hand: Number(oh), recorded,
+          on_hand: a.on_hand, held: a.held, available: a.available, recorded,
         };
       }));
     }
@@ -881,8 +922,7 @@ exports.getPlannedMaterials = async (req, res) => {
     if (!po) return res.status(404).json({ message: 'Không tìm thấy lệnh sản xuất' });
     const { rows } = await db.query(`
       SELECT pm.material_id, pm.qty, pm.unit, pm.note,
-             p.product_code AS material_code, p.product_name AS material_name,
-             COALESCE((SELECT SUM(quantity) FROM inventory_stock s WHERE s.product_id = pm.material_id), 0) AS on_hand
+             p.product_code AS material_code, p.product_name AS material_name
       FROM production_order_materials pm
       JOIN products p ON p.id = pm.material_id
       WHERE pm.production_order_id = $1
@@ -890,8 +930,16 @@ exports.getPlannedMaterials = async (req, res) => {
     // Phiếu xuất kho mới nhất (chưa hủy) của lệnh → để hiển thị trạng thái Chờ xuất / Đã xuất
     const slip = (await db.query(
       `SELECT id, slip_code, status FROM outbound_slips
-       WHERE prod_order_id = $1 AND status <> 'Đã hủy' ORDER BY created_at DESC LIMIT 1`, [poId])).rows[0] || null;
-    res.json({ data: { materials_issued: po.materials_issued, slip, lines: rows } });
+       WHERE prod_order_id = $1 AND status IN ('Chờ xuất', 'Đã xuất') ORDER BY created_at DESC LIMIT 1`, [poId])).rows[0] || null;
+    const sources = await orderSources(db, poId);
+    const net = netByProduct(sources);
+    const avail = await stockAvailability(db, rows.map((r) => r.material_id));
+    // Phần phiếu chờ của CHÍNH lệnh này: đã nằm trong "Đang giữ", không tính là thiếu lần nữa
+    const own = new Map((await db.query(
+      `SELECT sl.product_id, SUM(sl.quantity) AS qty FROM outbound_slip_lines sl JOIN outbound_slips os ON os.id = sl.slip_id
+        WHERE os.prod_order_id = $1 AND os.status = 'Chờ xuất' GROUP BY sl.product_id`, [poId])).rows.map((r) => [r.product_id, Number(r.qty)]));
+    const lines = rows.map((r) => ({ ...r, ...avail.get(String(r.material_id)), issued_qty: net.get(r.material_id) || 0, own_pending: own.get(r.material_id) || 0 }));
+    res.json({ data: { materials_issued: po.materials_issued, slip, lines, can_return: sources.some((r) => remaining(r) > 1e-6) } });
   } catch (err) { console.error(err); res.status(500).json({ message: 'Lỗi khi lấy NVL cần cung cấp' }); }
 };
 
@@ -901,10 +949,13 @@ exports.savePlannedMaterials = async (req, res) => {
   try {
     const poId = req.params.id;
     const lines = (Array.isArray(req.body.lines) ? req.body.lines : []).filter((l) => l && l.material_id);
-    const po = (await client.query(`SELECT materials_issued FROM production_orders WHERE id = $1`, [poId])).rows[0];
-    if (!po) return res.status(404).json({ message: 'Không tìm thấy lệnh sản xuất' });
-    if (po.materials_issued) return res.status(400).json({ message: 'NVL đã được yêu cầu (xuất kho) — không sửa được danh sách cần cung cấp nữa.' });
+    if (new Set(lines.map((l) => l.material_id)).size < lines.length) return res.status(400).json({ message: 'Danh sách có NVL bị trùng — mỗi NVL chỉ nhập 1 dòng.' });
     await client.query('BEGIN');
+    // Khóa phiếu rồi đến lệnh (cùng thứ tự với xác nhận phiếu): phiếu đang xác nhận thì chờ xong mới tính phần thiếu
+    await client.query(`SELECT 1 FROM outbound_slips WHERE prod_order_id = $1 ORDER BY id FOR UPDATE`, [poId]);
+    const po = (await client.query(`SELECT status FROM production_orders WHERE id = $1 FOR UPDATE`, [poId])).rows[0];
+    if (!po) { await client.query('ROLLBACK'); return res.status(404).json({ message: 'Không tìm thấy lệnh sản xuất' }); }
+    if (po.status === 'Đã hủy') { await client.query('ROLLBACK'); return res.status(400).json({ message: 'Lệnh đã Hủy — không sửa được NVL.' }); }
     await client.query(`DELETE FROM production_order_materials WHERE production_order_id = $1`, [poId]);
     for (const l of lines) {
       await client.query(
@@ -912,13 +963,14 @@ exports.savePlannedMaterials = async (req, res) => {
          VALUES ($1,$2,$3,$4,$5)`,
         [poId, l.material_id, Number(l.qty) || 0, upUnit(l.unit), l.note || null]);
     }
+    await syncPendingSlip(client, poId); // phiếu Chờ xuất của lệnh cập nhật đè theo danh sách mới
     await client.query('COMMIT');
     res.json({ message: 'Đã lưu NVL cần cung cấp', count: lines.length });
-  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi lưu NVL cần cung cấp' }); }
+  } catch (err) { await client.query('ROLLBACK'); console.error(err); if (stockErrorResponse(res, err)) return; res.status(500).json({ message: err.detail || 'Lỗi khi lưu NVL cần cung cấp' }); }
   finally { client.release(); }
 };
 
-// POST /api/production-orders/:id/request-materials — YÊU CẦU NVL: tạo PHIẾU XUẤT KHO "Đã xuất" (trừ kho trực tiếp)
+// POST /api/production-orders/:id/request-materials — YÊU CẦU NVL: tạo PHIẾU "Chờ xuất" cho phần còn thiếu (lần đầu hoặc bổ sung)
 exports.requestMaterials = async (req, res) => {
   const client = await db.pool.connect();
   try {
@@ -932,26 +984,28 @@ exports.requestMaterials = async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(400).json({ message: `Lệnh sản xuất đang "${po.status}" — không yêu cầu xuất NVL được.` });
     }
-    if (po.materials_issued) { await client.query('ROLLBACK'); return res.status(400).json({ message: 'Lệnh này đã xuất NVL rồi.' }); }
+    const pending = (await client.query(`SELECT slip_code FROM outbound_slips WHERE prod_order_id = $1 AND status = 'Chờ xuất' LIMIT 1`, [poId])).rows[0];
+    if (pending) { await client.query('ROLLBACK'); return res.status(400).json({ message: `Lệnh đang có phiếu ${pending.slip_code} chờ xuất — hãy sửa danh sách NVL, phiếu sẽ tự cập nhật.` }); }
 
     // Lưu danh sách gửi kèm (nếu có) trước khi tạo phiếu
     if (Array.isArray(req.body.lines)) {
       const lines = req.body.lines.filter((l) => l && l.material_id);
+      if (new Set(lines.map((l) => l.material_id)).size < lines.length) { await client.query('ROLLBACK'); return res.status(400).json({ message: 'Danh sách có NVL bị trùng — mỗi NVL chỉ nhập 1 dòng.' }); }
       await client.query(`DELETE FROM production_order_materials WHERE production_order_id = $1`, [poId]);
       for (const l of lines) await client.query(
         `INSERT INTO production_order_materials (production_order_id, material_id, qty, unit, note) VALUES ($1,$2,$3,$4,$5)`,
         [poId, l.material_id, Number(l.qty) || 0, upUnit(l.unit), l.note || null]);
     }
 
-    const plan = (await client.query(
-      `SELECT material_id, qty, unit, note FROM production_order_materials WHERE production_order_id = $1 AND qty > 0`, [poId])).rows;
-    if (!plan.length) { await client.query('ROLLBACK'); return res.status(400).json({ message: 'Chưa có NVL cần cung cấp để yêu cầu. Hãy thêm NVL trước.' }); }
+    const plan = await materialNeeds(client, poId);
+    if (!plan.length) { await client.query('ROLLBACK'); return res.status(400).json({ message: 'NVL đã xuất đủ theo danh sách (hoặc chưa có NVL) — không có gì để yêu cầu thêm.' }); }
 
     const nvlLoc = (await client.query(
       `SELECT l.id FROM locations l JOIN warehouses w ON w.id = l.warehouse_id
        WHERE w.warehouse_type = 'NVL' AND l.is_deleted = FALSE AND w.is_deleted = FALSE
        ORDER BY ${whOutboundOkSql('w', 'l')} DESC, l.created_at LIMIT 1`)).rows[0]?.id || null;
     if (!nvlLoc) { await client.query('ROLLBACK'); return res.status(400).json({ message: 'Hệ thống chưa có Kho Nguyên vật liệu.' }); }
+    await assertAvailable(client, plan.map((l) => ({ product_id: l.material_id, qty: l.need, location_id: nvlLoc })));
 
     // Sinh mã phiếu PXK00001… (D1: khóa theo bảng — tạo đồng thời không trùng mã)
     const slipCode = await nextSlipCode(client);
@@ -966,14 +1020,73 @@ exports.requestMaterials = async (req, res) => {
     // Ghi dòng phiếu theo SL YÊU CẦU (lúc xác nhận sẽ FIFO + trừ kho)
     for (const l of plan) await client.query(
       `INSERT INTO outbound_slip_lines (slip_id, product_id, quantity, unit, lot_code, note) VALUES ($1,$2,$3,$4,'',$5)`,
-      [slip.id, l.material_id, Number(l.qty), upUnit(l.unit), l.note || null]);
+      [slip.id, l.material_id, l.need, upUnit(l.unit), l.note || null]);
 
-    // Khóa danh sách NVL của lệnh (đã gửi yêu cầu). Hủy phiếu sẽ mở khóa lại.
+    // Đánh dấu lệnh đã có phiếu NVL
     await client.query(`UPDATE production_orders SET materials_issued = TRUE WHERE id = $1`, [poId]);
     await client.query('COMMIT');
     res.json({ message: `Đã tạo phiếu xuất kho ${slip.slip_code} (Chờ xuất). Vào Kho → Xuất kho để xác nhận trừ tồn.`, slip_code: slip.slip_code, slip_id: slip.id, count: plan.length });
-  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi yêu cầu NVL' }); }
+  } catch (err) { await client.query('ROLLBACK'); console.error(err); if (stockErrorResponse(res, err)) return; res.status(500).json({ message: err.detail || 'Lỗi khi yêu cầu NVL' }); }
   finally { client.release(); }
+};
+
+// GET /api/production-orders/:id/material-returns — phần NVL đã xuất còn trả được + các phiếu trả đã lập
+exports.materialReturns = async (req, res) => {
+  try {
+    const lines = await orderSources(db, req.params.id);
+    const returns = (await db.query(
+      `SELECT r.return_code, r.reason, r.note, r.created_by_name, r.created_at, COALESCE(SUM(i.quantity), 0) AS total_qty
+         FROM material_returns r LEFT JOIN material_return_items i ON i.return_id = r.id
+        WHERE r.production_order_id = $1 GROUP BY r.id ORDER BY r.created_at DESC`, [req.params.id])).rows;
+    res.json({ data: { lines, returns } });
+  } catch (err) { console.error(err); res.status(500).json({ message: 'Lỗi khi lấy dữ liệu trả NVL' }); }
+};
+
+// POST /api/production-orders/:id/material-returns  body { note, items: [{ trx_id, quantity }] } — trả NVL thừa về kho
+exports.createMaterialReturn = async (req, res) => {
+  const client = await db.pool.connect();
+  try {
+    const poId = req.params.id;
+    const items = (Array.isArray(req.body?.items) ? req.body.items : []).filter((x) => x && Number(x.quantity) > 0);
+    if (!items.length) return res.status(400).json({ message: 'Nhập số lượng trả cho ít nhất 1 dòng.' });
+    await client.query('BEGIN');
+    await client.query(`SELECT 1 FROM outbound_slips WHERE prod_order_id = $1 ORDER BY id FOR UPDATE`, [poId]);
+    const po = (await client.query(`SELECT order_code, status FROM production_orders WHERE id = $1 AND is_deleted = FALSE FOR UPDATE`, [poId])).rows[0];
+    if (!po) { await client.query('ROLLBACK'); return res.status(404).json({ message: 'Không tìm thấy lệnh sản xuất' }); }
+    if (po.status === 'Đã hủy') { await client.query('ROLLBACK'); return res.status(400).json({ message: 'Lệnh đã Hủy — NVL đã được trả khi hủy lệnh.' }); }
+    const sources = await orderSources(client, poId);
+    const byId = new Map(sources.map((r) => [r.trx_id, r]));
+    const picks = [];
+    for (const it of items) {
+      const source = byId.get(it.trx_id);
+      if (!source) { await client.query('ROLLBACK'); return res.status(400).json({ message: 'Dòng trả không thuộc lệnh này — vui lòng tải lại.' }); }
+      const quantity = Number(it.quantity);
+      if (!Number.isFinite(quantity) || quantity > remaining(source) + 1e-6) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ message: `${source.product_code} ${source.product_name}: chỉ còn trả được ${remaining(source).toLocaleString('vi-VN')}.` });
+      }
+      picks.push({ source, quantity });
+    }
+    // Giảm danh sách cần phần vượt quá chênh lệch sẵn có — nếu không, phần vừa trả sẽ bị tính là "còn thiếu"
+    const net = netByProduct(sources);
+    const returned = new Map();
+    for (const p of picks) returned.set(p.source.product_id, (returned.get(p.source.product_id) || 0) + p.quantity);
+    for (const [pid, r] of returned) {
+      const plan = (await client.query(`SELECT id, qty FROM production_order_materials WHERE production_order_id = $1 AND material_id = $2 ORDER BY created_at LIMIT 1`, [poId, pid])).rows[0];
+      if (!plan) continue;
+      const excess = Math.max((net.get(pid) || 0) - Number(plan.qty), 0);
+      const cut = Math.max(r - excess, 0);
+      if (cut > 0) await client.query(`UPDATE production_order_materials SET qty = GREATEST(qty - $2::numeric, 0) WHERE id = $1`, [plan.id, cut]);
+    }
+    const code = await postReturn(client, { orderId: poId, reason: `Trả NVL thừa LSX ${po.order_code}`, note: req.body.note || null, picks });
+    await syncPendingSlip(client, poId);
+    await client.query('COMMIT');
+    res.status(201).json({ message: `Đã lập phiếu ${code} và nhập NVL về kho.`, return_code: code });
+  } catch (err) {
+    await client.query('ROLLBACK'); console.error(err);
+    if (stockErrorResponse(res, err)) return;
+    res.status(500).json({ message: err.detail || 'Lỗi khi trả NVL' });
+  } finally { client.release(); }
 };
 
 // PUT /api/production/tasks/:taskId — cập nhật 1 lô (trạng thái/sản lượng thực/phế) + tính lại lệnh

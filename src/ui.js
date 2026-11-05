@@ -51,7 +51,7 @@ export const fmtDateTime = (d) => {
 };
 
 // Danh mục đơn vị tính dùng chung (chọn từ dropdown, không nhập tự do)
-export const UNITS = ["Kg", "Cái", "Chiếc", "Dem", "Gram", "Cuộn", "Thùng", "Cm"];
+export const UNITS = ["KG", "CÁI", "CHIẾC", "DEM", "GRAM", "CUỘN", "THÙNG"]; // không có CM: cm chỉ là kích thước của cuộn
 
 // Badge trạng thái dùng chung — 5 màu theo NGHĨA (chủ dự án chốt 2026-10-21). Trạng thái mới → xếp vào 1 trong 5 nhóm.
 const BADGE = {

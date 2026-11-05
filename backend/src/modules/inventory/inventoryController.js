@@ -4,7 +4,9 @@ const { buildSpecKey, legacyAttrs, specsFromBody, specKeyValues } = require('../
 const { upUnit } = require('../../core/lib/units');
 const { getDataScope } = require('../../core/dataScope');
 const { applyStock, stockErrorResponse } = require('../../core/lib/stock');
-const { nextSlipCode } = require('../../core/lib/codes');
+const { nextCode, nextSlipCode } = require('../../core/lib/codes');
+const { stockAvailabilityRows, lockProducts, assertAvailable } = require('../../core/lib/availability');
+const { slipSources, remaining, postReturn, refreshIssuedFlag } = require('../../core/lib/materialReturns');
 
 // A5: tồn của SP / kho / vị trí ĐÃ XÓA không hiển thị, không tính tổng (dữ liệu cũ vẫn giữ trong DB).
 // Dòng tồn cũ không có vị trí (location_id NULL) của SP còn hoạt động vẫn hiện.
@@ -67,6 +69,22 @@ async function resolveOutSpec(client, { product_id, location_id, lot_code, spec_
   }
   return { spec_key: buildSpecKey({}), specs: {} };
 }
+// Xuất tay phải chọn đúng lô: vị trí có từ 2 lô trở lên mà không chọn → báo lỗi (muốn đủ số lượng thì lập nhiều dòng, mỗi dòng 1 lô).
+// Chỉ có 1 lô → tự nhận lô đó. Có hàng "không lô" thì để trống nghĩa là lấy phần đó. Trả về mã lô dùng để trừ.
+async function resolveOutLot(client, { product_id, location_id, spec_key, lot_code }) {
+  if (lot_code) return lot_code;
+  const { rows } = await client.query(
+    `SELECT lot_code, SUM(quantity) AS qty FROM inventory_stock
+      WHERE product_id = $1 AND location_id = $2 AND quantity > 0 AND ($3::text IS NULL OR spec_key = $3)
+      GROUP BY lot_code ORDER BY lot_code`, [product_id, location_id, spec_key || null]);
+  if (rows.some((r) => r.lot_code === '')) return '';
+  if (rows.length === 1) return rows[0].lot_code;
+  if (rows.length > 1) {
+    const p = (await client.query(`SELECT product_code, product_name FROM products WHERE id = $1`, [product_id])).rows[0] || {};
+    throw new SpecChoiceError(`${p.product_code || ''} ${p.product_name || ''}: vị trí này có nhiều lô (${rows.map((r) => `${r.lot_code}: ${Number(r.qty).toLocaleString('vi-VN')}`).join('; ')}) — vui lòng chọn lô. Cần nhiều lô thì thêm dòng cho từng lô.`);
+  }
+  return '';
+}
 const specLabel = (k) => (specKeyValues(k).join(' · ') || 'không thông số');
 function specErrorResponse(res, err) {
   if (err && err.code === 'SPEC_CHOICE') { res.status(400).json({ message: err.message, code: err.code }); return true; }
@@ -100,7 +118,11 @@ exports.tree = async (req, res) => {
       ${whereSql}
       ORDER BY p.product_code, s.spec_key, s.lot_code`, params);
 
-    res.json({ data: rows });
+    const avail = new Map((await stockAvailabilityRows(db, rows.map((r) => r.product_id))).map((a) => [a.id, a]));
+    res.json({ data: rows.map((r) => {
+      const a = avail.get(r.id);
+      return { ...r, pending: a?.pending || 0, blocked: a?.blocked || 0, available: a?.available || 0 };
+    }) });
   } catch (err) { console.error(err); res.status(500).json({ message: 'Lỗi khi lấy dữ liệu tồn kho' }); }
 };
 
@@ -210,7 +232,7 @@ exports.addStockLine = async (req, res) => {
          expiry_date  = CASE WHEN $1 THEN $2::date ELSE expiry_date END,
          counted_qty  = CASE WHEN $3 THEN $4::numeric ELSE counted_qty END,
          counted_date = CASE WHEN $5 THEN $6::date ELSE counted_date END,
-         unit=COALESCE($7,unit), updated_at=now()
+         unit=COALESCE(NULLIF(unit,''),$7), updated_at=now() -- K-15: giữ đơn vị dòng tồn đã có, chỉ điền khi trống
        WHERE product_id=$8 AND location_id IS NOT DISTINCT FROM $9 AND spec_key=$10 AND lot_code=$11`,
       [has('expiry_date'), b.expiry_date || null, has('counted_qty'), numOrNull(b.counted_qty),
        has('counted_date'), b.counted_date || null, upUnit(b.unit), b.product_id, loc, specKey, lot]);
@@ -228,8 +250,10 @@ exports.addStockLine = async (req, res) => {
 // Muốn bỏ hàng thì xuất / điều chỉnh về 0 (có ghi sổ) rồi mới xóa dòng.
 exports.deleteStockLine = async (req, res) => {
   try {
-    const cur = (await db.query(`SELECT quantity FROM inventory_stock WHERE id = $1`, [req.params.id])).rows[0];
+    const cur = (await db.query(`SELECT quantity, location_id FROM inventory_stock WHERE id = $1`, [req.params.id])).rows[0];
     if (!cur) return res.status(404).json({ message: 'Không tìm thấy dòng tồn' });
+    const denied = await writeDenied(db, req, cur.location_id, ['inv_adjust', 'inventory']); // K-25: đúng phạm vi kho được giao
+    if (denied) return res.status(403).json({ message: denied });
     if (Number(cur.quantity) !== 0) {
       return res.status(400).json({ message: `Dòng tồn còn ${Number(cur.quantity).toLocaleString('vi-VN')} — không xóa thẳng được (sổ cái sẽ lệch). Hãy xuất hoặc điều chỉnh về 0 trước rồi mới xóa.` });
     }
@@ -257,7 +281,7 @@ exports.transactions = async (req, res) => {
     const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
     const { rows } = await db.query(`
-      SELECT tr.*, p.product_name, p.product_code, p.unit AS unit, -- sổ cái không lưu ĐVT → lấy ĐVT sản phẩm
+      SELECT tr.*, p.product_name, p.product_code, COALESCE(tr.unit, p.unit) AS unit, -- ĐVT lúc giao dịch; dữ liệu cũ không có thì lấy ĐVT sản phẩm
              l.name AS location_name, w.name AS warehouse_name
       FROM inventory_transactions tr
       JOIN products p ON p.id = tr.product_id
@@ -339,6 +363,8 @@ exports.adjust = async (req, res) => {
       }
     }
 
+    if (trxType === 'Xuất') for (const l of lines) l.lot_code = await resolveOutLot(client, { product_id: l.product_id, location_id: locationId, spec_key: l.spec_key, lot_code: l.lot_code });
+    if (trxType === 'Xuất') await assertAvailable(client, lines.map((l) => ({ product_id: l.product_id, qty: Math.abs(Number(l.quantity)), location_id: locationId, spec_key: l.spec_key || null, lot_code: l.lot_code || '' })));
     for (const l of lines) {
       const qn = Number(l.quantity);
       const delta = trxType === 'Xuất' ? -Math.abs(qn) : qn;
@@ -385,6 +411,9 @@ exports.createOutboundSlip = async (req, res) => {
 
     await client.query('BEGIN');
 
+    for (const l of validLines) l.lot_code = await resolveOutLot(client, { product_id: l.product_id, location_id, spec_key: l.spec_key, lot_code: l.lot_code });
+    await assertAvailable(client, validLines.map((l) => ({ product_id: l.product_id, qty: l.quantity, location_id, spec_key: l.spec_key || null, lot_code: l.lot_code || '' })));
+
     // Sinh mã phiếu PXK00001… (D1: khóa theo bảng — tạo đồng thời không trùng mã)
     const slipCode = await nextSlipCode(client);
 
@@ -402,7 +431,7 @@ exports.createOutboundSlip = async (req, res) => {
 
     await client.query('COMMIT');
     res.json({ message: `Đã tạo phiếu chờ xuất kho ${slip.slip_code}.`, slip_code: slip.slip_code, slip_id: slip.id });
-  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi tạo phiếu xuất' }); }
+  } catch (err) { await client.query('ROLLBACK'); console.error(err); if (stockErrorResponse(res, err) || specErrorResponse(res, err)) return; res.status(500).json({ message: err.detail || 'Lỗi khi tạo phiếu xuất' }); }
   finally { client.release(); }
 };
 
@@ -469,6 +498,14 @@ exports.confirmOutboundSlip = async (req, res) => {
     const claim = await client.query(
       `UPDATE outbound_slips SET status = 'Đã xuất', confirmed_at = now() WHERE id = $1 AND status = 'Chờ xuất' RETURNING id`, [req.params.id]);
     if (!claim.rows.length) { await client.query('ROLLBACK'); return res.status(409).json({ message: 'Phiếu đã được xuất hoặc đang được xử lý — vui lòng tải lại.' }); }
+    // Phiếu NVL của lệnh SX: lệnh đã hủy / đã xóa thì không xuất nữa. FOR SHARE: chờ thao tác đang đổi trạng thái lệnh xong mới xét.
+    if (s.prod_order_id) {
+      const po = (await client.query(`SELECT order_code, status, is_deleted FROM production_orders WHERE id = $1 FOR SHARE`, [s.prod_order_id])).rows[0];
+      if (!po || po.is_deleted || po.status === 'Đã hủy') {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ message: `Lệnh sản xuất ${po?.order_code || ''} đã hủy hoặc đã xóa — không xuất NVL được. Vui lòng hủy phiếu ${s.slip_code}.` });
+      }
+    }
 
     // Gộp SL theo (sản phẩm, lô) TRƯỚC khi kiểm tồn — nhiều dòng cùng 1 SP không được kiểm độc lập
     // (vd 80 + 80 khi tồn 100 PHẢI báo thiếu). M50: dòng có ghi lô chỉ được trừ đúng lô đó.
@@ -486,14 +523,17 @@ exports.confirmOutboundSlip = async (req, res) => {
 
     // M50: khoá tồn tại vị trí xuất TRONG transaction (2 phiếu khác nhau cùng xác nhận không trừ quá tồn).
     // Khoá theo id cho thứ tự khoá cố định (tránh deadlock), rồi xếp FIFO: lô vào kho sớm nhất trước.
+    await lockProducts(client, productIds);
     const { rows: locked } = await client.query(
       `SELECT id, product_id, lot_code, quantity, unit, spec_key, specs, created_at
        FROM inventory_stock
        WHERE product_id = ANY($1::uuid[]) AND location_id = $2 AND quantity > 0
        ORDER BY id FOR UPDATE`,
       [productIds, s.location_id]);
+    // Phần phiếu chờ KHÁC đang giữ / kho không xuất được thì không lấy
+    const free = new Map((await stockAvailabilityRows(client, productIds, s.id)).map((a) => [a.id, a.available]));
     const fifo = locked
-      .map((r) => ({ ...r, left: Number(r.quantity) }))
+      .map((r) => ({ ...r, left: free.get(r.id) || 0 }))
       .sort((a, b) => (a.created_at - b.created_at) || String(a.lot_code).localeCompare(String(b.lot_code)) || String(a.id).localeCompare(String(b.id)));
 
     const shortages = [];
@@ -532,8 +572,8 @@ exports.confirmOutboundSlip = async (req, res) => {
 
     if (shortages.length) {
       await client.query('ROLLBACK');
-      const msg = 'Không đủ tồn kho tại vị trí xuất — vui lòng nhập/chuyển kho đến vị trí này trước:\n' +
-        shortages.map((x) => `• ${x.code} ${x.name}${x.lot_code ? ` (lô ${x.lot_code})` : ''}: tồn ${x.on_hand} ${x.unit}, cần ${x.need} ${x.unit} → thiếu ${x.buy} ${x.unit}`).join('\n');
+      const msg = 'Không đủ số lượng khả dụng tại vị trí xuất (đã trừ phần phiếu khác đang giữ):\n' +
+        shortages.map((x) => `• ${x.code} ${x.name}${x.lot_code ? ` (lô ${x.lot_code})` : ''}: khả dụng ${x.on_hand} ${x.unit}, cần ${x.need} ${x.unit} → thiếu ${x.buy} ${x.unit}`).join('\n');
       return res.status(400).json({ message: msg, shortages });
     }
 
@@ -562,12 +602,39 @@ exports.cancelOutboundSlip = async (req, res) => {
     const denied = await writeDenied(client, req, s.location_id, ['inv_outbound'], ['confirm']); // K-25
     if (denied) return res.status(403).json({ message: denied });
     await client.query('BEGIN');
-    await client.query(`UPDATE outbound_slips SET status = 'Đã hủy' WHERE id = $1`, [req.params.id]);
-    if (s.prod_order_id) await client.query(`UPDATE production_orders SET materials_issued = FALSE WHERE id = $1`, [s.prod_order_id]);
+    // Chỉ hủy khi vẫn Chờ xuất: xác nhận chạy song song thắng thì không được ghi đè thành Đã hủy (tồn đã trừ)
+    const hit = await client.query(`UPDATE outbound_slips SET status = 'Đã hủy' WHERE id = $1 AND status = 'Chờ xuất' RETURNING id`, [req.params.id]);
+    if (!hit.rows.length) { await client.query('ROLLBACK'); return res.status(409).json({ message: 'Phiếu vừa được xử lý — vui lòng tải lại.' }); }
+    if (s.prod_order_id) await refreshIssuedFlag(client, s.prod_order_id);
     await client.query('COMMIT');
     res.json({ message: `Đã hủy phiếu ${s.slip_code}.` });
   } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi hủy phiếu' }); }
   finally { client.release(); }
+};
+
+// POST /api/outbound-slips/reverse  body { slip_code } — ĐẢO phiếu đã xác nhận nhầm (Admin): nhập lại phần chưa trả
+// đúng lô / thông số, phiếu sang "Đã đảo". Phiếu giao hàng không đảo ở đây — dùng "Khách trả hàng".
+exports.reverseOutboundSlip = async (req, res) => {
+  const client = await db.pool.connect();
+  try {
+    if (!req.user?.is_admin) return res.status(403).json({ message: 'Chỉ Admin được đảo phiếu xuất.' });
+    await client.query('BEGIN');
+    const bail = async (code, message) => { await client.query('ROLLBACK'); return res.status(code).json({ message }); };
+    const s = (await client.query(`SELECT * FROM outbound_slips WHERE slip_code = $1 FOR UPDATE`, [req.body?.slip_code])).rows[0];
+    if (!s) return await bail(404, 'Không tìm thấy phiếu xuất');
+    if (s.delivery_note_id) return await bail(400, 'Phiếu giao hàng không đảo được — hãy dùng "Khách trả hàng" trên phiếu giao.');
+    if (s.status !== 'Đã xuất') return await bail(400, `Phiếu đang "${s.status}" — chỉ đảo được phiếu Đã xuất.`);
+    const picks = (await slipSources(client, s.id)).filter((r) => remaining(r) > 1e-6).map((source) => ({ source, quantity: remaining(source) }));
+    const code = picks.length ? await postReturn(client, { prefix: 'DPX', orderId: s.prod_order_id, reason: `Đảo phiếu xuất ${s.slip_code}`, picks }) : null;
+    await client.query(`UPDATE outbound_slips SET status = 'Đã đảo' WHERE id = $1`, [s.id]);
+    if (s.prod_order_id) await refreshIssuedFlag(client, s.prod_order_id);
+    await client.query('COMMIT');
+    res.json({ message: code ? `Đã đảo phiếu ${s.slip_code} — hàng nhập lại kho (phiếu ${code}).` : `Đã đảo phiếu ${s.slip_code}.`, return_code: code });
+  } catch (err) {
+    await client.query('ROLLBACK'); console.error(err);
+    if (stockErrorResponse(res, err)) return;
+    res.status(500).json({ message: err.detail || 'Lỗi khi đảo phiếu' });
+  } finally { client.release(); }
 };
 
 // ── CHUYỂN KHO (atomic: Xuất + Nhập trong 1 transaction) ──────────────────────
@@ -588,7 +655,6 @@ exports.transfer = async (req, res) => {
     if (denied) return res.status(403).json({ message: denied });
 
     const qty = Number(b.quantity);
-    const lot = b.lot_code || '';
     const unit = upUnit(b.unit);
 
     // M01: mọi truy vấn đi qua `client` đang giữ — không xin thêm kết nối từ pool (db.query),
@@ -600,16 +666,28 @@ exports.transfer = async (req, res) => {
 
     await client.query('BEGIN');
 
+    // Số phiếu: màn hình tạo sẵn cho mỗi lần lập → mạng gửi lại / bấm đúp cùng số phiếu bị từ chối, hàng không chuyển 2 lần.
+    // Không gửi kèm (client khác) → server tự cấp mã.
+    const refCode = b.ref_code || await nextCode(client, { table: 'inventory_transactions', col: 'ref_code', prefix: 'PCK', width: 5 });
+    await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`invdoc:Chuyển kho:${refCode}`]);
+    const dup = (await client.query(`SELECT 1 FROM inventory_transactions WHERE ref_code = $1 AND trx_type = 'Chuyển kho' LIMIT 1`, [refCode])).rowCount;
+    if (dup) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ message: `Phiếu chuyển ${refCode} đã được ghi trước đó (có thể do mạng gửi lại hoặc bấm 2 lần) — không chuyển lại. Vui lòng tải lại để kiểm tra.` });
+    }
+
     // M13: đọc tồn nguồn TRONG transaction, khoá dòng (FOR UPDATE) → kiểm đủ và trừ trên cùng số liệu.
     // Có chọn lô → chỉ lấy đúng lô đó (trước đây bỏ qua lô, lấy FIFO lô khác).
     // Giữ nguyên spec_key + lô khi chuyển để không tạo dòng '' ảo.
     // K-05: chỉ chuyển đúng 1 thông số (chọn ở màn chuyển kho; không chọn mà nguồn có nhiều thông số → bắt chọn).
     const { spec_key: srcSpec } = await resolveOutSpec(client, {
-      product_id: b.product_id, location_id: b.from_location_id, lot_code: lot, spec_key: b.spec_key });
+      product_id: b.product_id, location_id: b.from_location_id, lot_code: b.lot_code || '', spec_key: b.spec_key });
+    // Bắt buộc chọn lô như Xuất kho: nguồn có từ 2 lô mà không chọn → báo lỗi; chuyển đúng lô đó
+    const lot = await resolveOutLot(client, { product_id: b.product_id, location_id: b.from_location_id, spec_key: srcSpec, lot_code: b.lot_code });
     const { rows: srcRows } = await client.query(
       `SELECT spec_key, specs, lot_code, quantity, unit FROM inventory_stock
-       WHERE product_id = $1 AND location_id = $2 AND quantity > 0 AND ($3 = '' OR lot_code = $3) AND spec_key = $4
-       ORDER BY created_at, lot_code, id FOR UPDATE`, // M50: FIFO — lô vào kho sớm nhất chuyển trước
+       WHERE product_id = $1 AND location_id = $2 AND quantity > 0 AND lot_code = $3 AND spec_key = $4
+       ORDER BY created_at, lot_code, id FOR UPDATE`,
       [b.product_id, b.from_location_id, lot, srcSpec]);
     const onHand = srcRows.reduce((s, r) => s + Number(r.quantity), 0);
     if (qty > onHand + 1e-9) {
@@ -623,7 +701,7 @@ exports.transfer = async (req, res) => {
     for (const sr of srcRows) {
       if (remain <= 1e-9) break;
       const take = Math.min(remain, Number(sr.quantity));
-      const common = { product_id: b.product_id, unit: sr.unit || unit, specs: sr.specs || {}, spec_key: sr.spec_key, lot_code: sr.lot_code || '', clampZero: false, transfer: true };
+      const common = { product_id: b.product_id, unit: sr.unit || unit, specs: sr.specs || {}, spec_key: sr.spec_key, lot_code: sr.lot_code || '', clampZero: false, transfer: true, ref_code: refCode };
       // 1. Xuất khỏi kho nguồn
       await applyStock(client, { ...common, location_id: b.from_location_id, delta: -take, trx_type: 'Chuyển kho', note: `Chuyển kho → ${toLabel}${b.note ? ' | ' + b.note : ''}` });
       // 2. Nhập vào kho đích (cùng spec_key + lô)
@@ -635,7 +713,7 @@ exports.transfer = async (req, res) => {
     // F5: không gửi đơn vị → lấy từ dòng tồn / sản phẩm (trước đây hiện "Đã chuyển 2 null")
     const shownUnit = unit || upUnit(srcRows[0]?.unit)
       || upUnit((await client.query(`SELECT unit FROM products WHERE id = $1`, [b.product_id])).rows[0]?.unit) || '';
-    res.status(201).json({ message: `Đã chuyển ${qty.toLocaleString('vi-VN')}${shownUnit ? ' ' + shownUnit : ''} từ ${fromLabel} → ${toLabel}` });
+    res.status(201).json({ message: `Phiếu ${refCode}: đã chuyển ${qty.toLocaleString('vi-VN')}${shownUnit ? ' ' + shownUnit : ''} từ ${fromLabel} → ${toLabel}`, ref_code: refCode });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error(err); if (stockErrorResponse(res, err) || specErrorResponse(res, err)) return;

@@ -92,6 +92,7 @@ async function applyStock(client, o) {
   const lot = o.lot_code || '';
   const loc = o.location_id || null;
   let newQty = null;
+  let rowUnit = null; // ĐVT của dòng tồn sau khi ghi — lưu vào sổ cái
 
   await checkWarehouseRule(client, loc, delta, !!o.transfer);
 
@@ -106,7 +107,7 @@ async function applyStock(client, o) {
               updated_at = now()
         WHERE product_id = $1 AND location_id IS NOT DISTINCT FROM $2 AND spec_key = $3 AND lot_code = $4
           AND quantity + $5::numeric >= 0
-        RETURNING quantity`,
+        RETURNING quantity, unit`,
       [o.product_id, loc, spec_key, lot, delta, upUnit(o.unit) || null]);
     if (!r.rows.length) {
       // Không trừ được → đọc tồn hiện tại + tên SP để báo rõ
@@ -122,6 +123,7 @@ async function applyStock(client, o) {
         { product_id: o.product_id, location_id: loc, spec_key, lot_code: lot, on_hand: onHand, need: -delta });
     }
     newQty = Number(r.rows[0].quantity);
+    rowUnit = r.rows[0].unit;
   } else {
     // NHẬP (hoặc 0): upsert cộng dồn
     const r = await client.query(
@@ -137,10 +139,11 @@ async function applyStock(client, o) {
                      created_at = CASE WHEN inventory_stock.quantity <= 0 AND EXCLUDED.quantity > 0
                                        THEN now() ELSE inventory_stock.created_at END,
                      updated_at = now()
-       RETURNING quantity`,
+       RETURNING quantity, unit`,
       [o.product_id, loc, JSON.stringify(specs), spec_key, lot,
        o.prod_order_id || null, a.size || '', a.thickness || '', a.color || '', delta, upUnit(o.unit) || null]);
     newQty = r.rows[0] ? Number(r.rows[0].quantity) : null;
+    rowUnit = r.rows[0]?.unit;
   }
 
   if (o.log !== false && delta !== 0) {
@@ -150,11 +153,11 @@ async function applyStock(client, o) {
     await client.query(
       `INSERT INTO inventory_transactions
          (product_id, location_id, trx_type, quantity, delta, specs, spec_key, lot_code, attr_size, attr_thickness, attr_color, ref_code, note,
-          created_by, created_by_name)
-       VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+          created_by, created_by_name, unit)
+       VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
       [o.product_id, loc, o.trx_type || (delta > 0 ? 'Nhập' : 'Xuất'), Math.abs(delta), delta,
        JSON.stringify(specs), spec_key, lot, a.size || '', a.thickness || '', a.color || '',
-       o.ref_code || null, o.note || null, who?.id || null, who?.name || null]);
+       o.ref_code || null, o.note || null, who?.id || null, who?.name || null, rowUnit || upUnit(o.unit) || null]);
   }
   return newQty;
 }

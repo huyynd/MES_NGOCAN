@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
 import { Plus, Trash2, ArrowLeft, Save, CalendarClock, Factory, List, GanttChartSquare, Pencil, Printer, GitBranch, Copy, ChevronDown, ChevronRight } from "lucide-react";
 import { production } from "../../mesApi.js";
 import { DEFAULT_STAGES, stageFactory, machinesForStage } from "../../productionDefaults.js";
@@ -9,6 +10,58 @@ import { PackageCheck, CheckCircle2, Lock, RotateCcw } from "lucide-react";
 import Qr from "../../Qr.jsx";
 import { SpecFields } from "../../SpecFields.jsx";
 import ProductionGantt from "./ProductionGantt.jsx";
+
+// Trả NVL thừa về kho: liệt kê từng phần đã xuất (NVL · lô · vị trí), không trả vượt phần còn lại
+function MaterialReturnDialog({ orderId, onClose, onSaved }) {
+  const [data, setData] = useState(null);
+  const [qty, setQty] = useState({});
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { production.materialReturns(orderId).then(setData).catch((e) => { toast.error(e.message); onClose(); }); }, [orderId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const left = (l) => Number(l.issued_qty) - Number(l.returned_qty);
+  const lines = (data?.lines || []).filter((l) => left(l) > 1e-6);
+  const dirty = Object.values(qty).some(Boolean);
+  const submit = async () => {
+    const items = lines.filter((l) => Number(qty[l.trx_id]) > 0).map((l) => ({ trx_id: l.trx_id, quantity: Number(qty[l.trx_id]) }));
+    if (!items.length) return toast.error("Nhập số lượng trả cho ít nhất 1 dòng.");
+    setBusy(true);
+    try { const r = await production.createMaterialReturn(orderId, { note, items }); toast.success(r.message); onSaved(); }
+    catch (e) { toast.error(e.message); }
+    finally { setBusy(false); }
+  };
+  // Portal: màn chi tiết bọc form bằng <fieldset disabled> khi đang xem — hộp thoại phải nằm ngoài vùng đó
+  return createPortal(
+    <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center p-4 z-50">
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl max-h-[90vh] flex flex-col">
+        <DialogBehavior onClose={onClose} dirty={dirty} locked={busy} />
+        <div className="px-5 py-4 border-b border-slate-100"><h3 className="font-semibold text-slate-800">Trả NVL về kho</h3></div>
+        <div className="p-5 overflow-auto space-y-4">
+          {!data ? <p className="text-sm text-slate-400">Đang tải…</p> : lines.length === 0 ? <p className="text-sm text-slate-400">Không còn NVL đã xuất để trả.</p> : (
+            <table className="w-full text-sm">
+              <thead><tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+                <th className="py-2 pr-3">NVL</th><th className="py-2 pr-3">Phiếu · Lô</th><th className="py-2 pr-3">Vị trí</th><th className="py-2 pr-3 text-right">Còn trả được</th><th className="py-2 w-28">SL trả</th>
+              </tr></thead>
+              <tbody>{lines.map((l) => (
+                <tr key={l.trx_id} className="border-b border-slate-100 last:border-0">
+                  <td className="py-2 pr-3">{l.product_name}</td>
+                  <td className="py-2 pr-3 text-slate-500">{l.slip_code}{l.lot_code ? ` · ${l.lot_code}` : ""}</td>
+                  <td className="py-2 pr-3 text-slate-500">{l.location_name || "—"}</td>
+                  <td className="py-2 pr-3 text-right">{fmt(left(l))} {l.unit || ""}</td>
+                  <td className="py-2"><input type="number" min="0" max={left(l)} step="any" aria-label={`Số lượng trả ${l.product_name}`} className={inputCls} value={qty[l.trx_id] ?? ""} onChange={(e) => setQty((q) => ({ ...q, [l.trx_id]: e.target.value }))} /></td>
+                </tr>))}</tbody>
+            </table>)}
+          {lines.length > 0 && <input className={inputCls} placeholder="Ghi chú" aria-label="Ghi chú" value={note} onChange={(e) => setNote(e.target.value)} />}
+          {data?.returns?.length > 0 && <p className="text-xs text-slate-500">Đã trả: {data.returns.map((r) => `${r.return_code} (${fmt(r.total_qty)})`).join(", ")}</p>}
+        </div>
+        <div className="px-5 py-4 border-t border-slate-100 flex justify-end gap-2">
+          <button type="button" onClick={(e) => confirmClose(e, onClose)} disabled={busy} className="btn-ghost">Đóng</button>
+          {lines.length > 0 && <button type="button" onClick={submit} disabled={busy} className="btn-primary disabled:opacity-60"><RotateCcw size={16} /> {busy ? "Đang lưu…" : "Trả về kho"}</button>}
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
 
 const STATUSES = ["Chờ duyệt", "Đã lên kế hoạch", "Chờ nguyên vật liệu", "Đang sản xuất", "Hoàn thành", "Đã hủy"];
 
@@ -184,8 +237,14 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved, onOpenSalesO
     return id ? [{ _k: 1, material_id: id, ratio: "", qty: "", unit: productById(id)?.unit || "", note: "", on_hand: null }] : [];
   };
   const [plannedMats, setPlannedMats] = useState(() => (editId || copyId ? [] : defaultMatRows()));
+  const plannedMatsNeed = () => plannedMats.some((m) => m.material_id && Number(m.qty) > Number(m.issued_qty || 0) + 1e-6);
   const [matsIssued, setMatsIssued] = useState(false);
   const [slip, setSlip] = useState(null); // phiếu xuất kho mới nhất {id, slip_code, status}
+  const [canReturn, setCanReturn] = useState(false); // còn NVL đã xuất chưa trả
+  const [returning, setReturning] = useState(false); // hộp thoại Trả NVL
+  const slipPending = slip?.status === 'Chờ xuất';
+  // Còn thiếu so với danh sách, chưa có phiếu chờ → cho yêu cầu (lần đầu hoặc bổ sung)
+  const matsNeeded = !slipPending && plannedMatsNeed();
   const [pmSeq, setPmSeq] = useState(2); // 2: chừa _k = 1 cho dòng NVL gợi ý mặc định
   const [pmBusy, setPmBusy] = useState(false);
   const nvlOptions = (lookups.products || []).filter((p) => p.product_type === 'Nguyên vật liệu')
@@ -202,15 +261,36 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved, onOpenSalesO
     try {
       const d = await production.materials(editId);
       if (!d.has_bom || !d.lines?.length) return toast.error('Sản phẩm chưa có BOM để gợi ý.');
-      setPlannedMats(d.lines.map((l, i) => ({ _k: i + 1, material_id: l.material_id, ratio: "", qty: Math.round((l.suggested_qty || 0) * 100) / 100, unit: l.unit || '', note: '', on_hand: l.on_hand })));
+      setPlannedMats(d.lines.map((l, i) => ({ _k: i + 1, material_id: l.material_id, ratio: "", qty: Math.round((l.suggested_qty || 0) * 100) / 100, unit: l.unit || '', note: '', on_hand: l.on_hand, held: l.held, available: l.available })));
       setPmSeq(d.lines.length + 1);
       toast.success(`Đã đổ ${d.lines.length} NVL gợi ý từ BOM. Hãy chỉnh/xóa theo thực tế rồi Lưu.`);
     } catch (e) { toast.error('Lỗi lấy gợi ý BOM: ' + e.message); }
   };
+  // Đổi số lượng lệnh khi đã có phiếu NVL: KHÔNG tự đổi NVL — hiện đề xuất theo BOM, người dùng bấm mới áp dụng
+  const suggestAfterQtyChange = async (matLines) => {
+    const d = await production.materials(editId).catch(() => null);
+    if (!d?.has_bom || !d.lines?.length) { toast.error("Số lượng lệnh đã đổi — hãy kiểm tra lại danh sách NVL."); return; }
+    const issuedOf = (id) => Number(plannedMats.find((m) => m.material_id === id)?.issued_qty || 0);
+    // BOM có thể lặp 1 NVL ở nhiều dòng → gộp, vì danh sách NVL mỗi loại chỉ 1 dòng
+    const byMat = new Map();
+    d.lines.forEach((l) => {
+      const cur = byMat.get(l.material_id);
+      if (cur) cur.suggested_qty = (cur.suggested_qty || 0) + (l.suggested_qty || 0);
+      else byMat.set(l.material_id, { ...l });
+    });
+    const rows = [...byMat.values()].map((l) => ({ ...l, qty: Math.round((l.suggested_qty || 0) * 100) / 100 }));
+    const msg = rows.map((l) => {
+      const diff = l.qty - issuedOf(l.material_id);
+      return `• ${l.material_name || l.material_code || 'NVL'}: đề xuất ${fmt(l.qty)}, đã xuất ${fmt(issuedOf(l.material_id))}${diff > 0 ? ` → thiếu ${fmt(diff)}` : diff < 0 ? ` → thừa ${fmt(-diff)}` : ''}`;
+    }).join('\n');
+    if (!confirm(`Số lượng lệnh đã đổi. NVL theo BOM:\n${msg}\n\nCập nhật danh sách NVL theo đề xuất? (Phiếu chờ xuất tự cập nhật; phần thiếu bấm "Yêu cầu NVL", phần thừa bấm "Trả NVL".)`)) return;
+    const others = matLines.filter((m) => !rows.some((l) => l.material_id === m.material_id));
+    await production.savePlannedMaterials(editId, [...rows.map((l) => ({ material_id: l.material_id, qty: l.qty, unit: l.unit })), ...others]);
+  };
   const requestMats = async () => {
     const lines = plannedMats.filter((m) => m.material_id && Number(m.qty) > 0);
     if (!lines.length) return toast.error('Chưa có NVL cần cung cấp (số kg > 0) để yêu cầu.');
-    if (!confirm(`Tạo phiếu xuất kho (Chờ xuất) cho ${lines.length} NVL?\nPhiếu sẽ gửi sang app Xuất kho để xác nhận trừ kho. Danh sách NVL sẽ bị khóa.`)) return;
+    if (!confirm(`Tạo phiếu xuất kho (Chờ xuất) cho phần NVL còn thiếu?\nPhiếu sẽ gửi sang app Xuất kho để xác nhận trừ kho.`)) return;
     setPmBusy(true);
     try {
       const r = await production.requestMaterials(editId, lines);
@@ -278,13 +358,14 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved, onOpenSalesO
       production.plannedMaterials(editId).then((pm) => {
         setMatsIssued(!!pm.materials_issued);
         setSlip(pm.slip || null);
+        setCanReturn(!!pm.can_return);
         const lines = pm.lines || [];
         const mix = (d.mix_ratio || []).filter((r) => r.material_id);
         if (lines.length) {
           // Đã có NVL cấp → ghép tỷ lệ (%) từ mix_ratio theo material_id
           const ratioBy = {};
           mix.forEach((r) => { ratioBy[r.material_id] = r.ratio; });
-          setPlannedMats(lines.map((l, i) => ({ _k: i + 1, material_id: l.material_id, ratio: ratioBy[l.material_id] ?? '', qty: Number(l.qty), unit: l.unit || '', note: l.note || '', on_hand: Number(l.on_hand) })));
+          setPlannedMats(lines.map((l, i) => ({ _k: i + 1, material_id: l.material_id, ratio: ratioBy[l.material_id] ?? '', qty: Number(l.qty), unit: l.unit || '', note: l.note || '', on_hand: Number(l.on_hand), pending: Number(l.pending) || 0, blocked: Number(l.blocked) || 0, held: Number(l.held) || 0, available: Number(l.available) || 0, own_pending: Number(l.own_pending) || 0, issued_qty: Number(l.issued_qty) || 0 })));
           setPmSeq(lines.length + 1);
         } else if (mix.length) {
           // THỪA HƯỞNG từ đơn hàng: chưa có NVL cấp nhưng LSX đã định NVL (mix_ratio từ dòng đơn)
@@ -388,6 +469,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved, onOpenSalesO
     // Tỷ lệ (%) ở bảng NVL gộp → đồng bộ về mix_ratio (cấp lệnh); Số KG lưu riêng ở savePlannedMaterials.
     const mixRatio = plannedMats.filter((m) => m.material_id).map((m) => ({ material_id: m.material_id, ratio: m.ratio === '' || m.ratio == null ? null : Number(m.ratio) }));
     const matLines = plannedMats.filter((m) => m.material_id);
+    if (new Set(matLines.map((m) => m.material_id)).size < matLines.length) return toast.error("Danh sách có NVL bị trùng — mỗi NVL chỉ nhập 1 dòng.");
     if (savingRef.current) return;
     savingRef.current = true;
     setSaving(true);
@@ -398,9 +480,13 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved, onOpenSalesO
         const { status, ...rest } = f;
         await production.update(editId, { ...rest, mix_ratio: mixRatio, finishing }); // các trường (kể cả SL mới), chưa đụng status
         await production.saveTasks(editId, tasks.filter((t) => t.stage)); // recompute status theo tiến độ + SL mới
-        if (statusChanged) await production.update(editId, { status });   // áp status thủ công cuối cùng → thắng recompute
-        if (!matsIssued) await production.savePlannedMaterials(editId, matLines);
-        toast.success("Lưu lệnh sản xuất thành công");
+        const updated = statusChanged ? await production.update(editId, { status }) : null; // áp status thủ công cuối cùng → thắng recompute
+        // Lệnh vừa hủy: danh sách NVL do hệ thống xử lý (phiếu chờ hủy / phiếu trả), không ghi đè
+        if (status !== 'Đã hủy') await production.savePlannedMaterials(editId, matLines);
+        if (matsIssued && status !== 'Đã hủy' && Number(f.quantity) !== Number(meta?.quantity)) await suggestAfterQtyChange(matLines);
+        toast.success(updated?.material_return_code
+          ? `Đã hủy lệnh và trả NVL về kho (phiếu ${updated.material_return_code})`
+          : "Lưu lệnh sản xuất thành công");
         setEditing(false); // Ở LẠI màn chi tiết (không thoát ra list)
         loadData();        // nạp lại dữ liệu vừa lưu
       } else {
@@ -494,7 +580,8 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved, onOpenSalesO
         actions={editId && !editing ? (<>
           {locked && <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-500 border border-slate-200"><Lock size={12} aria-hidden="true" /> Đã {meta?.status} · không thể sửa</span>}
           {meta?.status === 'Hoàn thành' && !locked && <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200">⚠ Hoàn thành · cần bổ sung phân công</span>}
-          {can("production", "edit") && !matsIssued && !locked && <button onClick={requestMats} disabled={pmBusy} className="btn-ghost text-amber-700 border-amber-300 hover:bg-amber-50"><PackageCheck size={16} /> Yêu cầu NVL</button>}
+          {can("production", "edit") && matsNeeded && !locked && meta?.status !== 'Hoàn thành' && <button onClick={requestMats} disabled={pmBusy} className="btn-ghost text-amber-700 border-amber-300 hover:bg-amber-50"><PackageCheck size={16} /> Yêu cầu NVL</button>}
+          {can("production", "edit") && canReturn && !locked && <button onClick={() => setReturning(true)} className="btn-ghost"><RotateCcw size={16} /> Trả NVL</button>}
           {can("production", "edit") && !locked && <button onClick={() => setEditing(true)} className="btn-ghost"><Pencil size={16} /> Sửa</button>}
           {can("production", "delete") && ["Chờ duyệt", "Đã hủy"].includes(f.status) && <button onClick={del} className="btn-ghost" style={{ color: "#e11d48" }}><Trash2 size={16} /> Xóa</button>}
         </>) : (<>
@@ -558,7 +645,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved, onOpenSalesO
             {/* 'Hoàn thành' được suy ra tự động khi hoàn thành các dòng phân công — không đặt tay ở đây. */}
             <select className={inputCls} value={f.status} onChange={(e) => set("status", e.target.value)}>
               {!f.status && <option value="">-- Chọn trạng thái --</option>}
-              {STATUSES.filter((s) => s !== 'Hoàn thành' || f.status === 'Hoàn thành').map((s) => <option key={s} value={s}>{s}</option>)}
+              {STATUSES.filter((s) => (s !== 'Hoàn thành' || f.status === 'Hoàn thành') && !(s === 'Đã hủy' && meta?.status === 'Hoàn thành')).map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
             {f.status === 'Hoàn thành' && <p className="text-xs text-slate-400 mt-1">Lệnh đã Hoàn thành (tự động theo sản lượng). Dùng "Hủy hoàn thành" trên từng dòng nếu cần sửa.</p>}
           </Field>}
@@ -623,10 +710,11 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved, onOpenSalesO
             ? (slip?.status === 'Đã xuất'
                 ? <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200"><PackageCheck size={14} /> Đã xuất kho{slip?.slip_code ? ` · ${slip.slip_code}` : ''}</span>
                 : <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200"><PackageCheck size={14} /> Chờ xuất kho{slip?.slip_code ? ` · ${slip.slip_code}` : ''}</span>)
-            : (editing && <>
+            : null}
+          {editing && <>
                 {editId && <button type="button" onClick={suggestFromBom} className="btn-ghost text-blue-600 border-blue-200 hover:bg-blue-50"><GitBranch size={16} /> Lấy gợi ý từ BOM</button>}
                 <button type="button" onClick={addMat} className="btn-ghost text-blue-600 border-blue-200 hover:bg-blue-50"><Plus size={16} /> Thêm NVL</button>
-              </>)}
+              </>}
         </div>}>
         {/* Loại nguyên liệu (gộp vào mục NVL) */}
         <div className="mb-4">
@@ -672,8 +760,8 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved, onOpenSalesO
             )}
           </div>
         </div>
-        <div className="border border-slate-200 rounded-xl overflow-hidden bg-slate-50/50">
-          <table className="w-full text-left text-sm whitespace-nowrap">
+        <div className="border border-slate-200 rounded-xl overflow-x-auto bg-slate-50/50">
+          <table className="w-full min-w-[1120px] text-left text-sm whitespace-nowrap">
             <thead>
               <tr className="bg-slate-100/50 border-b border-slate-200 text-slate-600 font-semibold text-xs">
                 <th className="px-3 py-2.5 w-12 text-center uppercase tracking-wider">STT</th>
@@ -681,51 +769,69 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved, onOpenSalesO
                 <th className="px-3 py-2.5 w-24 uppercase tracking-wider">Tỷ lệ (%)</th>
                 <th className="px-3 py-2.5 w-28 uppercase tracking-wider">Số kg</th>
                 <th className="px-3 py-2.5 w-24 uppercase tracking-wider">ĐVT</th>
-                <th className="px-3 py-2.5 w-28 uppercase tracking-wider">Tồn kho</th>
+                <th className="px-3 py-2.5 w-24 uppercase tracking-wider">Đã xuất</th>
+                <th className="px-3 py-2.5 w-24 uppercase tracking-wider">Tồn kho</th>
+                <th className="px-3 py-2.5 w-32 uppercase tracking-wider">Đang giữ</th>
+                <th className="px-3 py-2.5 w-28 uppercase tracking-wider">Khả dụng</th>
                 <th className="px-3 py-2.5 uppercase tracking-wider">Ghi chú</th>
-                {editing && !matsIssued && <th className="px-3 py-2.5 w-10"></th>}
+                {editing && <th className="px-3 py-2.5 w-10"></th>}
               </tr>
             </thead>
             <tbody>
               {plannedMats.length === 0 && (
-                <tr><td colSpan={editing && !matsIssued ? 8 : 7} className="px-3 py-4 text-center text-slate-400 bg-white">Chưa có NVL. {editing && !matsIssued ? 'Bấm “Lấy gợi ý từ BOM” hoặc “Thêm NVL”.' : ''}</td></tr>
+                <tr><td colSpan={editing ? 11 : 10} className="px-3 py-4 text-center text-slate-400 bg-white">Chưa có NVL. {editing ? 'Bấm “Lấy gợi ý từ BOM” hoặc “Thêm NVL”.' : ''}</td></tr>
               )}
               {plannedMats.map((r, i) => {
-                const short = r.on_hand != null && Number(r.qty) > Number(r.on_hand);
+                // Thiếu = phần chưa xuất, chưa lên phiếu của lệnh này vượt khả dụng
+                const lack = Number(r.qty) - Number(r.issued_qty || 0) - Number(r.own_pending || 0) - Number(r.available || 0);
+                const short = r.on_hand != null && lack > 1e-6;
                 return (
                 <tr key={r._k} className="border-b border-slate-100 last:border-0 bg-white align-top">
                   <td className="px-3 py-2.5 text-center text-slate-500 font-medium">{i + 1}</td>
                   <td className="px-3 py-2.5">
-                    {editing && !matsIssued
+                    {editing
                       ? <SearchSelect value={r.material_id} onChange={(v) => upMat(r._k, 'material_id', v)} options={nvlOptions} placeholder="-- Chọn NVL --" />
                       : <span className="font-medium text-slate-700">{nvlOptions.find((o) => o.value === r.material_id)?.label || '—'}</span>}
                   </td>
                   <td className="px-3 py-2.5">
-                    {editing && !matsIssued
-                      ? <input type="number" min="0" step="any" className={inputCls} value={r.ratio ?? ''} onChange={(e) => upMat(r._k, 'ratio', e.target.value)} placeholder="%" />
+                    {editing
+                      ? <input type="number" min="0" step="any" className={inputCls} value={r.ratio ?? ''} onChange={(e) => upMat(r._k, 'ratio', e.target.value)} placeholder="%" style={{ minWidth: 72 }} />
                       : <span className="font-medium">{r.ratio != null && r.ratio !== '' ? `${r.ratio}%` : '—'}</span>}
                   </td>
                   <td className="px-3 py-2.5">
-                    {editing && !matsIssued
-                      ? <input type="number" min="0" step="any" className={inputCls} value={r.qty} onChange={(e) => upMat(r._k, 'qty', e.target.value)} placeholder="kg" />
+                    {editing
+                      ? <input type="number" min="0" step="any" className={inputCls} value={r.qty} onChange={(e) => upMat(r._k, 'qty', e.target.value)} placeholder="kg" style={{ minWidth: 96 }} />
                       : <span className="font-medium">{fmt(r.qty)}</span>}
                   </td>
                   <td className="px-3 py-2.5">
-                    {editing && !matsIssued
-                      ? <input className={inputCls} value={r.unit} onChange={(e) => upMat(r._k, 'unit', e.target.value)} placeholder="kg" />
-                      : <span className="text-slate-600">{r.unit || 'kg'}</span>}
+                    {editing
+                      ? <input className={inputCls} value={r.unit} onChange={(e) => upMat(r._k, 'unit', e.target.value)} placeholder="ĐVT" style={{ minWidth: 72 }} />
+                      : <span className="text-slate-600">{r.unit || 'KG'}</span>}
+                  </td>
+                  <td className="px-3 py-2.5">
+                    <span className={Number(r.issued_qty) > Number(r.qty) + 1e-6 ? 'text-amber-700 font-semibold' : 'text-slate-600'}>{fmt(r.issued_qty || 0)}</span>
+                    {Number(r.issued_qty) > Number(r.qty) + 1e-6 && <span className="block text-[11px] text-amber-700">thừa {fmt(Number(r.issued_qty) - Number(r.qty))}</span>}
                   </td>
                   <td className="px-3 py-2.5">
                     {r.on_hand == null
                       ? <span className="text-slate-400 text-xs">— lưu để xem</span>
-                      : <span className={short ? 'text-rose-600 font-semibold' : 'text-slate-700'}>{fmt(r.on_hand)}{short && <span className="block text-[11px] font-normal">thiếu {fmt(Number(r.qty) - Number(r.on_hand))}</span>}</span>}
+                      : <span className="text-slate-700">{fmt(r.on_hand)}</span>}
                   </td>
                   <td className="px-3 py-2.5">
-                    {editing && !matsIssued
-                      ? <input className={inputCls} value={r.note} onChange={(e) => upMat(r._k, 'note', e.target.value)} placeholder="ghi chú" />
+                    {r.on_hand != null && <span className="text-slate-600">{fmt(r.held || 0)}
+                      {Number(r.pending) > 0 && <span className="block text-[11px] text-slate-400">phiếu chờ {fmt(r.pending)}</span>}
+                      {Number(r.blocked) > 0 && <span className="block text-[11px] text-slate-400">kho không xuất được {fmt(r.blocked)}</span>}
+                    </span>}
+                  </td>
+                  <td className="px-3 py-2.5">
+                    {r.on_hand != null && <span className={short ? 'text-rose-600 font-semibold' : 'text-emerald-700 font-medium'}>{fmt(r.available || 0)}{short && <span className="block text-[11px] font-normal">thiếu {fmt(lack)}</span>}</span>}
+                  </td>
+                  <td className="px-3 py-2.5">
+                    {editing
+                      ? <input className={inputCls} value={r.note} onChange={(e) => upMat(r._k, 'note', e.target.value)} placeholder="ghi chú" style={{ minWidth: 120 }} />
                       : <span className="text-slate-500">{r.note || ''}</span>}
                   </td>
-                  {editing && !matsIssued && (
+                  {editing && (
                     <td className="px-3 py-2.5">
                       <button type="button" onClick={() => rmMat(r._k)} className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition-colors"><Trash2 size={15} /></button>
                     </td>
@@ -736,6 +842,8 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved, onOpenSalesO
           </table>
         </div>
       </Section>
+
+      {returning && <MaterialReturnDialog orderId={editId} onClose={() => setReturning(false)} onSaved={() => { setReturning(false); loadData(); }} />}
 
       {false /* !fhid("finishing") */ && (
       <Section title="Yêu cầu gia công hoàn thiện">

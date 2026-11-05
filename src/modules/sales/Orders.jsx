@@ -41,7 +41,7 @@ function MaterialTag({ materials }) {
         <table className="w-full text-xs border-collapse">
           <thead className="bg-slate-100 text-slate-500">
             <tr>
-              {["Mã NVL", "Tên vật tư", "ĐVT", "Định mức", "Tồn kho", "Cần bổ sung", "Đã dùng cho đơn"].map((h) =>
+              {["Mã NVL", "Tên vật tư", "ĐVT", "Định mức", "Khả dụng", "Cần bổ sung", "Đã dùng cho đơn"].map((h) =>
                 <th key={h} className="px-2 py-1.5 text-left font-medium whitespace-nowrap">{h}</th>)}
             </tr>
           </thead>

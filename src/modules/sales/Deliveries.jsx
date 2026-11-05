@@ -87,7 +87,7 @@ function PaymentHistory({ payments }) {
 const NO_ORDER = ""; // giá trị cột Đơn hàng = "không theo đơn"
 
 // K-12: Khách trả hàng — liệt kê đúng phần đã xuất khi giao (SP · lô · thông số · vị trí),
-// nhập lại vào vị trí người nhập chọn (mặc định chỗ đã xuất). Không đổi công nợ.
+// nhập lại vào vị trí người nhập chọn (mặc định chỗ đã xuất). Giá trị hàng trả tự trừ vào công nợ.
 const specLabel = (k) => specKeyLabel(k, "—");
 function ReturnModal({ id, noteCode, lookups, onClose, onSaved }) {
   const [data, setData] = useState(null);
@@ -160,7 +160,7 @@ function ReturnModal({ id, noteCode, lookups, onClose, onSaved }) {
           {data.returns.length > 0 && (
             <div className="text-xs text-slate-500">Đã trả trước đó: {data.returns.map((r) => `${r.return_code} (${fmtDate(r.return_date)}, ${fmt(r.total_qty)})`).join(" · ")}</div>
           )}
-          <div className="text-xs text-amber-700 bg-amber-50 rounded-lg px-3 py-2">Trả hàng chỉ nhập lại kho — công nợ của phiếu giao không tự thay đổi.</div>
+          <div className="text-xs text-amber-700 bg-amber-50 rounded-lg px-3 py-2">Hàng trả nhập lại kho, giá trị (SL × đơn giá trên phiếu) tự trừ vào công nợ. Đã thu dư thì thành tiền trả trước của khách.</div>
           <div className="flex justify-end gap-2">
             <button onClick={(e) => confirmClose(e, onClose)} className="btn-ghost">Đóng</button>
             <button onClick={save} disabled={saving} className="btn-primary"><RotateCcw size={16} /> {saving ? "Đang lưu…" : "Xác nhận trả hàng"}</button>

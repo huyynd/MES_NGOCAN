@@ -587,7 +587,7 @@ exports.director = async (req, res) => {
         WITH ord AS (
           SELECT so.id,
             COALESCE((SELECT SUM(it.quantity*COALESCE(it.unit_price,0)) FROM sales_order_items it WHERE it.sales_order_id=so.id),0) AS val,
-            COALESCE((SELECT SUM(di.quantity*COALESCE(soi.unit_price,0))
+            COALESCE((SELECT SUM((COALESCE(di.actual_quantity, di.quantity) - di.returned_qty)*COALESCE(soi.unit_price,0))
                       FROM delivery_note_items di
                       JOIN delivery_notes dn ON dn.id=di.delivery_note_id
                       LEFT JOIN sales_order_items soi ON soi.id=di.sales_order_item_id
@@ -715,7 +715,7 @@ exports.director = async (req, res) => {
       db.query(`
         SELECT so.id, so.order_code, so.order_date, c.name AS customer_name,
           COALESCE((SELECT SUM(it.quantity*COALESCE(it.unit_price,0)) FROM sales_order_items it WHERE it.sales_order_id=so.id),0) AS val,
-          COALESCE((SELECT SUM(di.quantity*COALESCE(soi.unit_price,0))
+          COALESCE((SELECT SUM((COALESCE(di.actual_quantity, di.quantity) - di.returned_qty)*COALESCE(soi.unit_price,0))
                     FROM delivery_note_items di
                     JOIN delivery_notes dn ON dn.id=di.delivery_note_id
                     LEFT JOIN sales_order_items soi ON soi.id=di.sales_order_item_id

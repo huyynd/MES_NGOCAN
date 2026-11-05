@@ -1,12 +1,10 @@
-// backend/lib/units.js — chuẩn hoá đơn vị tính về đúng danh mục (title case).
-// Danh mục dùng chung cho dropdown; đơn vị ngoài danh mục giữ nguyên (chỉ trim).
-const UNITS = ["Kg", "Cái", "Chiếc", "Dem", "Gram", "Cuộn", "Thùng"];
-const CANON = new Map(UNITS.map((u) => [u.toUpperCase(), u]));
+// backend/lib/units.js — chuẩn hoá đơn vị tính: luôn VIẾT HOA (KG, CÁI…).
+// Danh mục dùng chung cho dropdown; CSDL cũng có trigger ép viết hoa (migrate mục 33).
+const UNITS = ["KG", "CÁI", "CHIẾC", "DEM", "GRAM", "CUỘN", "THÙNG"];
 
 function upUnit(u) {
   if (u == null) return null;
   const s = String(u).trim();
-  if (!s) return null;
-  return CANON.get(s.toUpperCase()) || s; // khớp danh mục → dạng chuẩn; ngoài danh mục → giữ nguyên
+  return s ? s.toUpperCase() : null;
 }
 module.exports = { upUnit, UNITS };
