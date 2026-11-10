@@ -710,7 +710,7 @@ function OrderVoucher({ id, onBack }) {
 
       <div className="print-area bg-white rounded-xl border border-slate-200 p-8 max-w-3xl mx-auto">
         <div className="flex items-center gap-4 border-b-2 border-blue-700 pb-3 mb-4">
-          <Logo className="h-14 w-auto shrink-0" />
+          <Logo className="h-24 w-auto shrink-0" />
           <div className="flex-1 text-center">
             <div className="text-sm font-semibold text-slate-700">{S.company_name}</div>
             <h2 className="text-xl font-bold text-slate-900 mt-2 uppercase">Phiếu đặt hàng</h2>

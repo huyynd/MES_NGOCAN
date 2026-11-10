@@ -10,6 +10,7 @@ router.get('/deliveries/deliverable', deliveries.deliverable); // dòng đơn gi
 // Thanh toán: ghi nhận qua Phiếu thanh toán (payment.route.js) — không thu lẻ trên từng phiếu giao nữa
 router.get('/deliveries/:id', deliveries.getById);
 router.put('/deliveries/:id', requirePerm('deliveries:edit'), deliveries.update);
+router.put('/deliveries/:id/item-notes', requirePerm('deliveries:edit'), deliveries.updateItemNotes); // sửa riêng ghi chú dòng (kể cả sau giao)
 router.post('/deliveries/:id/ship', requirePerm('deliveries:approve'), deliveries.ship);
 // K-12: khách trả hàng — nhập lại kho đúng lô / thông số đã giao
 router.get('/deliveries/:id/returns', deliveries.returnable);

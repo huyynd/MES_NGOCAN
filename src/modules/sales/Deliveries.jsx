@@ -171,6 +171,71 @@ function ReturnModal({ id, noteCode, lookups, onClose, onSaved }) {
   );
 }
 
+// Ghi chú dòng: tối đa 200 ký tự, đếm sau chuẩn hóa NFC giống backend (cleanItemNote) — không dùng maxLength (đếm UTF-16, emoji = 2)
+const ITEM_NOTE_MAX = 200;
+const noteLen = (s) => [...String(s ?? "").normalize("NFC")].length;
+const NoteCount = ({ value }) => {
+  const n = noteLen(value);
+  if (n <= ITEM_NOTE_MAX - 20) return null;
+  return <div className={"text-xs mt-0.5 " + (n > ITEM_NOTE_MAX ? "text-rose-600" : "text-slate-400")}>{n}/{ITEM_NOTE_MAX} ký tự</div>;
+};
+const overNoteMsg = (list, label) => {
+  const i = list.findIndex((x) => noteLen(x.note) > ITEM_NOTE_MAX);
+  return i < 0 ? "" : `Ghi chú dòng ${i + 1} (${label(list[i])}) dài ${noteLen(list[i].note)} ký tự — tối đa ${ITEM_NOTE_MAX}, cần rút gọn`;
+};
+
+/* Sửa riêng ghi chú từng dòng của phiếu đã giao (không đụng SL/giá/trạng thái) */
+function ItemNotesModal({ id, noteCode, items, onClose, onSaved }) {
+  const [notes, setNotes] = useState(() => Object.fromEntries(items.map((it) => [it.id, it.note || ""])));
+  const [saving, guard] = useSaving();
+  const save = async () => {
+    const list = items.map((it) => ({ id: it.id, note: notes[it.id] ?? "", product_name: it.product_name }));
+    const msg = overNoteMsg(list, (x) => x.product_name || "—");
+    if (msg) return toast.error(msg);
+    try {
+      await api.itemNotes(id, list.map(({ id: iid, note }) => ({ id: iid, note })));
+      toast.success(`Đã lưu ghi chú dòng phiếu ${noteCode || ""}`.trim());
+      onSaved();
+    } catch (e) { toast.error("Lỗi lưu ghi chú: " + e.message); }
+  };
+  return (
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl p-6 space-y-4 max-h-[90vh] overflow-auto">
+        <DialogBehavior onClose={onClose} locked={saving} />
+        <div className="flex items-center justify-between">
+          <h3 className="text-lg font-bold text-slate-800">Sửa ghi chú dòng — phiếu giao {noteCode}</h3>
+          <button type="button" onClick={(e) => confirmClose(e, onClose)} className="text-slate-400 hover:text-slate-600" title="Đóng" aria-label="Đóng"><X size={18} /></button>
+        </div>
+        <div className="rounded-lg border border-slate-200 overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead><tr className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+              <th className="px-3 py-2 text-left">Sản phẩm</th><th className="px-3 py-2 text-left w-1/2">Ghi chú</th>
+            </tr></thead>
+            <tbody className="divide-y divide-slate-100">
+              {items.map((it) => (
+                <tr key={it.id}>
+                  <td className="px-3 py-2 text-slate-700">{it.product_name || "—"}{specShort(it.specs) ? <span className="text-slate-400"> · {specShort(it.specs)}</span> : null}</td>
+                  <td className="px-3 py-2">
+                    <input className={inputCls} value={notes[it.id] ?? ""} autoComplete="off" placeholder="VD: giao cổng sau…"
+                      aria-label={`Ghi chú dòng ${it.product_name || ""}`.trim()}
+                      onChange={(e) => setNotes((s) => ({ ...s, [it.id]: e.target.value }))} />
+                    <NoteCount value={notes[it.id]} />
+                  </td>
+                </tr>
+              ))}
+              {!items.length && <tr><td colSpan={2} className="px-3 py-6 text-center text-slate-400">Phiếu chưa có dòng hàng.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+        <div className="flex justify-end gap-2">
+          <button type="button" onClick={(e) => confirmClose(e, onClose)} className="btn-ghost">Đóng</button>
+          <button type="button" onClick={() => guard(save)} disabled={saving || !items.length} className="btn-primary"><Save size={16} /> {saving ? "Đang lưu…" : "Lưu ghi chú"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrint, onOpenOrder, onOpenProductionOrder }) {
   const { can, fpermSecret } = usePerm();
   const moneyPerm = fpermSecret("deliveries", "amounts");
@@ -180,7 +245,7 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
   const [f, setF] = useState({ customer_id: "", delivery_date: today(), status: "Bản nháp", note: "", paid_amount: "" });
   // dòng phiếu: theo đơn (có sales_order_item_id) hoặc tự do. Phiếu mới → có sẵn 1 dòng trống (đỡ bấm "Thêm dòng")
   const [rows, setRows] = useState(() => (editId || initialOrderId ? [] : [
-    { _k: 1, sales_order_id: "", sales_order_item_id: "", product_id: "", product_name: "", specs: {}, unit: "", unit_price: "", quantity: "" },
+    { _k: 1, sales_order_id: "", sales_order_item_id: "", product_id: "", product_name: "", specs: {}, unit: "", unit_price: "", quantity: "", note: "" },
   ]));
   const [seq, setSeq] = useState(2);
   const [cands, setCands] = useState([]);         // đơn giao được của khách: [{sales_order_id, order_code, status, lines:[...]}]
@@ -192,6 +257,7 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
   const [savedCustomer, setSavedCustomer] = useState(""); // khách ĐÃ LƯU của phiếu (để biết người dùng có đổi khách không)
   const [stock, setStock] = useState([]);         // tồn kho cho dòng không theo đơn
   const [returning, setReturning] = useState(false); // hộp thoại Khách trả hàng (K-12)
+  const [editingNotes, setEditingNotes] = useState(false); // hộp thoại Sửa ghi chú dòng (phiếu đã giao)
   const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
 
   const isDraft = f.status === "Bản nháp";
@@ -232,7 +298,7 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
     return m;
   }, [cands]);
 
-  const newRow = (k, extra = {}) => ({ _k: k, sales_order_id: NO_ORDER, sales_order_item_id: "", product_id: "", product_name: "", specs: {}, unit: "", unit_price: "", quantity: "", ...extra });
+  const newRow = (k, extra = {}) => ({ _k: k, sales_order_id: NO_ORDER, sales_order_item_id: "", product_id: "", product_name: "", specs: {}, unit: "", unit_price: "", quantity: "", note: "", ...extra });
   const rowFromLine = (k, l) => newRow(k, {
     sales_order_id: l.sales_order_id, sales_order_item_id: l.sales_order_item_id, product_id: l.product_id,
     product_name: l.product_name, specs: l.specs || {}, unit: l.unit || "", unit_price: l.unit_price ?? "", quantity: l.suggested || "",
@@ -261,7 +327,7 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
       setRows(its.map((it, i) => newRow(i + 1, {
         sales_order_id: it.sales_order_id || NO_ORDER, sales_order_item_id: it.sales_order_item_id || "",
         product_id: it.product_id || "", product_name: it.product_name || "", specs: it.specs || {}, unit: it.unit || "",
-        unit_price: it.unit_price ?? "", quantity: it.quantity, order_code: it.sales_order_code || "",
+        unit_price: it.unit_price ?? "", quantity: it.quantity, order_code: it.sales_order_code || "", note: it.note || "",
       })));
       setSeq(its.length + 1);
       if (d.status === "Bản nháp" && d.customer_id) await loadCands(d.customer_id);
@@ -366,9 +432,12 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
       const over = validRows.filter((r) => { const l = r.sales_order_item_id && lineById.get(r.sales_order_item_id); return l && Number(r.quantity) > l.remaining + 1e-6; });
       if (over.length && !confirm(`Có ${over.length} dòng giao DƯ so với số còn phải giao (${over.map((r) => { const l = lineById.get(r.sales_order_item_id); return `${l.order_code} · ${r.product_name}: giao ${fmt(Number(r.quantity))} / còn ${fmt(l.remaining)}`; }).join("; ")}).\nVẫn cho giao. Tiếp tục lưu?`)) return;
       if (shortList.length && !confirm(`Tổng SL giao vượt tồn kho: ${shortList.map((x) => `${x.name}: giao ${fmt(x.qty)} / tồn ${fmt(x.stock)}`).join("; ")}.\nVẫn lưu nháp được, nhưng bấm Giao hàng sẽ bị chặn nếu chưa đủ tồn. Tiếp tục?`)) return;
+      const noteErr = overNoteMsg(validRows, (r) => r.product_name || "—");
+      if (noteErr) return toast.error(noteErr);
+      // LUÔN gửi note cho mọi dòng: dòng bán tồn không có khóa để backend giữ ghi chú cũ
       payloadItems = validRows.map((r) => ({
         sales_order_item_id: r.sales_order_item_id || null, product_id: r.product_id, product_name: r.product_name,
-        specs: r.specs || {}, unit: r.unit, unit_price: r.unit_price, quantity: r.quantity,
+        specs: r.specs || {}, unit: r.unit, unit_price: r.unit_price, quantity: r.quantity, note: r.note ?? "",
       }));
     }
     // Phiếu đã rời Bản nháp: chỉ lưu thông tin phiếu (trạng thái, ghi chú, đã trả) — dòng hàng đã chốt
@@ -405,6 +474,8 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
             <button onClick={() => guard(ship)} disabled={saving} className="btn-primary"><Truck size={16} /> {saving ? "Đang xử lý…" : "Giao hàng"}</button>}
           {PAYABLE_STATUSES.includes(f.status) && can("deliveries", "approve") &&
             <button onClick={() => setReturning(true)} className="btn-ghost"><RotateCcw size={16} /> Khách trả hàng</button>}
+          {!isDraft && f.status !== "Đã hủy" && can("deliveries", "edit") &&
+            <button type="button" onClick={() => setEditingNotes(true)} className="btn-ghost"><FileText size={16} /> Sửa ghi chú dòng</button>}
           <button onClick={() => onPrint?.(editId)} className="btn-ghost"><Printer size={16} /> In phiếu</button>
           {can("deliveries", "edit") && <button onClick={() => setEditing(true)} className="btn-ghost"><Pencil size={16} /> Sửa</button>}
           {can("deliveries", "delete") && ["Bản nháp", "Đã hủy"].includes(f.status) &&<button onClick={del} className="btn-ghost" style={{ color: "#e11d48" }}><Trash2 size={16} /> Xóa</button>}
@@ -416,6 +487,8 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
 
       {returning && <ReturnModal id={editId} noteCode={noteCode} lookups={lookups}
         onClose={() => setReturning(false)} onSaved={() => { setReturning(false); load(); }} />}
+      {editingNotes && <ItemNotesModal id={editId} noteCode={noteCode} items={savedItems}
+        onClose={() => setEditingNotes(false)} onSaved={() => { setEditingNotes(false); load(); }} />}
 
       {isDraft && <DebtBanner info={debtInfo} context="delivery" />}
       {isDraft && debtErr && (
@@ -477,6 +550,7 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
                 <th className="text-left px-2 py-2.5 w-14">ĐVT</th>
                 {showMoney && <th className="text-right px-2 py-2.5 w-28">Đơn giá</th>}
                 {showMoney && <th className="text-right px-3 py-2.5 w-28">Thành tiền</th>}
+                <th className="text-left px-2 py-2.5 min-w-[160px]">Ghi chú</th>
                 <th className="w-10" />
               </tr>
             </thead>
@@ -517,11 +591,17 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
                     <td className="px-2 py-1.5 text-slate-500">{r.unit || "—"}</td>
                     {showMoney && <td className="px-2 py-1.5"><input type="number" min="0" className={numCls} disabled={!moneyEdit || !r.product_id} style={priceW} value={r.unit_price ?? ""} onChange={(e) => upRow(r._k, { unit_price: e.target.value })} /></td>}
                     {showMoney && <td className="px-3 py-1.5 text-right font-semibold text-slate-800">{r.product_id ? fmt(amountOf(r)) : "—"}</td>}
+                    <td className="px-2 py-1.5">
+                      <input className={inputCls} value={r.note ?? ""} autoComplete="off" disabled={!r.product_id}
+                        aria-label={`Ghi chú dòng ${r.product_name || ""}`.trim()} placeholder="Ghi chú…"
+                        onChange={(e) => upRow(r._k, { note: e.target.value })} />
+                      <NoteCount value={r.note} />
+                    </td>
                     <td className="px-2 py-1.5 text-center"><button type="button" onClick={() => rmRow(r._k)} className="text-slate-400 hover:text-rose-600" title="Xóa dòng"><Trash2 size={15} /></button></td>
                   </tr>
                 );
               })}
-              {!rows.length && <tr><td colSpan={showMoney ? 11 : 9} className="px-4 py-8 text-center text-slate-400">
+              {!rows.length && <tr><td colSpan={showMoney ? 12 : 10}className="px-4 py-8 text-center text-slate-400">
                 {f.customer_id ? (candLoading ? "Đang tải đơn hàng của khách…" : cands.length ?"Bấm “Thêm dòng”, chọn đơn hàng rồi chọn sản phẩm (hoặc để “Không theo đơn” để bán hàng tồn kho)." : "Khách này chưa có hàng đã sản xuất chờ giao — bấm “Thêm dòng” để bán hàng tồn kho (không theo đơn).") : "Chọn khách hàng rồi bấm “Thêm dòng”."}
               </td></tr>}
             </tbody>
@@ -558,6 +638,7 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
                 <th className="text-left px-3 py-2.5 w-16">ĐVT</th>
                 {showMoney && <th className="text-right px-4 py-2.5 w-28">Đơn giá</th>}
                 {showMoney && <th className="text-right px-4 py-2.5 w-32">Thành tiền</th>}
+                <th className="text-left px-4 py-2.5 w-48">Ghi chú</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -579,9 +660,10 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
                   <td className="px-3 py-1.5 text-slate-500">{it.unit || "—"}</td>
                   {showMoney && <td className="px-4 py-1.5 text-right">{fmt(it.unit_price)}</td>}
                   {showMoney && <td className="px-4 py-1.5 text-right font-semibold text-slate-800">{fmt(it.amount)}</td>}
+                  <td className="px-4 py-1.5 text-slate-600 max-w-[12rem] truncate" title={it.note || undefined}>{it.note || <span className="text-slate-400">—</span>}</td>
                 </tr>
               ))}
-              {!savedItems.length && <tr><td colSpan={showMoney ? 8 : 6}className="px-4 py-8 text-center text-slate-400">Phiếu chưa có dòng hàng.</td></tr>}
+              {!savedItems.length && <tr><td colSpan={showMoney ? 9 : 7} className="px-4 py-8 text-center text-slate-400">Phiếu chưa có dòng hàng.</td></tr>}
             </tbody>
           </table>
           )}
@@ -597,8 +679,7 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
 function DeliveryVoucher({ id, onBack }) {
   const S = useAppSettings();
   const COMPANY = { name: S.company_name, tax: S.company_tax, address: S.company_address, phone: S.company_phone }; // Cài đặt hệ thống
-  const { fpermSecret } = usePerm();
-  const showMoney = fpermSecret("deliveries", "amounts") !== "hidden";
+  // Bản in không có tiền với MỌI người dùng (spec QT1) — không phụ thuộc quyền xem tiền
   const [d, setD] = useState(null);
   const [loadErr, setLoadErr] = useState(""); const [tryN, setTryN] = useState(0);
   useEffect(() => { api.get(id).then(setD).catch((e) => setLoadErr(e.message || "Lỗi máy chủ")); }, [id, tryN]);
@@ -613,7 +694,6 @@ function DeliveryVoucher({ id, onBack }) {
 
   const td = "border border-slate-400 px-2 py-1.5 align-top";
   const th = "border border-slate-400 px-2 py-1.5 text-center font-bold";
-  const cols = showMoney ? 7 : 5; // STT,NỘI DUNG,ĐVT,SL,(ĐƠN GIÁ,THÀNH TIỀN),GHI CHÚ
 
   return (
     <div className="space-y-4">
@@ -625,7 +705,7 @@ function DeliveryVoucher({ id, onBack }) {
       <div className="print-area bg-white rounded-xl border border-slate-200 p-8 max-w-3xl mx-auto text-slate-900">
         {/* Header: logo + tiêu đề */}
         <div className="flex items-center gap-4 border-b-2 border-blue-700 pb-3">
-          <Logo className="h-14 w-auto shrink-0" />
+          <Logo className="h-24 w-auto shrink-0" />
           <div className="flex-1 text-center">
             <h1 className="text-2xl font-extrabold text-blue-800 tracking-wide uppercase">Phiếu xuất kho</h1>
             <div className="text-sm mt-0.5">
@@ -644,13 +724,11 @@ function DeliveryVoucher({ id, onBack }) {
           <div><b>Số điện thoại:</b> {COMPANY.phone}</div>
         </div>
 
-        {/* Người mua hàng */}
+        {/* Khách hàng */}
         <div className="text-sm mt-2 leading-relaxed border-t border-slate-300 pt-2">
-          <div><b>Người mua hàng:</b> {d.customer_name || ""}</div>
           <div><b>Tên đơn vị:</b> {d.customer_name || ""}</div>
           <div><b>Địa chỉ:</b> {d.customer_address || ""}</div>
           <div><b>Số điện thoại:</b> {d.customer_phone || ""}</div>
-          {d.sales_order_code && <div><b>Theo đơn hàng:</b> {d.sales_order_code}</div>}
         </div>
 
         {/* Bảng hàng */}
@@ -661,9 +739,7 @@ function DeliveryVoucher({ id, onBack }) {
               <th className={th}>NỘI DUNG</th>
               <th className={th + " w-16"}>ĐVT</th>
               <th className={th + " w-20"}>SL</th>
-              {showMoney && <th className={th + " w-24"}>ĐƠN GIÁ</th>}
-              {showMoney && <th className={th + " w-28"}>THÀNH TIỀN</th>}
-              <th className={th + " w-28"}>GHI CHÚ</th>
+              <th className={th + " w-48"}>GHI CHÚ</th>
             </tr>
           </thead>
           <tbody>
@@ -673,32 +749,16 @@ function DeliveryVoucher({ id, onBack }) {
                 <td className={td}>{it ? <><span className="font-medium">{it.product_name}</span>{specShort(it.specs) ? <span className="text-slate-500"> · {specShort(it.specs)}</span> : null}</> : ""}</td>
                 <td className={td + " text-center"}>{it ? it.unit : ""}</td>
                 <td className={td + " text-right"}>{it ? (it.actual_quantity !== null && it.actual_quantity !== undefined && it.actual_quantity !== "" ? fmt(it.actual_quantity) : fmt(it.quantity)) : ""}</td>
-                {showMoney && <td className={td + " text-right"}>{it ? fmt(it.unit_price) : ""}</td>}
-                {showMoney && <td className={td + " text-right"}>{it ? fmt(it.amount) : ""}</td>}
-                <td className={td}>{it ? (it.note || it.sales_order_code || "") : ""}</td>
+                <td className={td + " whitespace-pre-wrap break-words [overflow-wrap:anywhere]"}>{it ? (it.note || "") : ""}</td>
               </tr>
             ))}
             <tr className="font-bold bg-blue-50">
               <td className={td + " text-center"} colSpan={3}>TỔNG CỘNG</td>
               <td className={td + " text-right"}>{fmt(totalQty)}</td>
-              {showMoney && <td className={td} />}
-              {showMoney && <td className={td + " text-right text-blue-800"}>{fmt(d.total_amount)} đ</td>}
               <td className={td} />
             </tr>
           </tbody>
         </table>
-
-        {/* Tổng tiền / công nợ (chỉ khi có quyền tiền) */}
-        {showMoney && (Number(d.paid_amount) > 0 || Number(d.total_amount) - Number(d.paid_amount) !== 0) && (
-          <div className="flex justify-end mt-2 text-sm">
-            <table>
-              <tbody>
-                <tr><td className="px-3 py-0.5 text-right text-slate-600">Đã trả:</td><td className="px-3 py-0.5 text-right font-semibold text-emerald-700">{fmt(d.paid_amount)} đ</td></tr>
-                <tr><td className="px-3 py-0.5 text-right font-bold">Còn nợ:</td><td className={`px-3 py-0.5 text-right font-bold ${Number(d.total_amount) - Number(d.paid_amount) > 0 ? "text-rose-600" : "text-emerald-600"}`}>{fmt(Number(d.total_amount) - Number(d.paid_amount))} đ</td></tr>
-              </tbody>
-            </table>
-          </div>
-        )}
 
         {/* Chữ ký */}
         <div className="grid grid-cols-4 gap-2 mt-8 text-center text-sm">

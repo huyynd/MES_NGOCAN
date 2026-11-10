@@ -138,9 +138,9 @@ export function UnitSelect({ value, onChange, disabled = false, className }) {
  *  - light: chữ trắng (đặt trên nền tối).
  *  - withText: kèm chữ "NGỌC AN THƯ" (false = chỉ biểu tượng).
  */
-// Dùng đúng file ảnh logo gốc tại public/logo.png — thay file là đổi logo toàn hệ thống.
+// Logo vector tại public/logo.svg — thay file là đổi logo toàn hệ thống.
 export function Logo({ className = "" }) {
-  return <img src="/logo.png" alt="Ngọc An Thư" className={className} />;
+  return <img src="/logo.svg" alt="Ngọc An Thư" className={className} />;
 }
 
 /**

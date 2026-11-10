@@ -12,9 +12,9 @@ const DEFS = {
   near_min_percent:    { group: 'Kho',        label: '"Gần định mức" khi tồn dưới (% tồn tối thiểu)', type: 'number', min: 100, max: 1000, def: 120 },
   debt_bad_days:       { group: 'Công nợ',    label: 'Nợ xấu khi quá hạn (ngày)', type: 'int', min: 1, max: 3650, def: 30 },
   debt_limit_amount:   { group: 'Công nợ',    label: 'Hạn mức nợ chặn lập phiếu giao (đ)', type: 'number', min: 0, max: 1e13, def: 300000000 },
-  company_name:        { group: 'Công ty (in trên phiếu)', label: 'Tên công ty', type: 'text', max: 200, def: 'CÔNG TY TNHH THƯƠNG MẠI SẢN XUẤT XNK BAO BÌ NGỌC AN THƯ' },
+  company_name:        { group: 'Công ty (in trên phiếu)', label: 'Tên công ty', type: 'text', max: 200, def: 'CÔNG TY TNHH THƯƠNG MẠI SẢN XUẤT BAO BÌ NGỌC AN THƯ' },
   company_tax:         { group: 'Công ty (in trên phiếu)', label: 'Mã số thuế', type: 'text', max: 30, def: '0316748578' },
-  company_address:     { group: 'Công ty (in trên phiếu)', label: 'Địa chỉ', type: 'text', max: 300, def: '119/1 Đường Đỗ Mười, Tổ 4, Khu phố 1, Phường Thới An, Thành Phố Hồ Chí Minh' },
+  company_address:     { group: 'Công ty (in trên phiếu)', label: 'Địa chỉ', type: 'text', max: 300, def: 'Số 8F3, Đường DD6, Khu Phố 4, P. Tân Hưng Thuận, Quận 12, TP.HCM' },
   company_phone:       { group: 'Công ty (in trên phiếu)', label: 'Điện thoại', type: 'text', max: 50, def: '0938 446 156' },
 };
 

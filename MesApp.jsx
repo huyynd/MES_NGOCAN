@@ -278,7 +278,7 @@ function Sidebar({ user, onLogout, collapsed, onToggle, mobileMenuOpen, onCloseM
           </button>
           {!collapsed && (
             <div className="flex-1 flex flex-col items-center pr-6">
-              <Logo className="max-h-10 max-w-full w-auto object-contain" />
+              <Logo className="max-h-16 max-w-full w-auto object-contain" />
               <div className="text-[11px] text-slate-400 mt-0.5">Hệ thống MES</div>
             </div>
           )}
@@ -1333,7 +1333,7 @@ export default function MesApp() {
               <button onClick={() => setMobileMenuOpen(true)} className="p-1 text-slate-500 hover:bg-slate-100 rounded">
                 <Menu size={20} />
               </button>
-              <Logo className="h-6" />
+              <Logo className="h-9" />
             </div>
             <div className="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center text-xs font-bold">
               {(user?.full_name || user?.username || "?").charAt(0).toUpperCase()}

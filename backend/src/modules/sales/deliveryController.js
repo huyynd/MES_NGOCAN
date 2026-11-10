@@ -262,9 +262,34 @@ async function priceWarnings(client, items) {
   return out;
 }
 
+// Ghi chú từng dòng phiếu giao: NFC → trim → rỗng thành null; tối đa ITEM_NOTE_MAX ký tự (đếm theo code point sau NFC).
+// Trả { value } hoặc { error }. Nơi duy nhất kiểm ghi chú dòng (saveItems + updateItemNotes).
+const ITEM_NOTE_MAX = 200;
+function cleanItemNote(v, lineNo) {
+  if (v === undefined || v === null) return { value: null };
+  if (typeof v !== 'string') return { error: `Ghi chú dòng ${lineNo} không hợp lệ.` };
+  const s = v.normalize('NFC').trim();
+  if (!s) return { value: null };
+  const len = [...s].length;
+  if (len > ITEM_NOTE_MAX) return { error: `Ghi chú dòng ${lineNo} vượt ${ITEM_NOTE_MAX} ký tự (đang ${len}).` };
+  return { value: s };
+}
+class BadRequestError extends Error { constructor(m) { super(m); this.status = 400; } }
+
 async function saveItems(client, noteId, items) {
-  await client.query('DELETE FROM delivery_note_items WHERE delivery_note_id = $1', [noteId]);
   const list = (Array.isArray(items) ? items : []).filter((x) => x && (x.product_id || x.product_name));
+  // Kiểm ghi chú MỌI dòng trước khi xóa dòng cũ. Dòng không gửi trường `note` → giữ ghi chú cũ theo sales_order_item_id.
+  const oldNotes = new Map();
+  for (const r of (await client.query(
+    `SELECT sales_order_item_id, note FROM delivery_note_items WHERE delivery_note_id = $1 AND sales_order_item_id IS NOT NULL ORDER BY line_no`,
+    [noteId])).rows) if (!oldNotes.has(r.sales_order_item_id)) oldNotes.set(r.sales_order_item_id, r.note);
+  const notes = list.map((it, k) => {
+    if (!Object.prototype.hasOwnProperty.call(it, 'note')) return (it.sales_order_item_id && oldNotes.get(it.sales_order_item_id)) || null;
+    const c = cleanItemNote(it.note, k + 1);
+    if (c.error) throw new BadRequestError(c.error);
+    return c.value;
+  });
+  await client.query('DELETE FROM delivery_note_items WHERE delivery_note_id = $1', [noteId]);
   // Tra tên + đơn vị sản phẩm nếu dòng chưa có (đảm bảo NỘI DUNG luôn có dữ liệu)
   const ids = [...new Set(list.filter((x) => x.product_id).map((x) => x.product_id))];
   const pmap = {};
@@ -279,10 +304,11 @@ async function saveItems(client, noteId, items) {
     const actQty = it.actual_quantity === '' || it.actual_quantity == null ? null : num(it.actual_quantity);
     const amount = (actQty !== null ? actQty : qty) * price; total += amount;
     await client.query(
-      `INSERT INTO delivery_note_items (delivery_note_id, product_id, product_name, specs, quantity, unit, unit_price, amount, line_no, actual_quantity, sales_order_item_id)
-       VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9,$10,$11)`,
+      `INSERT INTO delivery_note_items (delivery_note_id, product_id, product_name, specs, quantity, unit, unit_price, amount, line_no, actual_quantity, sales_order_item_id, note)
+       VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9,$10,$11,$12)`,
       [noteId, it.product_id || null, it.product_name || (p && p.product_name) || null, JSON.stringify(it.specs || {}),
-       qty, upUnit(it.unit || (p && p.unit)), price, amount, n++, actQty, it.sales_order_item_id || null]);
+       qty, upUnit(it.unit || (p && p.unit)), price, amount, n, actQty, it.sales_order_item_id || null, notes[n - 1]]);
+    n++;
   }
   return total;
 }
@@ -312,7 +338,11 @@ exports.create = async (req, res) => {
     const warnings = await priceWarnings(client, b.items);
     await client.query('COMMIT');
     res.status(201).json({ ...rows[0], total_amount: total, warnings });
-  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi tạo phiếu' }); }
+  } catch (err) {
+    await client.query('ROLLBACK');
+    if (err instanceof BadRequestError) return res.status(400).json({ message: err.message });
+    console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi tạo phiếu' });
+  }
   finally { client.release(); }
 };
 
@@ -385,7 +415,44 @@ exports.update = async (req, res) => {
     const warnings = b.items !== undefined ? await priceWarnings(client, b.items) : [];
     await client.query('COMMIT');
     res.json({ message: 'Đã cập nhật phiếu', warnings });
-  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi cập nhật phiếu' }); }
+  } catch (err) {
+    await client.query('ROLLBACK');
+    if (err instanceof BadRequestError) return res.status(400).json({ message: err.message });
+    console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi cập nhật phiếu' });
+  }
+  finally { client.release(); }
+};
+
+// PUT /api/deliveries/:id/item-notes  body { notes: [{ id, note }] }
+// Sửa RIÊNG ghi chú dòng (mọi trạng thái trừ "Đã hủy", kể cả đã giao/đã thanh toán). Không chạm SL/giá/tiền/trạng thái.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+exports.updateItemNotes = async (req, res) => {
+  const list = req.body && req.body.notes;
+  if (!UUID_RE.test(req.params.id)) return res.status(400).json({ message: 'Mã phiếu không hợp lệ.' });
+  if (!Array.isArray(list)) return res.status(400).json({ message: 'Thiếu danh sách ghi chú (notes).' });
+  const clean = [];
+  for (let k = 0; k < list.length; k++) {
+    const x = list[k];
+    if (!x || typeof x.id !== 'string' || !UUID_RE.test(x.id)) return res.status(400).json({ message: `Dòng ${k + 1}: mã dòng không hợp lệ.` });
+    const c = cleanItemNote(x.note, k + 1);
+    if (c.error) return res.status(400).json({ message: c.error });
+    clean.push({ id: x.id, note: c.value });
+  }
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    const cur = (await client.query(
+      `SELECT status FROM delivery_notes WHERE id = $1 AND is_deleted = FALSE FOR UPDATE`, [req.params.id])).rows[0];
+    if (!cur) { await client.query('ROLLBACK'); return res.status(404).json({ message: 'Không tìm thấy phiếu' }); }
+    if (cur.status === 'Đã hủy') { await client.query('ROLLBACK'); return res.status(400).json({ message: 'Phiếu đã hủy — không sửa được ghi chú.' }); }
+    for (const x of clean) {
+      const r = await client.query(
+        `UPDATE delivery_note_items SET note = $1 WHERE id = $2 AND delivery_note_id = $3`, [x.note, x.id, req.params.id]);
+      if (!r.rowCount) { await client.query('ROLLBACK'); return res.status(400).json({ message: 'Có dòng không thuộc phiếu này.' }); }
+    }
+    await client.query('COMMIT');
+    res.json({ message: 'Đã lưu ghi chú dòng' });
+  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: 'Lỗi khi lưu ghi chú dòng' }); }
   finally { client.release(); }
 };
 

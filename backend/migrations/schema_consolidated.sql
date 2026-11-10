@@ -2693,9 +2693,9 @@ END $$;
 INSERT INTO public.app_settings (key, value) VALUES
   ('vat_percent', '8'), ('urgent_days', '5'), ('priority_top', '5'), ('scrap_alert_percent', '5'),
   ('schedule_lock_days', '3'), ('near_min_percent', '120'),
-  ('company_name', to_jsonb('CÔNG TY TNHH THƯƠNG MẠI SẢN XUẤT XNK BAO BÌ NGỌC AN THƯ'::text)),
+  ('company_name', to_jsonb('CÔNG TY TNHH THƯƠNG MẠI SẢN XUẤT BAO BÌ NGỌC AN THƯ'::text)),
   ('company_tax', to_jsonb('0316748578'::text)),
-  ('company_address', to_jsonb('119/1 Đường Đỗ Mười, Tổ 4, Khu phố 1, Phường Thới An, Thành Phố Hồ Chí Minh'::text)),
+  ('company_address', to_jsonb('Số 8F3, Đường DD6, Khu Phố 4, P. Tân Hưng Thuận, Quận 12, TP.HCM'::text)),
   ('company_phone', to_jsonb('0938 446 156'::text))
 ON CONFLICT (key) DO NOTHING;
 --  b) Kho: danh sách nhà máy thống nhất "Nhà máy thổi" / "Nhà máy cắt" (như Máy / Nhân viên).
@@ -2808,4 +2808,17 @@ ALTER TABLE public.delivery_return_items ADD COLUMN IF NOT EXISTS unit_price num
 ALTER TABLE public.delivery_return_items ADD COLUMN IF NOT EXISTS amount numeric(16,2) NOT NULL DEFAULT 0;
 --   Số đã giao của đơn = SL giao − returned_qty
 ALTER TABLE public.delivery_note_items ADD COLUMN IF NOT EXISTS returned_qty numeric(14,2) NOT NULL DEFAULT 0;
+-- ---------------------------------------------------------------------
+
+-- 36) PHIẾU XUẤT KHO (2026-11-09): ghi chú từng dòng phiếu giao + thông tin công ty mới.
+--   M1. Ghi chú dòng (null được). Giới hạn 200 ký tự kiểm ở backend (cleanItemNote), không CHECK ở DB.
+--       Gỡ: ALTER TABLE public.delivery_note_items DROP COLUMN note;
+ALTER TABLE public.delivery_note_items ADD COLUMN IF NOT EXISTS note text;
+--   M3. Đổi tên/địa chỉ công ty CHỈ KHI đang đúng giá trị mặc định cũ (không ghi đè chỉnh tay; chạy lại an toàn).
+-- [M3-BEGIN]
+UPDATE public.app_settings SET value = to_jsonb('CÔNG TY TNHH THƯƠNG MẠI SẢN XUẤT BAO BÌ NGỌC AN THƯ'::text)
+  WHERE key = 'company_name' AND value = to_jsonb('CÔNG TY TNHH THƯƠNG MẠI SẢN XUẤT XNK BAO BÌ NGỌC AN THƯ'::text);
+UPDATE public.app_settings SET value = to_jsonb('Số 8F3, Đường DD6, Khu Phố 4, P. Tân Hưng Thuận, Quận 12, TP.HCM'::text)
+  WHERE key = 'company_address' AND value = to_jsonb('119/1 Đường Đỗ Mười, Tổ 4, Khu phố 1, Phường Thới An, Thành Phố Hồ Chí Minh'::text);
+-- [M3-END]
 -- ---------------------------------------------------------------------

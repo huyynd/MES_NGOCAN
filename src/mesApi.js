@@ -73,6 +73,8 @@ export const deliveries = {
   ship: (id) => http(`/deliveries/${id}/ship`, body("POST", {})),
   returns: (id) => http(`/deliveries/${id}/returns`),
   createReturn: (id, data) => http(`/deliveries/${id}/returns`, body("POST", data)),
+  // Sửa riêng ghi chú dòng (cả sau khi giao, trừ phiếu Đã hủy) — notes: [{ id, note }]
+  itemNotes: (id, notes) => http(`/deliveries/${id}/item-notes`, body("PUT", { notes })),
 };
 
 // Phiếu thanh toán: khách trả 1 cục → backend tự trừ vào phiếu giao cũ nhất trước (FIFO)

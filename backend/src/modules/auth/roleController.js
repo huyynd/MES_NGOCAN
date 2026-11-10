@@ -11,7 +11,9 @@ function mergePermissions(parentPerms, childPerms) {
     const cApp = child[appKey];
 
     // Handle old boolean style or new style actions
-    for (const action of ['view', 'create', 'edit', 'delete', 'approve', 'reject', 'import', 'export', 'print', 'execute', 'assign', 'cancel', 'complete', 'view_amounts']) {
+    // Sửa 2026-10-26: gộp MỌI action (trừ 'fields') thay vì danh sách cứng — danh sách cũ làm mất
+    // publish / request / confirm (và approve_correction của HR-G3) khi lưu vai trò.
+    for (const action of Object.keys(cApp).filter((k) => k !== 'fields')) {
       if (cApp[action] !== undefined) {
         if (cApp[action] === 'INHERIT' || cApp[action] === '') {
            // inherit: do nothing, keep parent

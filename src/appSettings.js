@@ -10,9 +10,9 @@ export const SETTING_DEFAULTS = {
   scrap_alert_percent: 5,
   schedule_lock_days: 3,
   near_min_percent: 120,
-  company_name: "CÔNG TY TNHH THƯƠNG MẠI SẢN XUẤT XNK BAO BÌ NGỌC AN THƯ",
+  company_name: "CÔNG TY TNHH THƯƠNG MẠI SẢN XUẤT BAO BÌ NGỌC AN THƯ",
   company_tax: "0316748578",
-  company_address: "119/1 Đường Đỗ Mười, Tổ 4, Khu phố 1, Phường Thới An, Thành Phố Hồ Chí Minh",
+  company_address: "Số 8F3, Đường DD6, Khu Phố 4, P. Tân Hưng Thuận, Quận 12, TP.HCM",
   company_phone: "0938 446 156",
 };
 
