@@ -1,236 +1,74 @@
-# 📋 Kế hoạch Phát triển — MES Bao Bì Ngọc An Thư
+# Kế hoạch và trạng thái phát triển MES
 
-> **Ngày cập nhật:** 2026-07-20  
-> **Trạng thái dự án:** 🟡 Đang phát triển  
-> **Phiên bản DB hiện tại:** v34  
-> **Stack:** React 18 + Vite + TailwindCSS · Node.js / Express · PostgreSQL 17
+> Cập nhật: 12-11-2026. Trạng thái trong tài liệu được suy ra từ mã nguồn hiện có; chỉ nghiệm thu nghiệp vụ thực tế mới xác nhận “hoàn thành” tại nhà máy.
 
----
+## Phạm vi hiện có
 
-## 🗺️ Tổng quan dự án
+Hệ thống đã có các nhóm chức năng sau:
 
-Hệ thống **MES (Manufacturing Execution System)** dành cho **Nhà máy Bao bì Ngọc An Thư**, giúp số hóa toàn bộ vòng đời sản xuất: từ đơn hàng → kế hoạch → sản xuất → kho → giao hàng → dashboard.
+| Nhóm | Chức năng hiện có |
+|---|---|
+| Danh mục | Khách hàng, nhân viên, máy, ca, kho, khu vực, vị trí, vai trò, tài khoản |
+| Kỹ thuật | Sản phẩm, tệp đính kèm sản phẩm, BOM, quy trình/công đoạn |
+| Bán hàng | Đơn hàng, import đơn, giao hàng nhiều đơn, trả hàng, phiếu thu, công nợ và số dư đầu kỳ |
+| Sản xuất | Kế hoạch/MRP, lệnh SX, phân công/công đoạn, Gantt, thực thi, nhu cầu/xuất/trả NVL |
+| Kho | Tồn dạng danh sách/cây, nhập, điều chỉnh, điều chuyển, phiếu xuất, lịch sử, QR và truy xuất lô |
+| Chất lượng/tái chế | Ghi nhận phế theo ngày, tổng hợp phế, vé tái chế và cuộn tái chế |
+| Báo cáo | KPI, chi tiết, theo máy/nhân viên, báo cáo giám đốc, báo cáo kho, báo cáo sản lượng |
+| Hệ thống | JWT, phân quyền vai trò/user, cài đặt hệ thống, health check, CORS/rate-limit |
 
-### Cấu trúc nhà máy
-| Nhà máy | Máy móc | Chức năng |
-|---------|---------|-----------|
-| **Nhà máy 1** (Thổi) | 2 máy thổi lớn, 2 máy thổi nhỏ, 1 máy HD | Thổi nhựa thành bán thành phẩm (cuộn ni lông) |
-| **Nhà máy 2** (Cắt) | 7 máy cắt | Cắt BTP thành thành phẩm |
+## Ưu tiên vận hành (P0)
 
-### Nguyên vật liệu & Nhân sự
-- **NVL:** Hạt nhựa, Chất phụ gia
-- **Nhân sự:** 1 Quản lý công nghệ, 3 nhân sự bộ phận thổi, 6 công nhân bộ phận cắt máy
+- [ ] Chốt một database production chính thức, sao lưu định kỳ và thử khôi phục trên môi trường tách biệt.
+- [ ] Giữ Render Start Command là `npm start`; không chạy migration tự động cùng deploy code.
+- [ ] Mỗi thay đổi schema phải có checklist: backup → review SQL → chạy thủ công → smoke test → lưu log.
+- [ ] Duy trì biến môi trường tách biệt local/production; không commit `.env`, không đưa secret vào `VITE_*`.
+- [ ] Thực hiện smoke test sau deploy: `/health`, đăng nhập, tồn kho, lệnh SX, giao hàng/công nợ, báo cáo liên quan.
 
----
+## Ưu tiên sản phẩm và kỹ thuật (P1)
 
-## 🏗️ Kiến trúc hệ thống
+- [ ] Rà soát quyền **đọc** và phạm vi dữ liệu của mọi API; hiện nhiều route ghi đã có middleware, nhưng quyền cần được kiểm thử theo từng vai trò.
+- [ ] Chuẩn hóa dữ liệu nhân sự/ca dùng ID nhất quán ở các luồng sản xuất và báo cáo; hạn chế liên kết theo chuỗi tên.
+- [ ] Chuẩn hóa một đầu mối ghi sổ kho, đảm bảo mọi nhánh cộng/trừ tạo transaction và cập nhật tồn đồng nhất.
+- [ ] Viết bộ test tích hợp cho luồng đơn hàng → lệnh SX → xuất/trả NVL → hoàn thành → giao hàng/thu tiền.
+- [ ] Kiểm thử nghiệp vụ tính sản lượng/phế trong các trường hợp lệnh hủy, nhiều công đoạn và chỉnh sửa ghi phế cùng ngày.
+- [ ] Theo dõi lỗi production (log tập trung/alert) và thiết lập cảnh báo health check.
 
-```
-┌─────────────────────────────┐
-│   FRONTEND  (cổng 5173)     │
-│   React 18 + Vite + Tailwind│
-└────────────┬────────────────┘
-             │ HTTPS / Bearer token
-┌────────────▼────────────────┐
-│   BACKEND   (cổng 4000)     │
-│   Node.js / Express 4       │
-│   Controllers + genericCrud │
-└────────────┬────────────────┘
-             │ SQL (node-pg)
-┌────────────▼────────────────┐
-│   DATABASE  (cổng 5432)     │
-│   PostgreSQL 17 — db: mes   │
-│   34 migration schema files │
-└─────────────────────────────┘
-```
+## Ưu tiên cải tiến (P2)
 
----
+- [ ] Chia nhỏ bundle frontend bằng lazy loading các báo cáo/module nặng.
+- [ ] Bổ sung audit log truy vết ai thay đổi dữ liệu, thời điểm và giá trị trước/sau.
+- [ ] Cảnh báo tồn dưới ngưỡng, lệnh trễ và công nợ vượt hạn mức.
+- [ ] Nâng quy trình import Excel: validate rõ ràng hơn, preview và báo lỗi theo dòng.
+- [ ] Bổ sung báo cáo xu hướng, deadline scheduling và chỉ số vận hành sau khi dữ liệu nền ổn định.
 
-## 📦 Các phân hệ (Modules)
+## Quy ước thay đổi
 
-### ✅ Đã hoàn thiện
+### Thay đổi code
 
-| # | Module | Frontend | Backend Controller | Ghi chú |
-|---|--------|----------|--------------------|---------|
-| 1 | **Đăng nhập / Xác thực** | `Login.jsx` | `authController.js` | scrypt, token in-memory |
-| 2 | **Master Data** | `MasterData.jsx` | `genericCrud.js` | Khách hàng, máy móc, kho, ca, NV |
-| 3 | **Định mức BOM** | `Bom.jsx` | `bomController.js` | BOM đa cấp, pha màu |
-| 4 | **Quy trình CN** | `Process.jsx` | `processController.js` | Tech process + process steps |
-| 5 | **Đơn hàng** | `Orders.jsx` | `salesOrderController.js` | Đơn hàng + dòng chi tiết |
-| 6 | **Kế hoạch SX** | `Planning.jsx` | `planningController.js` | Gom lô, MRP, sinh lệnh SX |
-| 7 | **Lệnh SX / Gantt** | `Production.jsx`, `ProductionGantt.jsx` | `productionController.js` | Phân công, backflush kho |
-| 8 | **Kho** | `Inventory.jsx` | `inventoryController.js` | Tồn kho, nhập/xuất, vị trí |
-| 9 | **QR Labels** | `QrLabels.jsx` | _(products route)_ | In nhãn QR |
-| 10 | **QR Scan** | `QrScan.jsx` | `productionController.js` | Quét QR cập nhật sản lượng |
-| 11 | **Xếp lịch nhân sự** | `WorkSchedule.jsx` | `workScheduleController.js` | Ca làm việc theo nhân viên |
-| 12 | **Giao hàng** | `Deliveries.jsx` | `deliveryController.js` | Phiếu giao hàng |
-| 13 | **Phân quyền (RBAC)** | `Permissions.jsx` | `roleController.js` | 3 cấp: vai trò → app → hành động + trường |
-| 14 | **Quản lý người dùng** | `Users.jsx` | `userController.js` | Thêm/sửa/xóa tài khoản |
-| 15 | **Dashboard** | _(MesApp.jsx)_ | `dashboardController.js` | Tổng hợp số liệu thực |
+1. Cập nhật tính năng và quyền API tương ứng.
+2. Chạy `npm run build` ở thư mục gốc.
+3. Nếu đổi backend, kiểm tra ít nhất cú pháp Node của file thay đổi và endpoint liên quan.
+4. Cập nhật [ARCHITECTURE.md](ARCHITECTURE.md) khi thay đổi ranh giới module, auth, router hoặc deploy.
 
----
+### Thay đổi database
 
-## 🚧 Backlog & Việc còn lại
+1. Không chạy SQL trực tiếp lên production trước khi có backup.
+2. Cập nhật `backend/migrations/schema_consolidated.sql` theo hướng có thể chạy lặp lại an toàn khi phù hợp.
+3. Kiểm thử trên database copy/đại diện trước.
+4. Chạy `cd backend; npm run migrate` thủ công sau khi xác nhận đúng `DATABASE_URL`.
+5. Cập nhật [phan-tich-csdl.md](phan-tich-csdl.md) nếu có bảng, quan hệ hoặc nguyên tắc lưu dữ liệu mới.
 
-### 🔴 Ưu tiên Cao (P1)
+### Thay đổi deploy
 
-- [ ] **Kiểm soát quyền phía server** — hiện phân quyền chỉ ở client; cần thêm middleware `requirePerm(app, action)` để bảo vệ API
-- [ ] **JWT / Redis token store** — thay thế Map in-memory; hỗ trợ multiple instances & token expiry đúng chuẩn
-- [ ] **Tối ưu thuật toán gom lô (Planning)** — gom theo cùng màu + kích thước để giảm changeover / phế phẩm thổi
-- [ ] **Báo cáo tỷ lệ phế phẩm** — thống kê phế theo máy, ca, sản phẩm; xuất Excel
+Theo [DEPLOY.md](DEPLOY.md). Đổi biến môi trường Render/Vercel cần redeploy/restart tương ứng nhưng không phải commit file `.env`.
 
-### 🟡 Ưu tiên Trung (P2)
+## Chỉ số nghiệm thu đề xuất
 
-- [ ] **Thông báo / Alert** — cảnh báo khi tồn kho NVL thấp hơn ngưỡng tối thiểu
-- [ ] **Kế hoạch theo ngày giao (deadline-driven scheduling)** — ưu tiên đơn hàng sắp đến hạn
-- [ ] **Dashboard nâng cao** — OEE (Overall Equipment Effectiveness), biểu đồ xu hướng theo tuần/tháng
-- [ ] **Import Excel nâng cao** — validate dữ liệu kỹ hơn, preview trước khi import
-- [ ] **Audit log** — ghi lại ai thay đổi gì, lúc nào (bảng `audit_logs`)
-
-### 🟢 Ưu tiên Thấp / Tương lai (P3)
-
-- [ ] **Ứng dụng mobile / PWA** — cho công nhân quét QR trên điện thoại offline
-- [ ] **Tích hợp cân điện tử** — nhập tự động khối lượng NVL khi cân
-- [ ] **Dự báo nhu cầu (Forecasting)** — phân tích lịch sử đơn hàng, gợi ý kế hoạch mua NVL
-- [ ] **Multi-factory support** — mở rộng sang nhiều nhà máy / chi nhánh
-
----
-
-## 🗄️ Database Migration Log
-
-| Phiên bản | File | Nội dung chính |
-|-----------|------|----------------|
-| v1 | `schema.sql` | Khởi tạo cơ sở |
-| v2 | `schema_v2.sql` | Master data mở rộng |
-| v3–v9 | `schema_v3.sql` … `schema_v9.sql` | Thêm bảng nghiệp vụ |
-| v10–v19 | `schema_v10.sql` … `schema_v19.sql` | Đơn hàng, BOM, Kho |
-| v20–v29 | `schema_v20.sql` … `schema_v29.sql` | Sản xuất, phân công, Gantt |
-| v30–v34 | `schema_v30.sql` … `schema_v34.sql` | Giao hàng, Work schedule, cải tiến |
-
-> ⚠️ **Quy tắc:** Mọi thay đổi CSDL phải tạo file `schema_v{N+1}.sql` mới, **không sửa** file cũ.
-
----
-
-## 🔄 Luồng nghiệp vụ cốt lõi
-
-```
-Tạo Đơn hàng
-     ↓
-Lập Kế hoạch (gom lô / MRP)
-     ↓
-Sinh Lệnh sản xuất
-     ↓
-Phân công ca máy (Gantt)
-     ↓
-Quét QR cập nhật sản lượng / phế
-     ↓
-Hoàn thành lệnh → Backflush kho (tự động)
-  ├─ Nhập thành phẩm vào kho
-  └─ Trừ nguyên vật liệu theo BOM
-     ↓
-Tạo Phiếu giao hàng
-     ↓
-Dashboard tổng hợp
-```
-
----
-
-## 🖥️ Hướng dẫn khởi động môi trường DEV
-
-```bash
-# 1. Cơ sở dữ liệu (PostgreSQL đang chạy)
-# Tạo DB: createdb mes
-# Cấu hình backend/.env
-
-# 2. Chạy migration
-cd backend
-npm run migrate
-
-# 3. Khởi động Backend (cổng 4000)
-npm run dev
-
-# 4. Khởi động Frontend (cổng 5173) — terminal mới
-cd ..
-npm run dev
-```
-
-**Tài khoản mặc định:** `admin / admin123` (tự động seed khi chưa có user)
-
----
-
-## 🚀 Roadmap triển khai Production
-
-| Giai đoạn | Hành động | Ưu tiên |
-|-----------|-----------|---------|
-| **Phase 1** | Bổ sung middleware phân quyền phía server | P1 |
-| **Phase 2** | Chuyển sang JWT + Redis token store | P1 |
-| **Phase 3** | Build frontend tĩnh (`vite build`), phục vụ qua Nginx | P2 |
-| **Phase 4** | Cấu hình HTTPS + reverse proxy | P2 |
-| **Phase 5** | Thiết lập sao lưu PostgreSQL định kỳ (pg_dump) | P2 |
-| **Phase 6** | Monitoring (uptime, error tracking) | P3 |
-
----
-
-## 📁 Cấu trúc thư mục
-
-```
-Project_MES/
-├── plan.md                     # 📋 File này
-├── ARCHITECTURE.md             # Kiến trúc hệ thống chi tiết
-├── README.md                   # Hướng dẫn cài đặt
-├── MesApp.jsx                  # App gốc (Sidebar + routing)
-├── index.html                  # Entry point + Tailwind CDN
-├── src/
-│   ├── main.jsx                # React entry
-│   ├── mesApi.js               # Lớp gọi API (Bearer token)
-│   ├── perm.jsx                # RBAC phía client
-│   ├── components.jsx          # Shared UI components
-│   ├── ui.js                   # Tiện ích giao diện
-│   └── modules/                # 15 module nghiệp vụ
-│       ├── Orders.jsx          # Đơn hàng
-│       ├── Planning.jsx        # Kế hoạch sản xuất
-│       ├── Production.jsx      # Lệnh sản xuất
-│       ├── ProductionGantt.jsx # Biểu đồ Gantt
-│       ├── Bom.jsx             # Định mức BOM
-│       ├── Process.jsx         # Quy trình công nghệ
-│       ├── Inventory.jsx       # Quản lý kho
-│       ├── MasterData.jsx      # Dữ liệu danh mục
-│       ├── Deliveries.jsx      # Giao hàng
-│       ├── WorkSchedule.jsx    # Xếp lịch nhân sự
-│       ├── QrLabels.jsx        # In nhãn QR
-│       ├── QrScan.jsx          # Quét QR
-│       ├── Users.jsx           # Quản lý người dùng
-│       └── Permissions.jsx     # Phân quyền RBAC
-└── backend/
-    ├── server.js               # Express entry point
-    ├── db.js                   # pg Pool connection
-    ├── migrate.js              # Migration runner
-    ├── routes/                 # API routes
-    ├── controllers/            # Business logic (15 controllers)
-    ├── middleware/             # Auth middleware
-    ├── lib/                    # Thư viện dùng chung
-    └── schema_v*.sql           # DB migrations (v1 → v34)
-```
-
----
-
-## 📊 Tiến độ tổng thể
-
-| Phân hệ | Tiến độ | Ghi chú |
-|---------|---------|---------|
-| Đăng nhập / RBAC | ████████░░ 80% | Thiếu kiểm tra quyền phía server |
-| Master Data | ██████████ 100% | Hoàn chỉnh |
-| BOM & Quy trình | █████████░ 90% | Ổn định |
-| Đơn hàng | ██████████ 100% | Hoàn chỉnh |
-| Kế hoạch SX | ████████░░ 80% | Cần tối ưu gom lô deadline-driven |
-| Lệnh SX / Gantt | █████████░ 90% | Hoàn chỉnh, cần báo cáo phế |
-| Kho | █████████░ 90% | Hoàn chỉnh, thiếu alert tồn thấp |
-| QR (Labels + Scan) | ██████████ 100% | Hoàn chỉnh |
-| Giao hàng | ████████░░ 80% | Đang ổn định |
-| Xếp lịch nhân sự | ███████░░░ 70% | Cần kiểm tra thêm |
-| Dashboard | ████████░░ 80% | Cần thêm biểu đồ xu hướng |
-| **Tổng thể** | **~85%** | Production-ready sau P1 tasks |
-
----
-
-*Tài liệu này được cập nhật thủ công khi có thay đổi lớn. Mọi thay đổi kiến trúc cần cập nhật đồng thời `ARCHITECTURE.md` và `plan.md`.*
+| Hạng mục | Tiêu chí tối thiểu |
+|---|---|
+| Bảo mật | Token hết hạn/đăng xuất bị từ chối; tài khoản thiếu quyền nhận 403 ở API ghi |
+| Kho | Không âm tồn ngoài trường hợp được chủ động cho phép; tồn và lịch sử giao dịch khớp |
+| Sản xuất | Sản lượng, phế và trạng thái lệnh đúng với công đoạn; lệnh hủy không cộng sản lượng |
+| Bán hàng | Số lượng giao/trả, phiếu thu và công nợ nhất quán |
+| Deploy | Health check thành công, không lỗi CORS, không migration ngoài ý muốn |
