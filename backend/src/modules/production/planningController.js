@@ -1,6 +1,7 @@
 // backend/controllers/planningController.js
 const db = require('../../core/db');
 const { stockAvailability } = require('../../core/lib/availability');
+const { finalStageSql } = require('../../core/lib/finalStage');
 
 /**
  * GET /api/planning/groups
@@ -30,7 +31,7 @@ exports.groups = async (req, res) => {
              COALESCE((SELECT STRING_AGG(DISTINCT m2.name, ', ') FROM production_tasks t2 JOIN machines m2 ON m2.id = t2.machine_id WHERE t2.production_order_id = po.id AND t2.machine_id IS NOT NULL), m.name) AS machine_name_display,
              COALESCE((SELECT SUM(COALESCE(t.actual_qty, t.quantity)) FROM production_tasks t
                        WHERE t.production_order_id = po.id AND t.status = 'Hoàn thành'
-                         AND t.stage = (CASE WHEN EXISTS (SELECT 1 FROM production_tasks tf WHERE tf.production_order_id = po.id AND tf.stage = 'Cắt') THEN 'Cắt' ELSE 'Thổi' END)), 0) AS produced_qty
+                         AND t.stage = ${finalStageSql('po.id')}), 0) AS produced_qty
       FROM production_orders po
       JOIN products p ON p.id = po.product_id
       LEFT JOIN customers c ON c.id = po.customer_id

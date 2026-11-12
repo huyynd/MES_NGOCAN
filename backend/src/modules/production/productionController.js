@@ -11,10 +11,7 @@ const { orderSources, remaining, netByProduct, postReturn, materialNeeds, syncPe
 
 // Công đoạn cuối của 1 lệnh: 'Cắt' nếu có task Cắt, ngược lại 'Thổi'
 // Thành phẩm (bao bì) luôn tính theo Cắt, kể cả khi chưa có dòng Cắt — khớp finalStageOf() (cần alias p = products).
-const FINAL_STAGE = `(CASE WHEN (CASE WHEN jsonb_array_length(p.product_types) > 0
-                                 THEN p.product_types ? 'Thành phẩm' AND NOT p.product_types ? 'Bán thành phẩm'
-                                 ELSE p.product_type = 'Thành phẩm' END) THEN 'Cắt'
-                         WHEN EXISTS (SELECT 1 FROM production_tasks tf WHERE tf.production_order_id = po.id AND tf.stage = 'Cắt') THEN 'Cắt' ELSE 'Thổi' END)`;
+const FINAL_STAGE = require('../../core/lib/finalStage').finalStageSql('po.id'); // định nghĩa chung
 
 // GET /api/production/machine-availability — độ sẵn sàng của máy (tải công việc chưa hoàn thành)
 exports.machineAvailability = async (_req, res) => {

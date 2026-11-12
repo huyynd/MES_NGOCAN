@@ -1,5 +1,6 @@
 const db = require('../../core/db');
 const { vnToday } = require('../../core/lib/dates');
+const { scrapByDay } = require('../../core/lib/scrapSummary');
 const { applyStock, stockErrorResponse } = require('../../core/lib/stock');
 
 // GET /api/scrap/workers — lấy toàn bộ nhân viên đang hoạt động
@@ -319,23 +320,7 @@ exports.getSummary = async (req, res) => {
   try {
     const to = req.query.to || req.query.toDate || vnToday(); // G3: nhận cả to/toDate
     const from = req.query.from || req.query.fromDate || to;
-    const { rows } = await db.query(`
-      SELECT dsr.record_date::text AS date,
-             COALESCE(SUM(dsi.scrap_qty), 0)::numeric    AS scrap_qty,
-             COALESCE(SUM(dsi.finished_qty), 0)::numeric AS finished_qty
-      FROM daily_scrap_records dsr
-      JOIN daily_scrap_items dsi ON dsi.record_id = dsr.id
-      WHERE dsr.record_date BETWEEN $1::date AND $2::date
-      GROUP BY dsr.record_date
-      ORDER BY dsr.record_date`, [from, to]);
-    const by_day = rows.map((r) => ({
-      date: r.date, scrap_qty: Number(r.scrap_qty) || 0, finished_qty: Number(r.finished_qty) || 0,
-    }));
-    res.json({ data: {
-      from, to,
-      total_scrap: by_day.reduce((s, r) => s + r.scrap_qty, 0),
-      total_finished: by_day.reduce((s, r) => s + r.finished_qty, 0),
-      by_day,
-    } });
+    const sum = await scrapByDay(db, from, to);
+    res.json({ data: { from, to, ...sum } });
   } catch (err) { console.error(err); res.status(500).json({ message: 'Lỗi khi tổng hợp phế theo ngày' }); }
 };

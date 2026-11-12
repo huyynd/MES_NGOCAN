@@ -889,7 +889,8 @@ function ProdView({ p, period }) {
   const navigate = useNavigate();
   const periodLb = period === "week" ? "LSX tạo tuần này" : "LSX tạo tháng này";
   const o = p.output || {}, ord = p.orders || {}, shortages = p.shortages || [], low = p.low_stock || [];
-  const achieve = pct(o.actual, o.plan);
+  // % đạt = tiến độ các lệnh tạo trong kỳ (progress); thẻ thành phẩm = làm ra trong kỳ (actual)
+  const achieve = pct(o.progress ?? o.actual, o.plan);
   const [view, setView] = useState("all");
   const listRef = useRef(null);
   // Bấm thẻ → đổi góc nhìn bảng chi tiết cuối tab + cuộn xuống (bấm lại thẻ đang chọn → về "Tất cả")
@@ -909,12 +910,12 @@ function ProdView({ p, period }) {
         <KpiCard icon={ClipboardList} accent="blue" label="Sản lượng kế hoạch" hint={periodLb} onClick={goOutput("plan")} active={view === "plan"}
           value={<Kg value={o.plan} />}
           meta={o.non_kg_count > 0 ? <span title="Chưa quy đổi đơn vị — các lệnh không tính bằng kg chưa được cộng vào">Chưa tính {fmt(o.non_kg_count)} lệnh khác đơn vị kg</span> : "Tổng các lệnh tính bằng kg"} />
-        <KpiCard icon={Factory} accent="emerald" label="SL thành phẩm (thực tế)" hint="Công đoạn cuối của lệnh tạo trong kỳ" delay={70} onClick={goOutput("actual")} active={view === "actual"}
+        <KpiCard icon={Factory} accent="emerald" label="SL thành phẩm (thực tế)" hint="Làm ra trong kỳ · công đoạn cuối, kể cả lệnh tạo trước kỳ" delay={70} onClick={goOutput("actual")} active={view === "actual"}
           value={<Kg value={o.actual} />}
-          footer={<Meter label="Đạt kế hoạch" value={Math.min(100, achieve)} right={`${achieve}%`} color={C.good} />} />
+          footer={<Meter label={`Tiến độ lệnh tạo trong kỳ (đã làm ${fmt(o.progress ?? o.actual)} kg)`} value={Math.min(100, achieve)} right={`${achieve}%`} color={C.good} />} />
         <KpiCard icon={Clock} accent="amber" label="Sản lượng còn lại" hint="Còn phải sản xuất" delay={140} onClick={goOutput("remain")} active={view === "remain"}
           value={<Kg value={o.remaining} />}
-          meta={o.over > 0 ? <>Vượt kế hoạch <span className="font-semibold text-slate-700">{fmt(o.over)}</span> kg</> : "Kế hoạch − thực tế"} />
+          meta={o.over > 0 ? <>Vượt kế hoạch <span className="font-semibold text-slate-700">{fmt(o.over)}</span> kg</> : "Kế hoạch − đã làm của lệnh tạo trong kỳ"} />
         <KpiCard icon={PackageX} accent={o.scrap > 0 ? "rose" : "slate"} label="Phế phẩm" hint="Theo Quản lý phế" delay={210} onClick={goOutput("scrap")} active={view === "scrap"}
           value={<Kg value={o.scrap} />}
           meta={<>Tỷ lệ phế <span className="font-semibold text-slate-700">{o.scrap_rate == null ? "—" : `${o.scrap_rate}%`}</span></>} />

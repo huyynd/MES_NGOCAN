@@ -317,6 +317,9 @@ function ScrapForm({ worker, workerId, date, setDate, onOpenOrder, cameFromManag
     return Object.values(groups);
   }, [wos]);
 
+  // Số phế đã lưu của ngày (lưu lại = thay thế, không cộng dồn)
+  const savedScrap = (record?.items || []).reduce((s, it) => s + (Number(it.scrap_qty) || 0), 0);
+
   const handleSave = async () => {
     if (!worker) return toast.error("Vui lòng chọn công nhân");
     if (!productGroups.length) return toast.error("Không có thành phẩm nào để ghi phế");
@@ -324,6 +327,9 @@ function ScrapForm({ worker, workerId, date, setDate, onOpenOrder, cameFromManag
     if (Number(scrapQty) < 0) return toast.error("Số lượng phế không được âm");
     if (!scrapQty || Number(scrapQty) === 0) {
       if (!window.confirm("Số lượng phế = 0 hoặc chưa nhập. Bạn có chắc chắn muốn lưu?")) return;
+    }
+    if (record && Number(scrapQty) !== savedScrap) {
+      if (!window.confirm(`Ngày này đã ghi ${savedScrap} kg. Số mới ${Number(scrapQty) || 0} kg sẽ THAY THẾ (không cộng dồn). Tiếp tục?`)) return;
     }
 
     setSaving(true);
@@ -462,6 +468,11 @@ function ScrapForm({ worker, workerId, date, setDate, onOpenOrder, cameFromManag
                           placeholder="0.0"
                           disabled={record && !cameFromManage}
                         />
+                        {record && (
+                          <p className="mt-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                            Ngày này đã ghi {fmtDec(savedScrap)} kg. Số mới sẽ <b>thay thế</b>, không cộng dồn — nếu cân thêm, hãy nhập tổng của cả ngày.
+                          </p>
+                        )}
                       </div>
                     </div>
 

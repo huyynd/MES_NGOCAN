@@ -1,8 +1,8 @@
 // backend/controllers/dashboardController.js — số liệu thật cho Dashboard
 const db = require('../../core/db');
 
-// công đoạn cuối của 1 lệnh (Cắt nếu có, ngược lại Thổi)
-const FINAL = `(CASE WHEN EXISTS (SELECT 1 FROM production_tasks t2 WHERE t2.production_order_id = po.id AND t2.stage='Cắt') THEN 'Cắt' ELSE 'Thổi' END)`;
+// công đoạn cuối của 1 lệnh — định nghĩa chung (core/lib/finalStage.js)
+const FINAL = require('../../core/lib/finalStage').finalStageSql('po.id');
 
 // Quyền xem số liệu tiền (doanh thu/công nợ) — helper dùng chung
 const { canViewAmounts, moneyNoteFilter } = require('../../core/lib/money');
