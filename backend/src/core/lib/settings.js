@@ -12,10 +12,12 @@ const DEFS = {
   near_min_percent:    { group: 'Kho',        label: '"Gần định mức" khi tồn dưới (% tồn tối thiểu)', type: 'number', min: 100, max: 1000, def: 120 },
   debt_bad_days:       { group: 'Công nợ',    label: 'Nợ xấu khi quá hạn (ngày)', type: 'int', min: 1, max: 3650, def: 30 },
   debt_limit_amount:   { group: 'Công nợ',    label: 'Hạn mức nợ chặn lập phiếu giao (đ)', type: 'number', min: 0, max: 1e13, def: 300000000 },
-  company_name:        { group: 'Công ty (in trên phiếu)', label: 'Tên công ty', type: 'text', max: 200, def: 'CÔNG TY TNHH THƯƠNG MẠI SẢN XUẤT BAO BÌ NGỌC AN THƯ' },
-  company_tax:         { group: 'Công ty (in trên phiếu)', label: 'Mã số thuế', type: 'text', max: 30, def: '0316748578' },
-  company_address:     { group: 'Công ty (in trên phiếu)', label: 'Địa chỉ', type: 'text', max: 300, def: 'Số 8F3, Đường DD6, Khu Phố 4, P. Tân Hưng Thuận, Quận 12, TP.HCM' },
-  company_phone:       { group: 'Công ty (in trên phiếu)', label: 'Điện thoại', type: 'text', max: 50, def: '0938 446 156' },
+  company_name:        { group: 'Công ty (in trên phiếu)', label: 'Tên công ty', type: 'text', max: 200, def: 'CÔNG TY TNHH THƯƠNG MẠI SẢN XUẤT XNK BAO BÌ NGỌC AN THƯ' },
+  company_tax:         { group: 'Công ty (in trên phiếu)', label: 'Mã số thuế', type: 'text', max: 30, def: '0318115683' },
+  company_address:     { group: 'Công ty (in trên phiếu)', label: 'Địa chỉ', type: 'text', max: 300, def: '119/1 Đường Đỗ Mười,Tổ 4,Khu Phố 1, Phường Thới An, Thành phố Hồ Chí Minh, Việt Nam' },
+  company_phone:       { group: 'Công ty (in trên phiếu)', label: 'Điện thoại', type: 'text', max: 50, def: '035 909 2252 - 0911115986' },
+  company_bank:        { group: 'Công ty (in trên phiếu)', label: 'Tài khoản ngân hàng', type: 'text', max: 300, def: '938381486  Ngân Hàng TMCP Quân Đội (MB Bank) - CN Phú Nhuận' },
+  company_email:       { group: 'Công ty (in trên phiếu)', label: 'Email', type: 'text', max: 200, def: 'baobingocanthu1991@gmail.com' },
 };
 
 // Đọc toàn bộ cài đặt đã khai báo (trộn giá trị lưu trong DB với mặc định)

@@ -678,7 +678,7 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
 /* ---- Phiếu in (template chung giao hàng + thanh toán) ---- */
 function DeliveryVoucher({ id, onBack }) {
   const S = useAppSettings();
-  const COMPANY = { name: S.company_name, tax: S.company_tax, address: S.company_address, phone: S.company_phone }; // Cài đặt hệ thống
+  const COMPANY = { name: S.company_name, tax: S.company_tax, address: S.company_address, phone: S.company_phone, bank: S.company_bank, email: S.company_email }; // Cài đặt hệ thống
   // Bản in không có tiền với MỌI người dùng (spec QT1) — không phụ thuộc quyền xem tiền
   const [d, setD] = useState(null);
   const [loadErr, setLoadErr] = useState(""); const [tryN, setTryN] = useState(0);
@@ -722,6 +722,8 @@ function DeliveryVoucher({ id, onBack }) {
           <div><b>Mã số thuế:</b> {COMPANY.tax}</div>
           <div><b>Địa chỉ:</b> {COMPANY.address}</div>
           <div><b>Số điện thoại:</b> {COMPANY.phone}</div>
+          {COMPANY.bank && <div><b>Tài khoản:</b> {COMPANY.bank}</div>}
+          {COMPANY.email && <div><b>Email:</b> {COMPANY.email}</div>}
         </div>
 
         {/* Khách hàng */}
