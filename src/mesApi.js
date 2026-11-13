@@ -179,6 +179,11 @@ export const reports = {
     return http(`/reports/detailed?${q.toString()}`).then(r => r);
   },
   machines: () => http(`/reports/machines`),
+  // Báo cáo sản lượng theo kỳ (kế hoạch chuyển kỳ) — lọc + tổng hợp ở máy chủ
+  output: (params = {}) => {
+    const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== '' && v != null));
+    return http(`/reports/output?${q.toString()}`);
+  },
   employees: (params = {}) => {
     const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== '' && v != null));
     return http(`/reports/employees?${q.toString()}`).then(r => r.data || []);

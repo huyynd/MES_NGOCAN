@@ -1420,3 +1420,6 @@ exports.reopenTask = async (req, res) => {
     res.status(400).json({ message: err.detail || err.message || 'Lỗi khi hủy hoàn thành' });
   } finally { client.release(); }
 };
+
+// Dùng cho Báo cáo sản lượng (/reports/output): cùng cột với danh sách lệnh.
+exports.SELECT_JOIN = SELECT_JOIN;

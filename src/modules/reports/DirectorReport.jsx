@@ -643,7 +643,7 @@ function SalesView({ s, r, period }) {
                   </tr>
                 );
               }) : (
-                <tr><td colSpan={8} className="px-5 py-10 text-center text-slate-400">Không có công nợ.</td></tr>
+                <tr><td colSpan={9} className="px-5 py-10 text-center text-slate-400">Không có công nợ.</td></tr>
               )}
             </tbody>
             {tableRows.length > 0 && (
@@ -802,10 +802,10 @@ const Kg = ({ value }) => <><Count value={value} /><span className="ml-1.5 text-
 /* Bảng chi tiết cuối tab "Sản xuất & NVL": mỗi thẻ / ô trạng thái = 1 góc nhìn */
 const PROD_VIEWS = {
   all: { label: "Tất cả lệnh sản xuất", test: () => true },
-  total: { label: "Lệnh sản xuất (không tính lệnh hủy)", test: (r) => r.status !== "Đã hủy" },
-  plan: { label: "Sản lượng kế hoạch — lệnh tính bằng kg", test: (r) => r.is_kg && r.status !== "Đã hủy" },
-  actual: { label: "SL thành phẩm (thực tế) — lệnh đã có sản lượng", test: (r) => r.is_kg && r.status !== "Đã hủy" && r.actual > 0 },
-  remain: { label: "Sản lượng còn lại — lệnh còn phải sản xuất", test: (r) => r.is_kg && r.status !== "Đã hủy" && r.remaining > 0 },
+  total: { label: "Lệnh sản xuất của kỳ (không tính lệnh hủy trong kỳ)", test: (r) => !r.cancelled_in_period && !r.closed_before },
+  plan: { label: "Sản lượng kế hoạch — lệnh tính bằng kg (mới + chuyển kỳ)", test: (r) => r.is_kg && r.plan > 0 },
+  actual: { label: "SL thành phẩm (thực tế) — lệnh đã có sản lượng", test: (r) => r.is_kg && r.actual > 0 },
+  remain: { label: "Sản lượng còn lại — lệnh còn phải sản xuất", test: (r) => r.is_kg && r.remaining > 0 },
   done: { label: "Lệnh hoàn thành", test: (r) => r.status === "Hoàn thành" },
   running: { label: "Lệnh đang sản xuất", test: (r) => r.status === "Đang sản xuất" },
   not_started: { label: "Lệnh chưa bắt đầu", test: (r) => r.status === "Chờ duyệt" || r.status === "Đã lên kế hoạch" },
@@ -827,6 +827,7 @@ function ProdDetail({ view, rows, isScrap, periodLb }) {
           "Tỷ lệ phế (%)": d.finished > 0 ? Math.round(d.scrap / (d.finished + d.scrap) * 1000) / 10 : "" }))
       : rows.map((r) => ({ "Mã lệnh SX": r.code, "Mã SP": r.product_code, "Tên sản phẩm": r.product_name,
           "Ngày tạo": fmtDate(r.created), "Hạn chót": fmtDate(r.due) || "", "Quá hạn": r.overdue ? "Có" : "",
+          "Nguồn": r.closed_before ? "Đóng trước kỳ" : r.origin === "carry" ? `Chuyển sang (tạo ${fmtDate(r.created)})` : "Mới", "SL lệnh": r.quantity,
           "SL kế hoạch": r.plan, "SL thực tế": r.actual, "SL còn lại": r.remaining, "Đơn vị": r.unit || "", "Trạng thái": r.status }));
     const ws = XLSX.utils.aoa_to_sheet([[`${label} · ${periodLb}`], []]);
     XLSX.utils.sheet_add_json(ws, data, { origin: "A3" });
@@ -851,7 +852,7 @@ function ProdDetail({ view, rows, isScrap, periodLb }) {
             {isScrap ? (
               <tr><th className={th}>Ngày</th><th className={`${th} text-right`}>SL thành phẩm</th><th className={`${th} text-right`}>SL phế</th><th className={`${th} text-right`}>Tỷ lệ phế</th></tr>
             ) : (
-              <tr><th className={th}>Mã lệnh</th><th className={th}>Sản phẩm</th><th className={th}>Ngày tạo</th><th className={th}>Hạn chót</th>
+              <tr><th className={th}>Mã lệnh</th><th className={th}>Sản phẩm</th><th className={th}>Ngày tạo</th><th className={th}>Nguồn</th><th className={th}>Hạn chót</th>
                 <th className={`${th} text-right`}>Kế hoạch</th><th className={`${th} text-right`}>Thực tế</th><th className={`${th} text-right`}>Còn lại</th><th className={th}>Trạng thái</th></tr>
             )}
           </thead>
@@ -869,6 +870,9 @@ function ProdDetail({ view, rows, isScrap, periodLb }) {
                 <td className={`${td} font-medium text-slate-900`}>{r.code}</td>
                 <td className={`${td} max-w-[260px] truncate`} title={`${r.product_code} · ${r.product_name}`}>{r.product_name}</td>
                 <td className={td}>{fmtDate(r.created)}</td>
+                <td className={td}>{r.origin === "carry"
+                  ? <span className="inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700">{r.closed_before ? "Đóng trước kỳ" : "Chuyển sang"}</span>
+                  : <span className="inline-flex rounded-full bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700">Mới</span>}</td>
                 <td className={`${td} ${r.overdue ? "font-semibold text-rose-600" : ""}`}>{fmtDate(r.due) || "—"}</td>
                 <td className={`${td} text-right tabular-nums`}>{fmt(r.plan)} <span className="text-xs text-slate-400">{r.unit}</span></td>
                 <td className={`${td} text-right tabular-nums`}>{fmt(r.actual)}</td>
@@ -876,7 +880,7 @@ function ProdDetail({ view, rows, isScrap, periodLb }) {
                 <td className={td}><span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${statusClass(r.status)}`}>{r.status}</span></td>
               </tr>
             ))}
-            {rows.length > 0 && filler(isScrap ? 4 : 8)}
+            {rows.length > 0 && filler(isScrap ? 4 : 9)}
           </tbody>
         </table>
       </div>
@@ -887,10 +891,10 @@ function ProdDetail({ view, rows, isScrap, periodLb }) {
 
 function ProdView({ p, period }) {
   const navigate = useNavigate();
-  const periodLb = period === "week" ? "LSX tạo tuần này" : "LSX tạo tháng này";
+  const periodLb = period === "week" ? "Tuần này · mới + chuyển kỳ" : "Tháng này · mới + chuyển kỳ";
   const o = p.output || {}, ord = p.orders || {}, shortages = p.shortages || [], low = p.low_stock || [];
-  // % đạt = tiến độ các lệnh tạo trong kỳ (progress); thẻ thành phẩm = làm ra trong kỳ (actual)
-  const achieve = pct(o.progress ?? o.actual, o.plan);
+  // % đạt = làm ra trong kỳ / kế hoạch kỳ (chuyển kỳ trước + mới) — chốt 2026-11-13
+  const achieve = pct(o.actual, o.plan);
   const [view, setView] = useState("all");
   const listRef = useRef(null);
   // Bấm thẻ → đổi góc nhìn bảng chi tiết cuối tab + cuộn xuống (bấm lại thẻ đang chọn → về "Tất cả")
@@ -909,20 +913,21 @@ function ProdView({ p, period }) {
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <KpiCard icon={ClipboardList} accent="blue" label="Sản lượng kế hoạch" hint={periodLb} onClick={goOutput("plan")} active={view === "plan"}
           value={<Kg value={o.plan} />}
-          meta={o.non_kg_count > 0 ? <span title="Chưa quy đổi đơn vị — các lệnh không tính bằng kg chưa được cộng vào">Chưa tính {fmt(o.non_kg_count)} lệnh khác đơn vị kg</span> : "Tổng các lệnh tính bằng kg"} />
-        <KpiCard icon={Factory} accent="emerald" label="SL thành phẩm (thực tế)" hint="Làm ra trong kỳ · công đoạn cuối, kể cả lệnh tạo trước kỳ" delay={70} onClick={goOutput("actual")} active={view === "actual"}
+          meta={<>Chuyển kỳ trước <span className="font-semibold text-slate-700">{fmt(o.carry_plan || 0)}</span> · Mới <span className="font-semibold text-slate-700">{fmt(o.new_plan || 0)}</span> kg
+            {o.non_kg_count > 0 && <span title="Chưa quy đổi đơn vị — các lệnh không tính bằng kg chưa được cộng vào"> · chưa tính {fmt(o.non_kg_count)} lệnh khác kg</span>}</>} />
+        <KpiCard icon={Factory} accent="emerald" label="SL thành phẩm (thực tế)" hint="Làm ra trong kỳ · công đoạn cuối" delay={70} onClick={goOutput("actual")} active={view === "actual"}
           value={<Kg value={o.actual} />}
-          footer={<Meter label={`Tiến độ lệnh tạo trong kỳ (đã làm ${fmt(o.progress ?? o.actual)} kg)`} value={Math.min(100, achieve)} right={`${achieve}%`} color={C.good} />} />
+          footer={<Meter label="Tiến độ so với kế hoạch kỳ" value={Math.min(100, achieve)} right={`${achieve}%`} color={C.good} />} />
         <KpiCard icon={Clock} accent="amber" label="Sản lượng còn lại" hint="Còn phải sản xuất" delay={140} onClick={goOutput("remain")} active={view === "remain"}
           value={<Kg value={o.remaining} />}
-          meta={o.over > 0 ? <>Vượt kế hoạch <span className="font-semibold text-slate-700">{fmt(o.over)}</span> kg</> : "Kế hoạch − đã làm của lệnh tạo trong kỳ"} />
+          meta={o.over > 0 ? <>Vượt kế hoạch <span className="font-semibold text-slate-700">{fmt(o.over)}</span> kg</> : "Kế hoạch kỳ − đã làm trong kỳ"} />
         <KpiCard icon={PackageX} accent={o.scrap > 0 ? "rose" : "slate"} label="Phế phẩm" hint="Theo Quản lý phế" delay={210} onClick={goOutput("scrap")} active={view === "scrap"}
           value={<Kg value={o.scrap} />}
           meta={<>Tỷ lệ phế <span className="font-semibold text-slate-700">{o.scrap_rate == null ? "—" : `${o.scrap_rate}%`}</span></>} />
       </div>
 
       {/* Hàng 2 · Lệnh sản xuất */}
-      <Panel delay={260} icon={ClipboardList} title="Lệnh sản xuất" subtitle={`${periodLb}${ord.cancelled ? ` · không tính ${fmt(ord.cancelled)} lệnh đã hủy` : ""}`}
+      <Panel delay={260} icon={ClipboardList} title="Lệnh sản xuất" subtitle={`${periodLb}${ord.cancelled ? ` · không tính ${fmt(ord.cancelled)} lệnh hủy trong kỳ` : ""}`}
         action={ord.overdue > 0 && (
           <button type="button" onClick={() => pick("overdue")}
             className={`inline-flex items-center gap-1.5 rounded-full bg-rose-50 px-2.5 py-1 text-xs font-semibold text-rose-600 ring-inset transition hover:bg-rose-100 ${view === "overdue" ? "ring-2 ring-rose-400" : "ring-1 ring-rose-100"}`}>

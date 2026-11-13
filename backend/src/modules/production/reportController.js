@@ -2,6 +2,9 @@ const db = require('../../core/db');
 const { upUnit } = require('../../core/lib/units');
 const { FINAL_STAGE_OF_TASK } = require('../../core/lib/finalStage');
 const { scrapByDay } = require('../../core/lib/scrapSummary');
+const { periodOutput, summarize } = require('../../core/lib/periodOutput');
+const { getDataScope } = require('../../core/dataScope');
+const { SELECT_JOIN } = require('./productionController');
 const { hasAppPerm } = require('../../core/requireAuth');
 
 // A5: nguồn tồn kho cho báo cáo — bỏ tồn của SP / kho / vị trí đã xóa (cùng điều kiện màn Tồn kho)
@@ -609,20 +612,8 @@ exports.director = async (req, res) => {
                COALESCE(SUM(total_amount),0)::numeric AS invoiced
         FROM delivery_notes
         WHERE ${moneyNoteFilter('delivery_notes')} AND delivery_date BETWEEN $1 AND $2`, [f, t]),
-      // Kh\u1ed1i 2: LSX T\u1ea0O TRONG K\u1ef2 \u2014 \u0111\u1ebfm theo tr\u1ea1ng th\u00e1i + s\u1ea3n l\u01b0\u1ee3ng (ch\u1ec9 l\u1ec7nh \u0111\u01a1n v\u1ecb KG; quy \u0111\u1ed5i \u0111\u01a1n v\u1ecb l\u00e0m sau).
-      // Th\u1ef1c t\u1ebf = \u03a3 ho\u00e0n th\u00e0nh \u1edf c\u00f4ng \u0111o\u1ea1n cu\u1ed1i (DONE_BY_ORDER) \u2014 c\u00f9ng c\u00f4ng th\u1ee9c trang S\u1ea3n l\u01b0\u1ee3ng s\u1ea3n xu\u1ea5t.
-      //   Tr\u1ea3 T\u1eeaNG L\u1ec6NH (\u0111\u1ec3 v\u1eeba t\u1ed5ng h\u1ee3p KPI v\u1eeba l\u00e0m b\u1ea3ng chi ti\u1ebft \u1edf cu\u1ed1i tab).
-      db.query(`
-        SELECT po.id, po.order_code, po.status, po.quantity::numeric AS quantity, po.due_date::text AS due_date,
-               po.created_at::date::text AS created_date, p.product_code, p.product_name,
-               COALESCE(NULLIF(po.unit,''), p.unit) AS unit, COALESCE(d.done_qty,0)::numeric AS done_qty,
-               upper(COALESCE(NULLIF(po.unit,''), p.unit, ''))='KG' AS is_kg,
-               COALESCE(po.due_date < CURRENT_DATE AND po.status NOT IN ('Ho\u00e0n th\u00e0nh','\u0110\u00e3 h\u1ee7y'), FALSE) AS overdue
-        FROM production_orders po
-        LEFT JOIN products p ON p.id=po.product_id
-        LEFT JOIN (${DONE_BY_ORDER}) d ON d.production_order_id=po.id
-        WHERE po.is_deleted=FALSE AND po.created_at::date BETWEEN $1 AND $2
-        ORDER BY po.created_at DESC`, [f, t]),
+      // Khối 2: LSX của kỳ — lệnh mới + lệnh cũ còn mở (chuyển kỳ). MỘT định nghĩa: core/lib/periodOutput.js
+      periodOutput(db, f, t),
       // Kh\u1ed1i 2: ph\u1ebf theo ng\u00e0y \u2014 ngu\u1ed3n Qu\u1ea3n l\u00fd ph\u1ebf (c\u00f9ng /scrap/summary)
       // TP = công đoạn cuối hoàn thành trong ngày (trước đây finished_qty phiếu phế luôn 0 → tỷ lệ "—")
       scrapByDay(db, f, t),
@@ -774,35 +765,23 @@ exports.director = async (req, res) => {
       production: (() => {
         const n = (x) => Number(x) || 0;
         const r1 = (x) => Math.round(n(x) * 10) / 10;
-        const list = poQ.rows.map((r) => ({
-          id: r.id, code: r.order_code, product_code: r.product_code, product_name: r.product_name, unit: r.unit,
-          status: r.status, created: r.created_date, due: r.due_date, overdue: r.overdue, is_kg: r.is_kg,
-          plan: r1(r.quantity), actual: r1(r.done_qty), remaining: r1(Math.max(0, n(r.quantity) - n(r.done_qty))),
-        }));
-        const live = list.filter((x) => x.status !== 'Đã hủy');
-        const kg = live.filter((x) => x.is_kg);
-        const cnt = (fn) => list.filter(fn).length;
-        // Phương án A (2026-11-10): actual = làm ra TRONG KỲ (công đoạn cuối, cùng nguồn tỷ lệ phế, gồm lệnh tạo trước kỳ).
-        // Tiến độ (progress / remaining / over) vẫn theo các lệnh tạo trong kỳ.
-        const plan = kg.reduce((a, x) => a + x.plan, 0), progress = kg.reduce((a, x) => a + x.actual, 0);
-        const actual = scrapQ.total_finished;
+        // Chốt 2026-11-13: kế hoạch chuyển kỳ — CÙNG hàm periodOutput với Báo cáo sản lượng.
+        const list = poQ.orders, s = poQ.summary;
         const scrapDays = [...scrapQ.by_day].reverse()
           .map((r) => ({ date: r.date, scrap: r1(r.scrap_qty), finished: r1(r.finished_qty) }));
         const scrap = scrapQ.total_scrap, fin = scrapQ.total_finished;
         const low = lowQ.rows.map((r) => ({ code: r.code, name: r.name, warehouse: r.warehouse, unit: r.unit,
           on_hand: r1(r.on_hand), min_qty: r1(r.min_qty) }));
         return {
-          output: { // sản lượng (kg) — LSX tạo trong kỳ
-            plan: r1(plan), actual: r1(actual), progress: r1(progress),
-            remaining: r1(Math.max(0, plan - progress)), over: r1(Math.max(0, progress - plan)),
+          output: { // sản lượng (kg): kế hoạch = chuyển từ kỳ trước + lệnh mới; thực tế = làm ra trong kỳ
+            plan: s.plan, carry_plan: s.carry_plan, new_plan: s.new_plan, actual: s.actual, progress: s.actual,
+            remaining: s.remaining, over: s.over,
             // G1: chưa có thành phẩm (fin = 0) thì tỷ lệ phế không có nghĩa → null (web hiện "—"), không báo 100%
             scrap: r1(scrap), scrap_rate: fin > 0 ? Math.round(scrap / (fin + scrap) * 1000) / 10 : null,
-            non_kg_count: live.length - kg.length,
+            non_kg_count: s.non_kg_count,
           },
-          orders: { total: live.length, done: cnt((x) => x.status === 'Hoàn thành'), running: cnt((x) => x.status === 'Đang sản xuất'),
-            wait_nvl: cnt((x) => x.status === 'Chờ nguyên vật liệu'),
-            not_started: cnt((x) => x.status === 'Chờ duyệt' || x.status === 'Đã lên kế hoạch'),
-            cancelled: list.length - live.length, overdue: cnt((x) => x.overdue) },
+          orders: { total: s.total, carry: s.carry_count, new: s.new_count, done: s.done, running: s.running,
+            wait_nvl: s.wait_nvl, not_started: s.not_started, cancelled: s.cancelled, overdue: s.overdue },
           order_list: list,      // bảng chi tiết cuối tab
           scrap_days: scrapDays, // bảng chi tiết khi chọn thẻ Phế phẩm
           shortages: shortQ.rows.map((r) => ({ code: r.code, name: r.name, unit: r.unit, need: r1(r.need),
@@ -868,3 +847,39 @@ exports.director = async (req, res) => {
   } catch (err) { console.error(err); res.status(500).json({ message: 'L\u1ed7i khi l\u1ea5y b\u00e1o c\u00e1o gi\u00e1m \u0111\u1ed1c' }); }
 };
 
+
+// Báo cáo sản lượng (/production/output) — kế hoạch chuyển kỳ, CÙNG hàm periodOutput với Báo cáo giám đốc (chốt 2026-11-13).
+// Lọc sản phẩm / đội / trạng thái ở máy chủ rồi tổng hợp bằng summarize() → web không tự cộng.
+// Phạm vi dữ liệu (nhà máy) áp ngay trong periodOutput. Báo cáo giám đốc xem toàn xưởng (không áp phạm vi).
+const isYmd = (v) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(v || ''))) return false;
+  const d = new Date(`${v}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v; // loại 2026-02-30, 2026-13-40
+};
+exports.output = async (req, res) => {
+  try {
+    const { from, to, product = '', team = '', status = '' } = req.query;
+    if (!isYmd(from) || !isYmd(to) || from > to) return res.status(400).json({ message: 'Khoảng ngày không hợp lệ' });
+    const scopeSql = getDataScope(req, 'production', 'view', { factoryCol: 'po.assigned_team' });
+    const period = await periodOutput(db, from, to, { scopeSql });
+    const byId = new Map(period.orders.map((o) => [o.id, o]));
+    const { rows } = byId.size
+      ? await db.query(`${SELECT_JOIN} WHERE po.id = ANY($1::uuid[]) ORDER BY po.created_at DESC`, [[...byId.keys()]])
+      : { rows: [] };
+    const teamsOf = (r) => String(r.assigned_team_display || r.assigned_team || '').split(',').map((x) => x.trim()).filter(Boolean);
+    const all = rows.map((r) => ({ ...r, period: byId.get(r.id) }));
+    const list = all.filter((r) => {
+      const teams = teamsOf(r);
+      return (!product || r.product_code === product)
+        && (!team || (team === '__no_team__' ? teams.length === 0 : teams.includes(team)))
+        && (!status || (status === '__overdue__' ? r.period.overdue : r.period.status === status));
+    });
+    res.json({ from, to, summary: summarize(list.map((r) => r.period)), data: list,
+      // danh sách chọn lấy từ toàn bộ lệnh của kỳ (không phụ thuộc bộ lọc đang chọn)
+      options: { products: [...new Map(all.map((r) => [r.product_code, { code: r.product_code, name: r.product_name, type: r.product_type }])).values()],
+        teams: [...new Set(all.flatMap(teamsOf))], has_no_team: all.some((r) => teamsOf(r).length === 0) } });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Lỗi khi lấy báo cáo sản lượng' });
+  }
+};

@@ -2271,7 +2271,7 @@ CREATE INDEX IF NOT EXISTS idx_soi_product              ON public.sales_order_it
 CREATE INDEX IF NOT EXISTS idx_po_sales_order           ON public.production_orders (sales_order_id);
 CREATE INDEX IF NOT EXISTS idx_po_sales_order_item      ON public.production_orders (sales_order_item_id);
 CREATE INDEX IF NOT EXISTS idx_po_product               ON public.production_orders (product_id);
-CREATE INDEX IF NOT EXISTS idx_pt_production_order      ON public.production_tasks (production_order_id);
+-- (idx_pt_production_order: bỏ 2026-11-13 — trùng idx_pt_po, xem mục 37)
 CREATE INDEX IF NOT EXISTS idx_pt_assigned_worker_id    ON public.production_tasks (assigned_worker_id);
 CREATE INDEX IF NOT EXISTS idx_pom_production_order     ON public.production_order_materials (production_order_id);
 CREATE INDEX IF NOT EXISTS idx_pom_material             ON public.production_order_materials (material_id);
@@ -2821,4 +2821,45 @@ UPDATE public.app_settings SET value = to_jsonb('CÔNG TY TNHH THƯƠNG MẠI S�
 UPDATE public.app_settings SET value = to_jsonb('Số 8F3, Đường DD6, Khu Phố 4, P. Tân Hưng Thuận, Quận 12, TP.HCM'::text)
   WHERE key = 'company_address' AND value = to_jsonb('119/1 Đường Đỗ Mười, Tổ 4, Khu phố 1, Phường Thới An, Thành Phố Hồ Chí Minh'::text);
 -- [M3-END]
+-- ---------------------------------------------------------------------
+
+-- 37) KẾ HOẠCH CHUYỂN KỲ (2026-11-13): lưu ngày hoàn thành / ngày hủy của lệnh SX để biết lệnh còn mở ở đầu kỳ.
+--   Ghi bằng trigger → mọi cửa đổi trạng thái (API, recomputeOrder, sửa tay) đều có ngày.
+--   Gỡ: DROP TRIGGER po_status_dates ON public.production_orders; DROP FUNCTION public.trg_po_status_dates();
+--       ALTER TABLE public.production_orders DROP COLUMN completed_at, DROP COLUMN cancelled_at;
+ALTER TABLE public.production_orders ADD COLUMN IF NOT EXISTS completed_at timestamptz;
+ALTER TABLE public.production_orders ADD COLUMN IF NOT EXISTS cancelled_at timestamptz;
+CREATE OR REPLACE FUNCTION public.trg_po_status_dates() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'INSERT' OR NEW.status IS DISTINCT FROM OLD.status THEN
+    IF NEW.status = 'Hoàn thành' THEN NEW.completed_at := COALESCE(NEW.completed_at, now());
+    ELSE NEW.completed_at := NULL; END IF;
+    IF NEW.status = 'Đã hủy' THEN NEW.cancelled_at := COALESCE(NEW.cancelled_at, now());
+    ELSE NEW.cancelled_at := NULL; END IF;
+  END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS po_status_dates ON public.production_orders;
+CREATE TRIGGER po_status_dates BEFORE INSERT OR UPDATE OF status ON public.production_orders
+  FOR EACH ROW EXECUTE FUNCTION public.trg_po_status_dates();
+--   Dữ liệu cũ (ƯỚC LƯỢNG cho lệnh trước 2026-11-13). Không dùng po.updated_at: đã bị cập nhật hàng loạt nên không phản ánh ngày xong.
+--     Hoàn thành → lần cuối một công đoạn của lệnh hoàn thành; không có → ngày tạo lệnh.
+--     Đã hủy     → lần cuối một công đoạn của lệnh được cập nhật; không có → ngày tạo lệnh.
+--   Chỉ điền ô trống → chạy lại an toàn. DB đã điền theo cách cũ: xem migrations/manual/2026-11-13_*.sql
+--   Tắt tạm trigger updated_at: điền ngày ước lượng KHÔNG được làm đổi updated_at của lệnh.
+ALTER TABLE public.production_orders DISABLE TRIGGER trg_production_orders_updated;
+UPDATE public.production_orders po SET completed_at = COALESCE(
+    (SELECT MAX(t.updated_at) FROM public.production_tasks t WHERE t.production_order_id = po.id AND t.status = 'Hoàn thành'), po.created_at)
+  WHERE po.status = 'Hoàn thành' AND po.completed_at IS NULL;
+UPDATE public.production_orders po SET cancelled_at = COALESCE(
+    (SELECT MAX(t.updated_at) FROM public.production_tasks t WHERE t.production_order_id = po.id), po.created_at)
+  WHERE po.status = 'Đã hủy' AND po.cancelled_at IS NULL;
+ALTER TABLE public.production_orders ENABLE TRIGGER trg_production_orders_updated;
+--   Index cho periodOutput / công đoạn cuối (FINAL_STAGE: EXISTS theo (lệnh, stage); cộng task hoàn thành theo lệnh)
+CREATE INDEX IF NOT EXISTS idx_pt_po_stage ON public.production_tasks (production_order_id, stage);
+CREATE INDEX IF NOT EXISTS idx_pt_po_stage_done ON public.production_tasks (production_order_id, stage)
+  INCLUDE (updated_at, actual_qty, quantity) WHERE status = 'Hoàn thành';
+--   Bỏ 2 index trùng (cùng cột production_order_id với idx_pt_po) — chỉ làm chậm ghi phân công, không đổi kết quả.
+DROP INDEX IF EXISTS public.idx_tasks_po;
+DROP INDEX IF EXISTS public.idx_pt_production_order;
 -- ---------------------------------------------------------------------

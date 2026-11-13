@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useAppSettings } from "../../appSettings.js";
 import {
   Activity, Download, RefreshCcw, TrendingUp, Package, CheckCircle2, AlertTriangle,
@@ -6,7 +6,7 @@ import {
   ChevronRight, AlertCircle,
 } from "lucide-react";
 import { ListHeader, Section, DataTable, SearchSelect, useRemembered, DialogBehavior, DateInput } from "../../components.jsx";
-import { production, scrap as scrapApi } from "../../mesApi.js";
+import { production, scrap as scrapApi, reports as reportsApi } from "../../mesApi.js";
 import { fmt, fmtDate, statusClass, toast, todayYmd, monthStartYmd, fmtDec } from "../../ui.js";
 import * as XLSX from "xlsx";
 import {
@@ -40,11 +40,8 @@ const STATUS_SHORT = {
 const STATUS_ORDER = Object.keys(STATUS_COLORS);
 // Quá hạn = đã qua hạn chót mà chưa Hoàn thành / Đã hủy
 const OVERDUE = "__overdue__";
-const isOverdue = (r) => {
-  const due = (r.due_date || "").slice(0, 10);
-  return !!due && due < today() && !["Hoàn thành", "Đã hủy"].includes(r.status);
-};
-const orderDate = (r) => (r.start_date || r.planned_date_display || r.planned_date || r.created_at || "").slice(0, 10);
+// Quá hạn TẠI NGÀY CUỐI KỲ — máy chủ tính (core/lib/periodOutput.js), khớp thẻ KPI
+const isOverdue = (r) => !!r.period?.overdue;
 
 /* ─── KPI card: nhãn + icon nhỏ một hàng, số lớn, chú thích 1 dòng; bấm để lọc bảng chi tiết ─── */
 function KpiCard({ label, value, sub, icon: Icon, color = "blue", onClick, active }) {
@@ -70,23 +67,16 @@ function KpiCard({ label, value, sub, icon: Icon, color = "blue", onClick, activ
   );
 }
 
-/* ─── 3 biểu đồ: SL theo trạng thái · KH vs hoàn thành · trạng thái lệnh (bấm để lọc bảng) ─── */
-function OutputCharts({ rows, onPick }) {
+/* ─── 3 biểu đồ: KH theo trạng thái · thành phẩm làm ra theo ngày · trạng thái lệnh (bấm để lọc bảng) ─── */
+// rows: chỉ các lệnh ĐẾM ĐƯỢC của kỳ (khớp thẻ KPI). daily: thành phẩm theo NGÀY LÀM RA (cùng nguồn tỷ lệ phế).
+function OutputCharts({ rows, daily, onPick }) {
   const { byStatus, trend, donut, total } = useMemo(() => {
     const st = new Map();
-    const day = new Map();
     rows.forEach(r => {
       const plan = Number(r.quantity) || 0;
-      const done = Number(r.produced_qty) || 0;
       const s = st.get(r.status) || { name: r.status, plan: 0, count: 0 };
       s.plan += plan; s.count += 1;
       st.set(r.status, s);
-      const d = orderDate(r);
-      if (d) {
-        const x = day.get(d) || { d, plan: 0, done: 0 };
-        x.plan += plan; x.done += done;
-        day.set(d, x);
-      }
     });
     const rank = (n) => { const i = STATUS_ORDER.indexOf(n); return i < 0 ? 99 : i; };
     const statuses = [...st.values()].sort((a, b) => rank(a.name) - rank(b.name));
@@ -94,14 +84,12 @@ function OutputCharts({ rows, onPick }) {
       byStatus: statuses.map(s => ({ name: s.name, "Sản lượng": s.plan })),
       donut: statuses.map(s => ({ name: s.name, value: s.count })),
       total: rows.length,
-      trend: [...day.values()].sort((a, b) => a.d.localeCompare(b.d)).map(x => ({
-        d: x.d,
-        date: `${x.d.slice(8, 10)}/${x.d.slice(5, 7)}`,
-        "Kế hoạch": x.plan,
-        "Hoàn thành": x.done,
+      trend: [...daily].sort((a, b) => a.date.localeCompare(b.date)).map(x => ({
+        date: `${x.date.slice(8, 10)}/${x.date.slice(5, 7)}`,
+        "Thành phẩm": Number(x.finished_qty) || 0,
       })),
     };
-  }, [rows]);
+  }, [rows, daily]);
 
   const colorOf = (n) => STATUS_COLORS[n] || "#94a3b8";
   const num = (v) => fmt(v);
@@ -131,24 +119,19 @@ function OutputCharts({ rows, onPick }) {
       </div>
 
       <div className={card}>
-        <h3 className="text-sm font-semibold text-slate-700 mb-3">Sản lượng kế hoạch vs hoàn thành</h3>
+        <h3 className="text-sm font-semibold text-slate-700 mb-3">Thành phẩm làm ra theo ngày</h3>
         {trend.length === 0 ? empty : (
           <div className="h-52">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={trend} margin={{ top: 4, right: 8, left: -10, bottom: 0 }} style={{ cursor: "pointer" }}
-                // recharts 3: onClick cấp biểu đồ KHÔNG còn activePayload — chỉ có activeIndex / activeLabel
-                onClick={(s) => {
-                  const i = Number(s?.activeIndex ?? s?.activeTooltipIndex);
-                  const d = (Number.isInteger(i) ? trend[i]?.d : null) ?? trend.find((t) => t.date === s?.activeLabel)?.d;
-                  if (d) onPick({ key: "date", value: d });
-                }}>
+                // Bấm → bảng thành phẩm / phế theo ngày (cùng nguồn)
+                onClick={() => onPick({ key: "scrap" })}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                 <XAxis dataKey="date" tick={{ fontSize: 10 }} />
                 <YAxis tick={{ fontSize: 10 }} tickFormatter={num} />
                 <Tooltip formatter={(v, n) => [num(v), n]} />
                 <Legend wrapperStyle={{ fontSize: 11 }} />
-                <Line type="monotone" dataKey="Kế hoạch" stroke="#93c5fd" strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 5 }} />
-                <Line type="monotone" dataKey="Hoàn thành" stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 5 }} />
+                <Line type="monotone" dataKey="Thành phẩm" stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 5 }} />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -279,9 +262,14 @@ function OrderDetailDrawer({ order, onClose }) {
               />
             </div>
             <div className="flex justify-between text-xs text-slate-500 mt-2">
-              <span>Thực tế: <span className="font-semibold text-slate-700">{fmt(actual)} {order.unit}</span></span>
-              <span>Kế hoạch: <span className="font-semibold text-slate-700">{fmt(planned)} {order.unit}</span></span>
+              <span>Làm trong kỳ: <span className="font-semibold text-slate-700">{fmt(actual)} {order.unit}</span></span>
+              <span>KH trong kỳ: <span className="font-semibold text-slate-700">{fmt(planned)} {order.unit}</span></span>
             </div>
+            {order.period && (
+              <div className="text-xs text-slate-400 mt-1">
+                SL lệnh {fmt(order.order_quantity)} {order.unit} · đã làm trước kỳ {fmt(order.period.done_before)} {order.unit}
+              </div>
+            )}
             <div className="mt-2 text-xs flex items-center gap-1">
               {remain > 0 ? (
                 <span className="text-amber-600 flex items-center gap-1">
@@ -420,18 +408,29 @@ function OutputReportBody({ lookups }) {
   const [scrapSum, setScrapSum]       = useState({ total_scrap: 0, total_finished: 0, by_day: [] });
   const [scrapErr, setScrapErr]       = useState(false); // P-20: lỗi tải phế → KPI hiện "—", không hiện 0 như thật
 
+  const [summary, setSummary]         = useState(null);
+  const [opts, setOpts]               = useState({ products: [], teams: [], has_no_team: false });
+
+  const reqNo = useRef(0); // chỉ nhận phản hồi của lượt gọi MỚI NHẤT (đổi bộ lọc nhanh không bị số cũ đè)
   const load = useCallback(async () => {
+    if (!from || !to) return;
+    const my = ++reqNo.current;
     setLoading(true);
     try {
-      // Chỉ tải lệnh trong kỳ đang chọn — máy chủ lọc theo đúng orderDate() (trước đây tải hết rồi lọc ở trình duyệt)
-      const data = await production.list({ date_from: from, date_to: to });
-      setRows(Array.isArray(data) ? data : data?.data || []);
+      // Kế hoạch chuyển kỳ (chốt 2026-11-13): máy chủ chọn lệnh của kỳ (mới + lệnh cũ còn mở), lọc và tổng hợp —
+      // CÙNG hàm với Báo cáo giám đốc. Mỗi dòng: quantity = kế hoạch TRONG KỲ, produced_qty = làm ra TRONG KỲ.
+      const d = await reportsApi.output({ from, to, product: productFilter, team: teamFilter, status: statusFilter });
+      if (my !== reqNo.current) return;
+      // status = trạng thái TẠI NGÀY CUỐI KỲ (xem kỳ cũ không lấy trạng thái hôm nay)
+      setRows((d.data || []).map(r => ({ ...r, order_quantity: r.quantity, quantity: r.period.plan, produced_qty: r.period.actual, status: r.period.status })));
+      setSummary(d.summary);
+      setOpts(d.options || { products: [], teams: [], has_no_team: false });
     } catch (e) {
-      toast.error("Lỗi tải sản lượng: " + e.message);
+      if (my === reqNo.current) toast.error("Lỗi tải sản lượng: " + e.message);
     } finally {
-      setLoading(false);
+      if (my === reqNo.current) setLoading(false);
     }
-  }, [from, to]);
+  }, [from, to, productFilter, teamFilter, statusFilter]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -445,89 +444,54 @@ function OutputReportBody({ lookups }) {
     return () => { alive = false; };
   }, [from, to]);
 
-  // Một lệnh có thể gắn nhiều đội ("Nhà máy cắt, Nhà máy thổi") → tách thành danh sách
-  const teamsOf = (r) => String(r.assigned_team_display || r.assigned_team || "")
-    .split(",").map(s => s.trim()).filter(Boolean);
 
-  // Danh sách chọn lấy từ chính dữ liệu đang có → không bao giờ chọn ra kết quả rỗng.
+  // Danh sách chọn: máy chủ trả từ TOÀN BỘ lệnh của kỳ (không phụ thuộc bộ lọc đang chọn).
   // Chỉ Thành phẩm / Bán thành phẩm (bỏ NVL, phế liệu) vì báo cáo sản lượng chỉ quan tâm đầu ra.
-  const productOptions = useMemo(() => {
-    const m = new Map();
-    rows.forEach(r => {
-      if (!r.product_code || m.has(r.product_code)) return;
-      if (!OUTPUT_TYPES.has(r.product_type)) return;
-      m.set(r.product_code, r.product_name || "");
-    });
-    return [...m].map(([code, name]) => ({ value: code, label: `${code} · ${name}` }))
-      .sort((a, b) => a.value.localeCompare(b.value, "vi"));
-  }, [rows]);
+  const productOptions = useMemo(() => opts.products
+    .filter(p => p.code && OUTPUT_TYPES.has(p.type))
+    .map(p => ({ value: p.code, label: `${p.code} · ${p.name || ""}` }))
+    .sort((a, b) => a.value.localeCompare(b.value, "vi")), [opts]);
+  const teamOptions = useMemo(() => [...opts.teams].sort((a, b) => a.localeCompare(b, "vi")), [opts]);
+  const hasNoTeam = opts.has_no_team;
 
-  const teamOptions = useMemo(() => {
-    const s = new Set();
-    rows.forEach(r => teamsOf(r).forEach(t => s.add(t)));
-    return [...s].sort((a, b) => a.localeCompare(b, "vi"));
-  }, [rows]);
-
-  const hasNoTeam = useMemo(() => rows.some(r => teamsOf(r).length === 0), [rows]);
-
-  // Filter
-  const filtered = rows.filter(r => {
-    const date = orderDate(r);
-    const inRange = (!from || date >= from) && (!to || date <= to);
-    const matchP  = !productFilter || r.product_code === productFilter;
-    const teams   = teamsOf(r);
-    const matchT  = !teamFilter || (teamFilter === NO_TEAM ? teams.length === 0 : teams.includes(teamFilter));
-    const matchS  = !statusFilter || (statusFilter === OVERDUE ? isOverdue(r) : r.status === statusFilter);
-    return inRange && matchP && matchT && matchS;
-  });
-
+  // Máy chủ đã chọn lệnh của kỳ và áp bộ lọc
+  const filtered = rows;
   const hasFilter = !!(productFilter || teamFilter || statusFilter);
-  const overdueCount = filtered.filter(isOverdue).length;
 
-  // KPI
-  // Lệnh Đã hủy: bỏ hết sản lượng / kế hoạch (chốt 2026-11-10) — vẫn hiện trong danh sách chi tiết
-  const live = filtered.filter(r => r.status !== "Đã hủy");
-  const totalPlanned = live.reduce((s, r) => s + (Number(r.quantity) || 0), 0);
-  // Tiến độ: đã làm của các lệnh trong kỳ (mọi lúc) — dùng cho % đạt / còn lại
-  const totalActual  = live.reduce((s, r) => s + (Number(r.produced_qty) || 0), 0);
-  // Phương án A: SL làm ra TRONG KỲ (công đoạn cuối hoàn thành trong khoảng ngày, kể cả lệnh bắt đầu trước kỳ),
-  // cùng nguồn với tỷ lệ phế; áp các bộ lọc sản phẩm / đội / trạng thái theo từng lệnh.
-  const madeInRange = (scrapSum.by_order || []).filter(o => {
-    const teams = String(o.team || "").split(",").map(s => s.trim()).filter(Boolean);
-    return (!productFilter || o.product_code === productFilter)
-      && (!teamFilter || (teamFilter === NO_TEAM ? teams.length === 0 : teams.includes(teamFilter)))
-      && (!statusFilter || (statusFilter === OVERDUE ? filtered.some(r => r.id === o.order_id) : o.status === statusFilter));
-  }).reduce((s, o) => s + o.finished_qty, 0);
+  // KPI — lấy nguyên từ máy chủ (core/lib/periodOutput.js), web KHÔNG tự cộng (chốt 2026-11-13).
+  // Kế hoạch = chuyển từ kỳ trước + lệnh mới; thực tế = làm ra trong kỳ; chỉ cộng lệnh KG.
+  const K = summary || {};
+  const totalPlanned   = K.plan || 0;
+  const madeInRange    = K.actual || 0;
+  const totalRemaining = K.remaining || 0;
+  const totalOver      = K.over || 0;
+  const orderCount     = K.total || 0;
+  const overdueCount   = K.overdue || 0;
+  const doneCount      = K.done || 0;
+  const runningCount   = K.running || 0;
+  const achieveRate    = totalPlanned > 0 ? Math.round((madeInRange / totalPlanned) * 100) : 0;
   // Phế lấy từ Quản lý phế (gộp theo ngày trong khoảng lọc), KHÔNG lấy theo lệnh sản xuất.
   const totalScrap    = Number(scrapSum.total_scrap) || 0;
   const scrapFinished = Number(scrapSum.total_finished) || 0;
-  const doneCount    = filtered.filter(r => r.status === "Hoàn thành").length;
-  const runningCount = filtered.filter(r => r.status === "Đang sản xuất").length;
-  const achieveRate  = totalPlanned > 0 ? Math.round((totalActual / totalPlanned) * 100) : 0;
   const scrapRate    = (scrapFinished + totalScrap) > 0
     ? (totalScrap / (scrapFinished + totalScrap)) * 100 : 0;
   // Chưa có thành phẩm → tỷ lệ không có nghĩa: hiện "—" như Báo cáo giám đốc
   const scrapRateTxt = scrapFinished > 0 ? `${fmtDec(scrapRate, 1)}%` : "—";
-  // Còn phải sản xuất (gộp toàn bộ lệnh đang lọc) và phần vượt mức
-  const totalRemaining = Math.max(0, totalPlanned - totalActual);
-  const totalOver      = Math.max(0, totalActual - totalPlanned);
 
   // ── Danh sách chi tiết theo "góc nhìn" người dùng bấm (thẻ KPI / biểu đồ) ──
   const VIEWS = {
     all:     { label: "Tất cả lệnh",                     test: () => true },
-    actual:  { label: "Lệnh đã có sản lượng thực tế",     test: r => (Number(r.produced_qty) || 0) > 0 },
-    remain:  { label: "Lệnh còn phải sản xuất",           test: r => (Number(r.quantity) || 0) > (Number(r.produced_qty) || 0) && r.status !== "Đã hủy" },
+    actual:  { label: "Lệnh có sản lượng làm ra trong kỳ", test: r => r.period.actual > 0 },
+    remain:  { label: "Lệnh còn phải sản xuất",           test: r => r.period.remaining > 0 },
     running: { label: "Lệnh đang sản xuất",               test: r => r.status === "Đang sản xuất" },
     done:    { label: "Lệnh hoàn thành",                  test: r => r.status === "Hoàn thành" },
     overdue: { label: "Lệnh quá hạn",                     test: isOverdue },
     scrap:   { label: "Phế phẩm theo ngày (Quản lý phế)", test: () => false },
   };
   const viewLabel = view.key === "status" ? `Trạng thái: ${view.value}`
-    : view.key === "date" ? `Ngày ${fmtDate(view.value)}`
     : VIEWS[view.key].label;
   const viewRows = filtered.filter(r =>
     view.key === "status" ? r.status === view.value
-    : view.key === "date" ? orderDate(r) === view.value
     : VIEWS[view.key].test(r));
   const scrapRows = (scrapSum.by_day || []).map(d => ({
     ...d, rate: (d.scrap_qty + d.finished_qty) > 0 ? d.scrap_qty / (d.scrap_qty + d.finished_qty) * 100 : 0,
@@ -576,8 +540,14 @@ function OutputReportBody({ lookups }) {
         : <span className="text-slate-500">{fmtDate(r.due_date) || "—"}</span>,
     },
     {
-      key: "quantity", label: "KH", align: "right",
-      render: (r) => <span className="text-slate-700 font-medium">{fmt(r.quantity)} <span className="text-xs text-slate-400">{r.unit}</span></span>,
+      key: "quantity", label: "KH trong kỳ", align: "right",
+      render: (r) => <span className="text-slate-700 font-medium" title={`SL lệnh: ${fmt(r.order_quantity)} ${r.unit || ""}`}>{fmt(r.quantity)} <span className="text-xs text-slate-400">{r.unit}</span></span>,
+    },
+    {
+      key: "origin", label: "Nguồn",
+      render: (r) => r.period.origin === "carry"
+        ? <span className="inline-flex rounded-full bg-amber-50 text-amber-700 px-2 py-0.5 text-xs font-medium whitespace-nowrap" title={r.period.closed_before ? "Lệnh đã đóng trước kỳ — chỉ tính phần sản lượng ghi trong kỳ" : undefined}>{r.period.closed_before ? "Đóng trước kỳ" : `Chuyển sang · từ ${fmtDate(r.period.created)}`}</span>
+        : <span className="inline-flex rounded-full bg-blue-50 text-blue-700 px-2 py-0.5 text-xs font-medium">Mới</span>,
     },
     {
       key: "actual_qty", label: "Thực tế", align: "right",
@@ -637,6 +607,8 @@ function OutputReportBody({ lookups }) {
         "Ngày kế hoạch": fmtDate(r.planned_date_display || r.planned_date) || "",
         "Hạn chót":     fmtDate(r.due_date) || "",
         "Quá hạn":      isOverdue(r) ? "Có" : "",
+        "Nguồn":        r.period.closed_before ? "Đóng trước kỳ" : r.period.origin === "carry" ? `Chuyển sang (tạo ${fmtDate(r.period.created)})` : "Mới",
+        "SL lệnh":      Number(r.order_quantity) || 0,
         "SL kế hoạch":  planned,
         "SL thực tế":   actual,
         "SL còn lại":   remain > 0 ? remain : 0,
@@ -733,7 +705,7 @@ function OutputReportBody({ lookups }) {
         {/* Tóm tắt kết quả lọc + xóa nhanh */}
         <div className="flex items-center gap-2 flex-wrap mt-3 pt-3 border-t border-slate-100 text-xs">
           <span className="text-slate-500">
-            Kết quả: <b className="text-slate-700">{filtered.length}</b> / {rows.length} lệnh SX
+            Kết quả: <b className="text-slate-700">{orderCount}</b> lệnh SX{K.cancelled > 0 ? ` · ${K.cancelled} lệnh hủy trong kỳ` : ""}
           </span>
           {productFilter && (
             <span className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 rounded-full px-2 py-0.5">
@@ -771,22 +743,22 @@ function OutputReportBody({ lookups }) {
       {/* KPI Cards */}
       {/* 7 thẻ / 1 hàng chỉ từ 2xl (1536px): ở 1280px mỗi thẻ ~122px → 6/7 nhãn bị cắt. Dưới 2xl: 4 thẻ / hàng */}
       <div className="grid grid-cols-2 md:grid-cols-4 2xl:grid-cols-7 gap-4">
-        <KpiCard label="SL kế hoạch" value={fmt(totalPlanned)} sub={`${filtered.length} lệnh SX`}        icon={Package}      color="blue"  {...cardProps("all")} />
-        <KpiCard label="SL thực tế"  value={fmt(madeInRange)}  sub={`Làm ra trong kỳ · tiến độ lệnh ${achieveRate}%`}       icon={TrendingUp}   color="green" {...cardProps("actual")} />
+        <KpiCard label="SL kế hoạch" value={fmt(totalPlanned)} sub={`Chuyển kỳ trước ${fmt(K.carry_plan || 0)} · Mới ${fmt(K.new_plan || 0)}`}        icon={Package}      color="blue"  {...cardProps("all")} />
+        <KpiCard label="SL thực tế"  value={fmt(madeInRange)}  sub={`Làm ra trong kỳ · tiến độ ${achieveRate}%`}       icon={TrendingUp}   color="green" {...cardProps("actual")} />
         <KpiCard label="Còn lại"     value={fmt(totalRemaining)}
           sub={totalOver > 0 ? `Vượt mức +${fmt(totalOver)}` : "Còn phải sản xuất"}
           icon={ClipboardList} color={totalRemaining === 0 ? "green" : "amber"} {...cardProps("remain")} />
-        <KpiCard label="Đang SX"     value={runningCount}       sub={`/ ${filtered.length} lệnh`}          icon={Activity}     color="blue"  {...cardProps("running")} />
-        <KpiCard label="Hoàn thành"  value={doneCount}          sub={`/ ${filtered.length} lệnh`}          icon={CheckCircle2} color="green" {...cardProps("done")} />
+        <KpiCard label="Đang SX"     value={runningCount}       sub={`/ ${orderCount} lệnh`}          icon={Activity}     color="blue"  {...cardProps("running")} />
+        <KpiCard label="Hoàn thành"  value={doneCount}          sub={`/ ${orderCount} lệnh`}          icon={CheckCircle2} color="green" {...cardProps("done")} />
         <KpiCard label="Quá hạn"     value={overdueCount}
-          sub={filtered.length > 0 ? `${Math.round(overdueCount / filtered.length * 100)}% số lệnh` : "Trễ hạn chót"}
+          sub={orderCount > 0 ? `${Math.round(overdueCount / orderCount * 100)}% số lệnh` : "Trễ hạn chót"}
           icon={AlertCircle} color={overdueCount > 0 ? "rose" : "green"} {...cardProps("overdue")} />
         <KpiCard label="Phế phẩm"    value={scrapErr ? "—" : fmt(totalScrap)}
           sub={scrapErr ? "Lỗi tải số liệu phế" : `Tỷ lệ phế ${scrapRateTxt}`}
           icon={AlertTriangle} color={scrapRate > S.scrap_alert_percent ? "rose" : "amber"} {...cardProps("scrap")} />
       </div>
 
-      <OutputCharts rows={filtered} onPick={pick} />
+      <OutputCharts rows={filtered.filter(r => !r.period.cancelled_in_period && !r.period.closed_before)} daily={scrapSum.by_day || []} onPick={pick} />
 
       {/* Table — nội dung đổi theo thẻ / biểu đồ đã bấm */}
       <Section

@@ -1,8 +1,10 @@
 // Tổng hợp phế theo ngày — MỘT định nghĩa cho Báo cáo sản lượng (/scrap/summary) và Báo cáo giám đốc.
 // Phế: module Quản lý phế, theo ngày cân. Thành phẩm: Σ công đoạn CUỐI đã hoàn thành trong ngày
 // (phiếu phế không nhập TP — finished_qty luôn 0 → trước đây tỷ lệ phế 100% / "—").
-// Ngày của task theo updated_at (người dùng chấp nhận, 2026-11-10). Lệnh Đã hủy: bỏ hết sản lượng, phế vẫn tính (chốt 2026-11-10).
+// Ngày của task theo updated_at (người dùng chấp nhận, 2026-11-10). Lệnh Đã hủy: GIỮ phần đã sản xuất, phế vẫn tính (chốt 2026-11-13, thay chốt 2026-11-10).
 const { FINAL_STAGE_OF_TASK } = require('./finalStage');
+const { IS_KG_ORDER } = require('./periodOutput');
+// Chốt 2026-11-13: thành phẩm (mẫu số tỷ lệ phế) CHỈ tính lệnh KG.
 
 async function scrapByDay(db, from, to) {
   const { rows } = await db.query(`
@@ -13,13 +15,14 @@ async function scrapByDay(db, from, to) {
       WHERE dsr.record_date BETWEEN $1::date AND $2::date
       GROUP BY dsr.record_date
     ), f AS (
-      SELECT t.updated_at::date AS d, SUM(COALESCE(t.actual_qty, t.quantity)) AS finished_qty
+      SELECT (t.updated_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS d, SUM(COALESCE(t.actual_qty, t.quantity)) AS finished_qty
       FROM production_tasks t
-      JOIN production_orders po ON po.id = t.production_order_id AND po.is_deleted = FALSE AND po.status <> 'Đã hủy'
-      WHERE t.status = 'Hoàn thành'
-        AND t.updated_at::date BETWEEN $1::date AND $2::date
+      JOIN production_orders po ON po.id = t.production_order_id AND po.is_deleted = FALSE
+      LEFT JOIN products p ON p.id = po.product_id
+      WHERE ${IS_KG_ORDER()} AND t.status = 'Hoàn thành'
+        AND (t.updated_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date BETWEEN $1::date AND $2::date
         AND t.stage = ${FINAL_STAGE_OF_TASK}
-      GROUP BY t.updated_at::date
+      GROUP BY (t.updated_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date
     )
     SELECT COALESCE(s.d, f.d)::text AS date,
            COALESCE(s.scrap_qty, 0)::numeric    AS scrap_qty,
@@ -38,10 +41,10 @@ async function scrapByDay(db, from, to) {
              po.assigned_team) AS team,
            SUM(COALESCE(t.actual_qty, t.quantity))::numeric AS finished_qty
     FROM production_tasks t
-    JOIN production_orders po ON po.id = t.production_order_id AND po.is_deleted = FALSE AND po.status <> 'Đã hủy'
+    JOIN production_orders po ON po.id = t.production_order_id AND po.is_deleted = FALSE
     LEFT JOIN products p ON p.id = po.product_id
-    WHERE t.status = 'Hoàn thành'
-      AND t.updated_at::date BETWEEN $1::date AND $2::date
+    WHERE ${IS_KG_ORDER()} AND t.status = 'Hoàn thành'
+      AND (t.updated_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date BETWEEN $1::date AND $2::date
       AND t.stage = ${FINAL_STAGE_OF_TASK}
     GROUP BY t.production_order_id, po.id, p.product_code, po.status, po.assigned_team`, [from, to]);
   return {
