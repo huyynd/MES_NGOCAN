@@ -530,6 +530,10 @@ function OutputReportBody({ lookups }) {
       render: (r) => r.customer_name || "—",
     }] : []),
     {
+      key: "created_at", label: "Ngày tạo", filter: "date", tdClass: "text-slate-500",
+      render: (r) => fmtDate(r.created_at) || "—",
+    },
+    {
       key: "planned_date", label: "Ngày KH", filter: "date", tdClass: "text-slate-500",
       render: (r) => fmtDate(r.planned_date_display || r.planned_date) || "—",
     },
@@ -604,7 +608,8 @@ function OutputReportBody({ lookups }) {
         "Tên sản phẩm": r.product_name,
         "Khách hàng":   r.customer_name || "",
         "Đơn hàng bán": r.sales_order_code || "",
-        "Ngày kế hoạch": fmtDate(r.planned_date_display || r.planned_date) || "",
+        "Ngày tạo":     fmtDate(r.created_at) || "",
+        "Ngày kế hoạch":fmtDate(r.planned_date_display || r.planned_date) || "",
         "Hạn chót":     fmtDate(r.due_date) || "",
         "Quá hạn":      isOverdue(r) ? "Có" : "",
         "Nguồn":        r.period.closed_before ? "Đóng trước kỳ" : r.period.origin === "carry" ? `Chuyển sang (tạo ${fmtDate(r.period.created)})` : "Mới",
