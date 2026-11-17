@@ -73,10 +73,94 @@ const CELL_AVAIL = "col-start-2 row-start-2 row-span-3 md:col-start-auto md:row-
 const PRODUCT_GRID = "grid grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1.3fr)_130px_minmax(0,1fr)_110px_130px] gap-x-3";
 const LOCATION_GRID = "grid grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[110px_minmax(0,1fr)_minmax(0,1.5fr)_130px_100px_110px] gap-x-3";
 
+/* Cuộn con của 1 lô (mở từ nút ở ô Lô). Phần lô chưa gắn cuộn (hàng cũ) hiện là dòng "Không rõ cuộn"
+   để tổng các dòng luôn bằng số tồn của lô. */
+const ROLL_GRID = "grid grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1.2fr)_110px_110px_120px_minmax(0,1.5fr)] gap-x-3";
+function LotRolls({ lot, unit, reloadKey }) {
+  const [state, setState] = useState({ loading: true, error: "", data: null });
+  const { product_id, location_id, spec_key, lot_code } = lot.rollKey;
+  const load = useCallback(async (alive = () => true) => {
+    setState((s) => ({ ...s, loading: true, error: "" }));
+    try {
+      const data = await inventory.rolls({ product_id, location_id, spec_key, lot_code });
+      if (alive()) setState({ loading: false, error: "", data, key: reloadKey });
+    } catch (e) {
+      if (alive()) setState({ loading: false, error: e.message, data: null });
+    }
+  }, [product_id, location_id, spec_key, lot_code, reloadKey]);
+  // reloadKey đổi mỗi lần bảng tồn tải lại xong (sau Xuất / Chuyển / Điều chỉnh…) → load đổi → bảng cuộn đang mở tải lại,
+  // giữ số cũ trên màn trong lúc chờ (không nhảy về "Đang tải…")
+  useEffect(() => {
+    let on = true;
+    load(() => on);
+    return () => { on = false; };
+  }, [load]);
+
+  const rolls = state.data?.rolls || [];
+  const unknown = Number(state.data?.unknown_qty) || 0;
+  const rollSum = rolls.reduce((s, r) => s + (Number(r.qty_remaining) || 0), 0) + unknown;
+  // Chỉ so khi số cuộn đã tải cùng lượt với số lô đang hiện (tránh báo lệch giả trong lúc đang tải lại)
+  const mismatch = state.loading || state.key !== reloadKey ? 0 : Math.round((rollSum - (Number(lot.quantity) || 0)) * 1000) / 1000;
+  const u = <span className="text-xs text-slate-400">{unit}</span>;
+  return (
+    <div className="md:ml-6 my-1 rounded-lg border border-slate-200 bg-white px-3">
+      {state.error ? (
+        <LoadError message={"Không tải được danh sách cuộn: " + state.error} onRetry={() => load()} className="my-2" />
+      ) : state.loading && !state.data ? (
+        <div className="py-3 text-sm text-slate-400">Đang tải…</div>
+      ) : !rolls.length ? (
+        <div className="py-3 text-sm text-slate-400">Lô này không có cuộn con — tồn chỉ theo dõi theo lô.</div>
+      ) : (
+        <>
+          <div className={`hidden md:grid ${ROLL_GRID} ${SUB_HEAD}`}>
+            <div>Mã cuộn</div><div className="text-right">Ban đầu</div><div className="text-right">Tồn</div>
+            <div>Trạng thái</div><div>Thông số</div>
+          </div>
+          {rolls.map((r) => (
+            <div key={r.roll_code} className={`${ROLL_GRID} ${SUB_ROW}`}>
+              <div className={`${CELL_TEXT} text-xs tabular-nums text-slate-700 truncate md:self-center`} title={r.roll_code}>
+                {r.roll_code}
+                <span className="md:hidden block text-slate-400">Ban đầu {fmt(r.qty_initial)} {unit}</span>
+              </div>
+              <div className="hidden md:block text-right tabular-nums text-slate-500 whitespace-nowrap">{fmt(r.qty_initial)} {u}</div>
+              <div className={`${CELL_QTY} text-right tabular-nums text-slate-700 whitespace-nowrap`}>{fmt(r.qty_remaining)} {u}</div>
+              <div className={CELL_TEXT}>
+                <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${statusClass(r.status)}`}>{r.status}</span>
+              </div>
+              <div className={`${CELL_TEXT} text-slate-500 truncate`} title={specShort(r.specs) || undefined}>{specShort(r.specs) || "—"}</div>
+            </div>
+          ))}
+          {unknown > 0 && (
+            <div className={`${ROLL_GRID} ${SUB_ROW}`}>
+              <div className={`${CELL_TEXT} text-slate-500`} title="Phần tồn của lô chưa gắn với cuộn nào (hàng cũ, điều chỉnh tăng…)">Không rõ cuộn</div>
+              <div className="hidden md:block text-right text-slate-400">—</div>
+              <div className={`${CELL_QTY} text-right tabular-nums text-slate-700 whitespace-nowrap`}>{fmt(unknown)} {u}</div>
+              <div className={`hidden md:block ${CELL_TEXT} text-slate-400`}>—</div>
+              <div className={`hidden md:block ${CELL_TEXT} text-slate-400`}>—</div>
+            </div>
+          )}
+          {mismatch !== 0 && (
+            <div className="py-1.5 text-xs text-amber-700 border-t border-slate-100"
+              title={`Tổng cuộn + không rõ cuộn = ${fmt(rollSum)} ${unit}, số tồn của lô = ${fmt(lot.quantity)} ${unit}`}>
+              Tổng cuộn lệch số lô {mismatch > 0 ? "+" : ""}{fmt(mismatch)} {unit}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 /* Bảng con của 1 sản phẩm. Phân trang theo nhóm thông số để không cắt đôi một nhóm.
    Dòng tổng chỉ hiện khi nó có thêm thông tin: nhóm nhiều lô, và sản phẩm có từ 2 nhóm trở lên. */
-function ProductLots({ p }) {
+function ProductLots({ p, treeVersion }) {
   const { slice, pager } = usePager(p.groups, 10);
+  const [openRolls, setOpenRolls] = useState(() => new Set()); // lô đang mở bảng cuộn (mặc định đóng)
+  const toggleRolls = (id) => setOpenRolls((prev) => {
+    const n = new Set(prev);
+    n.has(id) ? n.delete(id) : n.add(id);
+    return n;
+  });
   return (
     <div className={SUB_WRAP}>
       <div className={`hidden md:grid ${PRODUCT_GRID} ${SUB_HEAD}`}>
@@ -97,18 +181,37 @@ function ProductLots({ p }) {
                 <div className="hidden md:block" />
               </div>
             )}
-            {g.lots.map((lot) => (
-              <div key={lot.id} className={`${PRODUCT_GRID} ${SUB_ROW}`}>
-                <div className={`${CELL_TEXT} text-slate-700`}>{showTotal ? <span className="hidden md:inline">&nbsp;</span> : label}</div>
-                <div className={`${CELL_TEXT} text-slate-700 truncate`} title={lot.lot_code || undefined}>
-                  {lot.lot_code || "(không lô)"}
-                  {lot.expiry_date && <span className="block text-xs text-slate-400">HSD {fmtDate(lot.expiry_date)}</span>}
-                </div>
-                <div className={`${CELL_TEXT} text-slate-500`}>{lot.place}</div>
-                <QtyCell quantity={lot.quantity} unit={lot.unit || p.unit} className={CELL_QTY} />
-                <AvailCell pending={lot.pending} blocked={lot.blocked} available={lot.available} className={CELL_AVAIL} />
-              </div>
-            ))}
+            {g.lots.map((lot) => {
+              const rOpen = openRolls.has(lot.id);
+              return (
+                <React.Fragment key={lot.id}>
+                  <div className={`${PRODUCT_GRID} ${SUB_ROW}`}>
+                    <div className={`${CELL_TEXT} text-slate-700`}>{showTotal ? <span className="hidden md:inline">&nbsp;</span> : label}</div>
+                    <div className={`${CELL_TEXT} text-slate-700`}>
+                      {lot.mayHaveRolls ? (
+                        <button type="button" aria-expanded={rOpen} onClick={() => toggleRolls(lot.id)}
+                          title={`${rOpen ? "Ẩn" : "Xem"} cuộn của lô ${lot.lot_code}`}
+                          className="inline-flex items-center gap-1 max-w-full min-w-0 py-1 -my-1 rounded text-left hover:text-blue-600 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40">
+                          <Chevron open={rOpen} />
+                          <span className="truncate">{lot.lot_code}</span>
+                        </button>
+                      ) : (
+                        // Chừa chỗ bằng mũi tên (w-4) để mã lô thẳng hàng với lô có cuộn
+                        <span className="flex items-center gap-1 min-w-0" title={lot.lot_code || undefined}>
+                          <span className="w-4 shrink-0" aria-hidden="true" />
+                          <span className="truncate">{lot.lot_code || "(không lô)"}</span>
+                        </span>
+                      )}
+                      {lot.expiry_date && <span className="block text-xs text-slate-400">HSD {fmtDate(lot.expiry_date)}</span>}
+                    </div>
+                    <div className={`${CELL_TEXT} text-slate-500`}>{lot.place}</div>
+                    <QtyCell quantity={lot.quantity} unit={lot.unit || p.unit} className={CELL_QTY} />
+                    <AvailCell pending={lot.pending} blocked={lot.blocked} available={lot.available} className={CELL_AVAIL} />
+                  </div>
+                  {rOpen && <LotRolls lot={lot} unit={lot.unit || p.unit} reloadKey={treeVersion} />}
+                </React.Fragment>
+              );
+            })}
           </React.Fragment>
         );
       })}
@@ -180,6 +283,7 @@ function TreeTab({ lookups, viewMode, reloadKey }) {
   const [loaded, setLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
+  const [treeVersion, setTreeVersion] = useState(0); // tăng mỗi lần tải tồn xong → bảng cuộn đang mở tải lại theo
   const [q, setQ] = useRemembered("inv:tree:q", "");
   const [filterWh, setFilterWh] = useRemembered("inv:tree:wh", "");
   const [filterZone, setFilterZone] = useRemembered("inv:tree:zone", "");
@@ -193,6 +297,7 @@ function TreeTab({ lookups, viewMode, reloadKey }) {
     try {
       const res = await inventory.tree({});
       setData(res.data || res);
+      setTreeVersion((v) => v + 1);
       setLoaded(true);
       setLoadError("");
     } catch (e) {
@@ -266,6 +371,10 @@ function TreeTab({ lookups, viewMode, reloadKey }) {
         place: r.warehouse_name ? `${r.warehouse_name}${r.zone_name && zoneCount.get(r.warehouse_id) > 1 ? " · " + r.zone_name : ""}${r.location_name ? " · " + r.location_name : ""}` : "(chưa xác định)",
         pending: Number(r.pending) || 0, blocked: Number(r.blocked) || 0, available: Number(r.available) || 0,
         expiry_date: r.expiry_date,
+        // Khóa lô để xem cuộn con (GET /inventory/rolls): giá trị gốc trong inventory_stock
+        rollKey: { product_id: r.product_id, location_id: r.location_id, spec_key: r.spec_key, lot_code: r.lot_code },
+        // Lô có thể có cuộn: API tồn trả roll_count thì theo nó; chưa trả thì đoán theo lô có mã + có vị trí
+        mayHaveRolls: r.roll_count != null ? Number(r.roll_count) > 0 : !!(r.lot_code && r.location_id),
       });
     }
     let arr = [...prods.values()].map((P) => ({
@@ -394,7 +503,7 @@ function TreeTab({ lookups, viewMode, reloadKey }) {
                 <div className="hidden md:block text-sm text-slate-500">{detail}</div>
                 <div className="text-right tabular-nums"><QtyByUnit o={p} /></div>
               </button>
-              {pOpen && <ProductLots p={p} />}
+              {pOpen && <ProductLots p={p} treeVersion={treeVersion} />}
             </div>
           );
         })}

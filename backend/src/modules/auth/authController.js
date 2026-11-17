@@ -60,7 +60,7 @@ setInterval(() => {
   for (const [key, e] of loginAttempts) {
     if (e.lockedUntil ? e.lockedUntil < now : now - e.firstAt > LOCK_MS) loginAttempts.delete(key);
   }
-}, 60 * 60 * 1000);
+}, 60 * 60 * 1000).unref(); // không giữ tiến trình sống (test tích hợp treo không thoát)
 
 // ── Password helpers ──────────────────────────────────────────────────────────
 function hashPassword(pw) {

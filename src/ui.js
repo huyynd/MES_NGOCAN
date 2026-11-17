@@ -67,6 +67,7 @@ const STATUS_COLORS = {
   "Chờ sản xuất": BADGE.gray,
   "Bản nháp": BADGE.gray,
   "Chờ cân": BADGE.gray,
+  "Hết": BADGE.gray, // cuộn đã cắt hết (tồn theo cuộn)
   // xanh dương — đang làm / đã lên kế hoạch
   "Mới": BADGE.blue,
   "Đã lên kế hoạch": BADGE.blue,
@@ -81,12 +82,14 @@ const STATUS_COLORS = {
   "Đã vận chuyển, chưa thanh toán": BADGE.amber,
   "Chờ thanh toán": BADGE.amber,
   "Đã thanh toán 1 phần": BADGE.amber,
+  "Đang cắt dở": BADGE.amber, // cuộn đã cắt một phần
   // xanh lá — xong / đã thanh toán
   "Hoàn thành": BADGE.green,
   "Hoàn thành sản xuất": BADGE.green,
   "Giao hàng": BADGE.green,
   "Đã thanh toán": BADGE.green,
   "Hoạt động": BADGE.green,
+  "Còn": BADGE.green, // cuộn còn nguyên
   // đỏ — hủy / ngừng
   "Đã hủy": BADGE.red,
   "Ngừng": BADGE.red,

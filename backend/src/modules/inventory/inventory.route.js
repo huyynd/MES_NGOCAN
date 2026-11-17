@@ -6,6 +6,7 @@ const inventory = require('./inventoryController');
 router.get('/inventory', inventory.list);
 router.get('/inventory/tree', inventory.tree);
 router.get('/inventory/detail', inventory.stockDetail);
+router.get('/inventory/rolls', inventory.rolls);
 router.get('/inventory/transactions', inventory.transactions);
 router.post('/inventory/adjust', inventory.adjust);
 router.post('/inventory/transfer', requirePerm('inv_transfer:create'), inventory.transfer);

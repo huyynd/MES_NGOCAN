@@ -4,6 +4,7 @@ const { buildSpecKey, legacyAttrs, specsFromBody, specKeyValues } = require('../
 const { upUnit } = require('../../core/lib/units');
 const { getDataScope } = require('../../core/dataScope');
 const { applyStock, stockErrorResponse } = require('../../core/lib/stock');
+const { moveRolls, listRolls } = require('../../core/lib/rolls');
 const { nextCode, nextSlipCode } = require('../../core/lib/codes');
 const { stockAvailabilityRows, lockProducts, assertAvailable } = require('../../core/lib/availability');
 const { slipSources, remaining, postReturn, refreshIssuedFlag } = require('../../core/lib/materialReturns');
@@ -108,7 +109,10 @@ exports.tree = async (req, res) => {
              s.quantity, s.unit, s.expiry_date,
              w.id AS warehouse_id, w.name AS warehouse_name, 
              z.id AS zone_id, z.name AS zone_name,
-             l.id AS location_id, l.name AS location_name
+             l.id AS location_id, l.name AS location_name,
+             (SELECT COUNT(*)::int FROM inventory_rolls ir
+               WHERE ir.lot_code = COALESCE(s.lot_code, '') AND ir.product_id = s.product_id
+                 AND ir.location_id IS NOT DISTINCT FROM s.location_id AND ir.spec_key = s.spec_key) AS roll_count
       FROM inventory_stock s
       JOIN products p ON p.id = s.product_id
       LEFT JOIN locations l ON l.id = s.location_id
@@ -152,6 +156,26 @@ exports.list = async (req, res) => {
     `, params);
     res.json({ data: rows });
   } catch (err) { console.error(err); res.status(500).json({ message: 'Lỗi khi lấy tồn kho' }); }
+};
+
+// GET /api/inventory/rolls?product_id&location_id&spec_key&lot_code — cuộn con của 1 lô (bấm mở rộng ở màn tồn kho).
+// Quyền xem = phạm vi kho xem tồn hiện có (invViewScope). Trả { lot_qty, unknown_qty, rolls[{ roll_code, qty_initial, qty_remaining, status, … }] }.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+exports.rolls = async (req, res) => {
+  try {
+    // Chỉ nhận chuỗi: ?x[]=… / ?x[a]=… (mảng, object) → 400, không để lọt xuống truy vấn thành lỗi 500 (QA NN-1)
+    const str = (v) => (typeof v === 'string' ? v : null);
+    const product_id = str(req.query.product_id), location_id = str(req.query.location_id), lot_code = str(req.query.lot_code);
+    const spec_key = req.query.spec_key == null ? '||||' : str(req.query.spec_key);
+    if (!UUID_RE.test(product_id || '') || !UUID_RE.test(location_id || '') || !lot_code || spec_key == null) {
+      return res.status(400).json({ message: 'Thiếu hoặc sai sản phẩm / vị trí / lô.' });
+    }
+    const ok = (await db.query(
+      `SELECT 1 FROM locations l JOIN warehouses w ON w.id = l.warehouse_id WHERE l.id = $1 AND (${invViewScope(req)})`, [location_id])).rowCount;
+    if (!ok) return res.status(403).json({ message: 'Bạn không có quyền xem tồn kho của kho này.' });
+    const data = await listRolls(db, { product_id, location_id, spec_key, lot_code: String(lot_code) });
+    res.json({ data });
+  } catch (err) { console.error(err); res.status(500).json({ message: 'Lỗi khi lấy danh sách cuộn' }); }
 };
 
 // GET /api/inventory/detail?product_id&warehouse_id — chi tiết các dòng tồn (theo vị trí) của 1 (SP, kho)
@@ -703,9 +727,12 @@ exports.transfer = async (req, res) => {
       const take = Math.min(remain, Number(sr.quantity));
       const common = { product_id: b.product_id, unit: sr.unit || unit, specs: sr.specs || {}, spec_key: sr.spec_key, lot_code: sr.lot_code || '', clampZero: false, transfer: true, ref_code: refCode };
       // 1. Xuất khỏi kho nguồn
-      await applyStock(client, { ...common, location_id: b.from_location_id, delta: -take, trx_type: 'Chuyển kho', note: `Chuyển kho → ${toLabel}${b.note ? ' | ' + b.note : ''}` });
+      const rollsUsed = []; // tồn theo cuộn: cuộn bị trừ ở nguồn đi theo sang đích (Q3)
+      await applyStock(client, { ...common, rolls_used: rollsUsed, location_id: b.from_location_id, delta: -take, trx_type: 'Chuyển kho', note: `Chuyển kho → ${toLabel}${b.note ? ' | ' + b.note : ''}` });
       // 2. Nhập vào kho đích (cùng spec_key + lô)
       await applyStock(client, { ...common, location_id: b.to_location_id, delta: take, trx_type: 'Chuyển kho', note: `Chuyển kho ← ${fromLabel}${b.note ? ' | ' + b.note : ''}` });
+      const lotKey = { product_id: b.product_id, spec_key: sr.spec_key, lot_code: sr.lot_code || '' };
+      await moveRolls(client, { ...lotKey, location_id: b.from_location_id }, { ...lotKey, location_id: b.to_location_id }, rollsUsed);
       remain -= take;
     }
 

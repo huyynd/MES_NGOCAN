@@ -50,6 +50,7 @@ async function postReturn(client, { prefix = 'TNVL', orderId = null, reason, not
     await applyStock(client, {
       product_id: r.product_id, location_id: loc, delta: quantity, unit: r.unit,
       specs: r.specs || {}, spec_key: r.spec_key, lot_code: r.lot_code || '',
+      return_of: r.trx_id, // lô có cuộn → cộng về đúng cuộn gốc đã xuất (không rõ gốc → mã cuộn mới)
       trx_type: 'Nhập', ref_code: code, note: `${reason} (phiếu ${r.slip_code})${note ? ' | ' + note : ''}`,
     });
     await client.query(

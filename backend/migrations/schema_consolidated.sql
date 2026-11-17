@@ -2862,4 +2862,58 @@ CREATE INDEX IF NOT EXISTS idx_pt_po_stage_done ON public.production_tasks (prod
 --   Bỏ 2 index trùng (cùng cột production_order_id với idx_pt_po) — chỉ làm chậm ghi phân công, không đổi kết quả.
 DROP INDEX IF EXISTS public.idx_tasks_po;
 DROP INDEX IF EXISTS public.idx_pt_production_order;
+-- 38) TỒN KHO THEO CUỘN (2026-11-13): mỗi dòng Thổi/Cắt có mã cuộn cố định {LSX}_{1|2}_{xxx};
+--   lô LSX trong tồn kho có các cuộn con. Tổng còn của cuộn ≤ số lô; phần chênh = "Không rõ cuộn" (tính khi đọc).
+--   Logic cuộn chỉ ở backend/src/core/lib/rolls.js (gọi từ applyStock, cùng transaction). Dữ liệu cũ KHÔNG chuyển đổi.
+--   Gỡ (chạy tay): DROP TABLE public.inventory_rolls; DROP TABLE public.production_roll_counters;
+--       ALTER TABLE public.production_tasks DROP COLUMN roll_code; ALTER TABLE public.production_roll_usage DROP COLUMN roll_code;
+CREATE TABLE IF NOT EXISTS public.inventory_rolls (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  product_id uuid NOT NULL REFERENCES public.products(id),
+  location_id uuid REFERENCES public.locations(id),
+  spec_key text NOT NULL,
+  lot_code varchar(40) NOT NULL,
+  roll_code varchar(60) NOT NULL,
+  stage smallint NOT NULL CHECK (stage IN (1, 2)),       -- 1 = Thổi (cuộn BTP), 2 = Cắt (bao bì TP)
+  qty_initial numeric(14,2) NOT NULL DEFAULT 0 CHECK (qty_initial >= 0),
+  qty_remaining numeric(14,2) NOT NULL DEFAULT 0 CONSTRAINT inventory_rolls_remaining_nonneg CHECK (qty_remaining >= 0),
+  specs jsonb NOT NULL DEFAULT '{}'::jsonb,
+  task_code varchar(40),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+--   Một mã cuộn có thể nằm ở 2 lô khi chuyển kho một phần (tách cuộn) → duy nhất theo lô + mã.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_inventory_rolls_lot_code
+  ON public.inventory_rolls (product_id, location_id, spec_key, lot_code, roll_code) NULLS NOT DISTINCT;
+CREATE INDEX IF NOT EXISTS idx_inventory_rolls_lot_code ON public.inventory_rolls (lot_code);
+--   Bộ đếm bền "số lớn nhất đã cấp" theo LSX + công đoạn: xóa dòng không trả số, không dùng lại.
+CREATE TABLE IF NOT EXISTS public.production_roll_counters (
+  production_order_id uuid NOT NULL REFERENCES public.production_orders(id) ON DELETE CASCADE,
+  stage smallint NOT NULL CHECK (stage IN (1, 2)),
+  last_no integer NOT NULL DEFAULT 0,
+  PRIMARY KEY (production_order_id, stage)
+);
+ALTER TABLE public.production_tasks ADD COLUMN IF NOT EXISTS roll_code varchar(60);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_production_tasks_roll_code ON public.production_tasks (roll_code) WHERE roll_code IS NOT NULL;
+ALTER TABLE public.production_roll_usage ADD COLUMN IF NOT EXISTS roll_code varchar(60); -- NULL = phần "Không rõ cuộn"
+--   Sổ cuộn theo giao dịch kho (cổng B 2026-11-17): mỗi lần trừ lô có cuộn (applyStock) ghi cuộn nào bị trừ bao nhiêu
+--   (qty < 0, trx_id = dòng inventory_transactions vừa ghi). Khách trả hàng / đảo phiếu xuất / trả NVL cộng về ĐÚNG cuộn
+--   gốc (qty > 0, source_move_id = dòng trừ tương ứng); phần không rõ gốc cấp mã mới (qty > 0, source_move_id NULL).
+--   Gỡ (chạy tay): DROP TABLE public.inventory_roll_moves;
+CREATE TABLE IF NOT EXISTS public.inventory_roll_moves (
+  id bigserial PRIMARY KEY,
+  trx_id uuid REFERENCES public.inventory_transactions(id) ON DELETE CASCADE,
+  product_id uuid NOT NULL,
+  location_id uuid,
+  spec_key text NOT NULL,
+  lot_code varchar(40) NOT NULL,
+  roll_code varchar(60) NOT NULL,
+  qty numeric(14,2) NOT NULL CHECK (qty <> 0),            -- < 0 = bị trừ, > 0 = được trả về
+  source_move_id bigint REFERENCES public.inventory_roll_moves(id) ON DELETE SET NULL,
+  trx_type varchar(20),
+  ref_code varchar(50),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_inventory_roll_moves_trx ON public.inventory_roll_moves (trx_id);
+CREATE INDEX IF NOT EXISTS idx_inventory_roll_moves_source ON public.inventory_roll_moves (source_move_id) WHERE source_move_id IS NOT NULL;
 -- ---------------------------------------------------------------------

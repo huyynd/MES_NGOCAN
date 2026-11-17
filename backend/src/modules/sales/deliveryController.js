@@ -703,6 +703,7 @@ exports.createReturn = async (req, res) => {
       await applyStock(client, {
         product_id: s.product_id, location_id: it.location_id, delta: qty, unit: s.unit,
         specs: s.specs || {}, spec_key: s.spec_key, lot_code: s.lot_code || '',
+        return_of: s.trx_id, // lô có cuộn → cộng về đúng cuộn gốc đã giao (không rõ gốc → mã cuộn mới)
         trx_type: 'Nhập', ref_code: ret.return_code, note: `Khách trả hàng (phiếu giao ${dn.note_code})${note ? ' | ' + note : ''}`,
       });
       await client.query(

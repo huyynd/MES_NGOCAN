@@ -8,6 +8,7 @@
 const { buildSpecKey, legacyAttrs } = require('./specs');
 const { upUnit } = require('./units');
 const { currentUser } = require('../requestContext');
+const { trimRolls, recordRollMoves, returnRolls } = require('./rolls');
 
 // Lỗi thiếu tồn — nơi gọi trả 400 kèm thông báo dễ hiểu (xem stockErrorResponse)
 class StockShortageError extends Error {
@@ -78,6 +79,9 @@ const fmtQty = (n) => Number(n || 0).toLocaleString('vi-VN', { maximumFractionDi
  *   log = true,          // ghi inventory_transactions
  *   trx_type,            // 'Nhập'|'Xuất'|'Điều chỉnh'|'Chuyển kho'; mặc định suy từ dấu delta
  *   ref_code = null, note = null,
+ *   rolls_used,          // (tuỳ chọn) mảng — nhận [{ roll_code, qty }] cuộn con đã trừ (xem rolls.js)
+ *   return_of,           // (tuỳ chọn, chỉ khi nhập) id inventory_transactions của giao dịch XUẤT mà hàng này quay lại
+ *                        //   (khách trả hàng, đảo phiếu xuất, trả NVL) → cộng về đúng cuộn gốc (rolls.returnRolls)
  *   clampZero            // ĐÃ BỎ: trước đây true = ép về 0 khi thiếu (sổ cái vẫn ghi đủ → lệch sổ cái),
  *                        //        false = cho âm. Nay thiếu tồn LUÔN báo lỗi; tham số được bỏ qua.
  * }
@@ -93,6 +97,7 @@ async function applyStock(client, o) {
   const loc = o.location_id || null;
   let newQty = null;
   let rowUnit = null; // ĐVT của dòng tồn sau khi ghi — lưu vào sổ cái
+  let used = [];      // cuộn con bị trừ (lô có cuộn) — ghi sổ cuộn sau khi có id giao dịch
 
   await checkWarehouseRule(client, loc, delta, !!o.transfer);
 
@@ -124,6 +129,12 @@ async function applyStock(client, o) {
     }
     newQty = Number(r.rows[0].quantity);
     rowUnit = r.rows[0].unit;
+    // TỒN THEO CUỘN: lô có cuộn con → trừ cuộn tương ứng (001→n) trong cùng transaction; lô đã khóa ở câu trên
+    // nên 2 phiếu trừ cùng lô xếp hàng. Lô không cuộn → không làm gì. Nơi gọi cần biết cuộn nào bị trừ → truyền mảng rolls_used.
+    if (lot) {
+      used = await trimRolls(client, { product_id: o.product_id, location_id: loc, spec_key, lot_code: lot }, newQty, -delta);
+      if (Array.isArray(o.rolls_used)) o.rolls_used.push(...used);
+    }
   } else {
     // NHẬP (hoặc 0): upsert cộng dồn
     const r = await client.query(
@@ -146,18 +157,27 @@ async function applyStock(client, o) {
     rowUnit = r.rows[0]?.unit;
   }
 
+  const trxType = o.trx_type || (delta > 0 ? 'Nhập' : 'Xuất');
+  let trxId = null;
   if (o.log !== false && delta !== 0) {
     // quantity: giữ giá trị TUYỆT ĐỐI như cũ (tương thích); delta: CÓ DẤU — để biết "Điều chỉnh" là tăng hay giảm
     // K-16: người thực hiện lấy từ phiên đăng nhập của request (requestContext)
     const who = currentUser();
-    await client.query(
+    trxId = (await client.query(
       `INSERT INTO inventory_transactions
          (product_id, location_id, trx_type, quantity, delta, specs, spec_key, lot_code, attr_size, attr_thickness, attr_color, ref_code, note,
           created_by, created_by_name, unit)
-       VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
-      [o.product_id, loc, o.trx_type || (delta > 0 ? 'Nhập' : 'Xuất'), Math.abs(delta), delta,
+       VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`,
+      [o.product_id, loc, trxType, Math.abs(delta), delta,
        JSON.stringify(specs), spec_key, lot, a.size || '', a.thickness || '', a.color || '',
-       o.ref_code || null, o.note || null, who?.id || null, who?.name || null, rowUnit || upUnit(o.unit) || null]);
+       o.ref_code || null, o.note || null, who?.id || null, who?.name || null, rowUnit || upUnit(o.unit) || null])).rows[0].id;
+  }
+  // SỔ CUỘN (cổng B 2026-11-17): ghi cuộn nào bị trừ cho giao dịch này; hàng quay lại từ một giao dịch xuất → cộng về cuộn gốc
+  if (lot && (used.length || (delta > 0 && o.return_of))) {
+    const lotKey = { product_id: o.product_id, location_id: loc, spec_key, lot_code: lot };
+    const meta = { trx_id: trxId, trx_type: trxType, ref_code: o.ref_code || null };
+    if (used.length) await recordRollMoves(client, lotKey, used, meta);
+    if (delta > 0 && o.return_of) await returnRolls(client, lotKey, { ...meta, source_trx_id: o.return_of, qty: delta, specs });
   }
   return newQty;
 }

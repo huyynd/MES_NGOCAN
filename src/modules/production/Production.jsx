@@ -63,6 +63,9 @@ function MaterialReturnDialog({ orderId, onClose, onSaved }) {
   );
 }
 
+// Mã cuộn = {mã LSX}_{công đoạn}_{số thứ tự} → ô hẹp chỉ hiện đuôi phân biệt "…_1_001" (mã lạ thì giữ nguyên)
+const rollTail = (code) => { const m = /_\d+_\d+$/.exec(code || ""); return m && m.index > 0 ? "…" + m[0] : code; };
+
 const STATUSES = ["Chờ duyệt", "Đã lên kế hoạch", "Chờ nguyên vật liệu", "Đang sản xuất", "Hoàn thành", "Đã hủy"];
 
 // Ô CHỈ HIỂN THỊ (khóa) — thông tin LSX kế thừa từ đơn hàng, không sửa ở LSX
@@ -127,7 +130,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved, onOpenSalesO
       const prev = [...a].reverse().find((x) => x.stage === stage);
       let row;
       if (prev) {
-        const { id, task_code, ...rest } = prev; // eslint-disable-line no-unused-vars
+        const { id, task_code, roll_code, ...rest } = prev; // eslint-disable-line no-unused-vars -- mã cuộn do server cấp cho dòng mới
         row = { ...rest, _k: taskSeq, status: "Chờ", actual_qty: "", scrap_qty: "" };
       } else {
         row = { _k: taskSeq, stage, quantity: "", actual_qty: "", scrap_qty: "", machine_id: "", shift: "", planned_date: "", planned_end_date: "", assigned_team: "", assigned_worker: "", assigned_worker_id: "", status: "Chờ", output_product_id: "", _auto: true };
@@ -336,7 +339,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved, onOpenSalesO
         if (rows && rows.length) {
           const hasCut = rows.some((t) => t.stage === "Cắt");
           setTasks(withAutoOutputs(rows.map((t, i) => ({
-            _k: i + 1, id: t.id, task_code: t.task_code, stage: t.stage, quantity: t.quantity, actual_qty: t.actual_qty ?? "", scrap_qty: t.scrap_qty ?? "",
+            _k: i + 1, id: t.id, task_code: t.task_code, roll_code: t.roll_code || "", stage: t.stage, quantity: t.quantity, actual_qty: t.actual_qty ?? "", scrap_qty: t.scrap_qty ?? "",
             machine_id: t.machine_id || "", shift: t.shift || "",
             planned_date: t.planned_date?.slice(0, 10) || "", planned_end_date: t.planned_end_date?.slice(0, 10) || "",
             assigned_team: t.assigned_team || "", assigned_worker: t.assigned_worker || "", assigned_worker_id: t.assigned_worker_id || "", status: t.status,
@@ -880,14 +883,14 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved, onOpenSalesO
             <table className="w-full table-fixed text-sm whitespace-nowrap">
               <thead className="text-slate-400 text-xs uppercase">
                 <tr>
-                  <th className="text-left py-2 pr-2 font-medium w-[84px]">Công đoạn</th>
+                  <th className="text-left py-2 pr-2 font-medium w-[116px]" title="Dòng con hiện mã cuộn (Thổi LSX_1_xxx, Cắt LSX_2_xxx)">Công đoạn</th>
                   <th className="text-left py-2 pr-2 font-medium w-[80px]">Sản lượng</th>
-                  <th className="text-left py-2 pr-2 font-medium w-[144px]">Sản phẩm đầu ra</th>
-                  <th className="text-left py-2 pr-2 font-medium w-[132px]">Máy</th>
+                  <th className="text-left py-2 pr-2 font-medium w-[128px]">Sản phẩm đầu ra</th>
+                  <th className="text-left py-2 pr-2 font-medium w-[124px]">Máy</th>
                   {/* Cột Ca và Đến ngày chỉ ẨN (chủ dự án yêu cầu) — dữ liệu shift / planned_end_date
                       vẫn giữ nguyên trong dòng và được lưu lại như cũ, không bị xóa hay ghi đè. */}
                   <th className="text-left py-2 pr-2 font-medium w-[120px]">Ngày</th>
-                  <th className="text-left py-2 pr-2 font-medium w-[132px]">Công nhân</th>
+                  <th className="text-left py-2 pr-2 font-medium w-[124px]">Công nhân</th>
                   <th className="text-left py-2 pr-2 font-medium w-[76px]">Thực tế</th>
                   <th className="text-left py-2 pr-2 font-medium w-[110px]">Trạng thái</th>
                   <th className="text-center py-2 pr-2 font-medium w-[76px]">Hoàn thành</th>
@@ -944,7 +947,23 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved, onOpenSalesO
                           const dis = rowLocked || !editing; // khóa mọi ô nhập (dòng đã xong / chưa bấm Sửa)
                           return (
                           <tr key={t._k} className={`border-b border-slate-100${rowLocked ? " bg-emerald-50/40" : ""}`}>
-                            <td className="py-1.5 pr-2 pl-6">{rowLocked && <Lock size={13} className="text-emerald-600 inline" />}</td>
+                            <td className="py-1.5 pr-2 pl-2">
+                              {/* Mã cuộn của dòng (server cấp khi lưu); dòng cũ / chưa lưu không có mã → để trống */}
+                              <span className="flex items-center gap-1 min-w-0">
+                                {rowLocked && <Lock size={13} className="text-emerald-600 shrink-0" aria-hidden="true" />}
+                                {/* Hiện ĐỦ mã cuộn (chủ dự án yêu cầu): ô hẹp thì xuống dòng ngay trước phần đuôi _1_001, không cắt "…" */}
+                                {t.roll_code && (() => {
+                                  const tail = rollTail(t.roll_code);
+                                  const head = tail !== t.roll_code ? t.roll_code.slice(0, t.roll_code.length - tail.length + 1) : t.roll_code;
+                                  const rest = tail !== t.roll_code ? tail.slice(1) : "";
+                                  return (
+                                    <span className="text-[11px] leading-tight tabular-nums text-slate-600 whitespace-normal break-words min-w-0" title={`Mã cuộn ${t.roll_code}`}>
+                                      {head}<wbr />{rest}
+                                    </span>
+                                  );
+                                })()}
+                              </span>
+                            </td>
                             <td className="py-1.5 pr-2"><input disabled={dis} type="number" min="0" className={`${cellCls} no-spin${qtyOver ? " !border-rose-400 !ring-2 !ring-rose-200" : ""}`} value={t.quantity} onChange={(e) => upTask(t._k, "quantity", e.target.value)} title={qtyOver ? `Sản lượng 1 lần vượt 150% SL cần SX (tối đa ${fmt(capStage)})` : undefined} /></td>
                             <td className="py-1.5 pr-2">
                               {(() => {

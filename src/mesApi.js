@@ -148,6 +148,11 @@ export const inventory = {
     const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== "" && v != null));
     return http(`/inventory/tree?${q.toString()}`).then((r) => r.data || []);
   },
+  // Cuộn con của 1 lô: { lot_qty, unknown_qty, rolls[{ roll_code, qty_initial, qty_remaining, status, specs }] }
+  rolls: (params = {}) => {
+    const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== "" && v != null));
+    return http(`/inventory/rolls?${q.toString()}`).then((r) => r.data);
+  },
   adjust: (data) => http(`/inventory/adjust`, body("POST", data)),
   transactions: (params = {}) => {
     const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== "" && v != null));

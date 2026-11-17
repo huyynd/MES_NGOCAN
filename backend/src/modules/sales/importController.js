@@ -3,6 +3,7 @@
 
 const XLSX = require('xlsx');
 const db = require('../../core/db');
+const { allocRollCode } = require('../../core/lib/rolls'); // đơn import: chỉ cấp mã, không tạo cuộn (không ghi kho)
 const { buildSpecKey, legacyAttrs } = require('../../core/lib/specs');
 const { vnToday } = require('../../core/lib/dates');
 
@@ -169,17 +170,17 @@ async function importRow(client, row, idx, productId) {
   const cuonTaskQty = qtyCuon > 0 ? qtyCuon : qtyPO;
   await client.query(
     `INSERT INTO production_tasks
-       (production_order_id, task_code, stage, quantity, actual_qty, scrap_qty, status, planned_date, seq, posted_qty)
-     VALUES ($1,$2,'Thổi',$3,$3,0,'Hoàn thành',$4,1,$3)`,
-    [poId, `${poCode}-1`, cuonTaskQty, orderDate]
+       (production_order_id, task_code, stage, quantity, actual_qty, scrap_qty, status, planned_date, seq, posted_qty, roll_code)
+     VALUES ($1,$2,'Thổi',$3,$3,0,'Hoàn thành',$4,1,$3,$5)`,
+    [poId, `${poCode}-1`, cuonTaskQty, orderDate, await allocRollCode(client, poId, 'Thổi')]
   );
 
   const catTaskQty = qtyTui > 0 ? qtyTui : cuonTaskQty;
   await client.query(
     `INSERT INTO production_tasks
-       (production_order_id, task_code, stage, quantity, actual_qty, scrap_qty, status, planned_date, seq, posted_qty)
-     VALUES ($1,$2,'Cắt',$3,$3,$4,'Hoàn thành',$5,2,$3)`,
-    [poId, `${poCode}-2`, catTaskQty, qtyPhe, orderDate]
+       (production_order_id, task_code, stage, quantity, actual_qty, scrap_qty, status, planned_date, seq, posted_qty, roll_code)
+     VALUES ($1,$2,'Cắt',$3,$3,$4,'Hoàn thành',$5,2,$3,$6)`,
+    [poId, `${poCode}-2`, catTaskQty, qtyPhe, orderDate, await allocRollCode(client, poId, 'Cắt')]
   );
   await client.query(`UPDATE production_orders SET posted_qty = $2, inventory_posted = TRUE WHERE id = $1`, [poId, catTaskQty]);
 

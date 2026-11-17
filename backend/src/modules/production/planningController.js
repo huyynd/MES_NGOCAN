@@ -1,5 +1,6 @@
 // backend/controllers/planningController.js
 const db = require('../../core/db');
+const { allocRollCode } = require('../../core/lib/rolls');
 const { stockAvailability } = require('../../core/lib/availability');
 const { finalStageSql } = require('../../core/lib/finalStage');
 
@@ -206,11 +207,11 @@ exports.generate = async (req, res) => {
       for (const s of effectiveStages) {
         await client.query(`
           INSERT INTO production_tasks
-            (production_order_id, task_code, stage, quantity, machine_id, shift, planned_date, planned_end_date, assigned_team, assigned_worker, status, seq, note)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+            (production_order_id, task_code, stage, quantity, machine_id, shift, planned_date, planned_end_date, assigned_team, assigned_worker, status, seq, note, roll_code)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
           [po.id, `${po.order_code}-${n}`, s.stage, q, s.machine_id || null, s.shift || null,
            planned_date || null, planned_date || null, s.assigned_team || null, s.assigned_worker || null,
-           'Chờ', n, s.name || null]);
+           'Chờ', n, s.name || null, await allocRollCode(client, po.id, s.stage)]); // tồn theo cuộn: mã cuộn cố định
         n++;
       }
       const newPlanned = Number(it.planned_qty || 0) + q;
