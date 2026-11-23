@@ -687,14 +687,20 @@ function RollAppendix({ d, td, th }) {
   return (
     <div style={{ breakBefore: "page", pageBreakBefore: "always" }} className="mt-10 pt-6 border-t-2 border-dashed border-slate-300 print:mt-0 print:pt-0 print:border-0">
       <div className="text-center">
-        <h2 className="text-xl font-extrabold text-blue-800 uppercase">Chi tiết cuộn hàng đã giao</h2>
+        <h2 className="text-xl font-extrabold text-blue-800 uppercase">{d.rolls_preview ? "Chi tiết cuộn dự kiến giao (bản nháp)" : "Chi tiết cuộn hàng đã giao"}</h2>
         <div className="text-sm">Đính kèm phiếu số <b className="text-rose-600">{d.note_code}</b> · Khách hàng: {d.customer_name || ""}</div>
+        {d.rolls_preview && <div className="text-xs italic text-amber-700 mt-1">Phiếu chưa giao — danh sách tính theo tồn kho hiện tại, có thể thay đổi nếu kho biến động trước khi bấm Giao hàng.</div>}
+        {(d.rolls_mismatch || []).length > 0 && (
+          <div className="text-xs text-rose-700 mt-1 print:hidden">
+            ⚠ Tổng khối lượng cuộn chưa khớp số lượng trên phiếu: {d.rolls_mismatch.map((m) => `${m.product_name || m.product_code} — phiếu ${fmt(m.on_note)}, danh sách ${fmt(m.in_list)}`).join("; ")}
+          </div>
+        )}
       </div>
       {groups.map((g) => {
         const total = g.rows.reduce((s, r) => s + Number(r.qty || 0), 0);
         return (
           <div key={g.key} className="mt-4">
-            <div className="text-sm font-semibold">{g.name}{g.spec ? <span className="text-slate-900"> · {g.spec}</span> : null} — {g.rows.length} cuộn</div>
+            <div className="text-sm font-semibold">{g.name}{g.spec ? <span className="text-slate-900"> · {g.spec}</span> : null} — {g.rows.filter((r) => r.roll_code).length} cuộn{g.rows.some((r) => !r.roll_code) ? " + phần chưa xác định mã" : ""}</div>
             <table className="w-full text-sm border-collapse mt-1">
               <thead className="bg-blue-50">
                 <tr>
@@ -708,7 +714,7 @@ function RollAppendix({ d, td, th }) {
                 {g.rows.map((r, i) => (
                   <tr key={i}>
                     <td className={td + " text-center"}>{i + 1}</td>
-                    <td className={td + " font-mono"}>{r.roll_code}</td>
+                    <td className={td + (r.roll_code ? " font-mono" : " italic text-amber-700")}>{r.roll_code || "Chưa xác định mã cuộn"}</td>
                     <td className={td + " text-center"}>{r.lot_code}</td>
                     <td className={td + " text-right"}>{fmt(r.qty)}</td>
                   </tr>

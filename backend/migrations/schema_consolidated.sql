@@ -2314,12 +2314,8 @@ WHERE product_code IN ('SP00017', 'SP-PE-TC') AND is_deleted = FALSE
 ORDER BY (product_code = 'SP00017') DESC
 LIMIT 1
 ON CONFLICT (key) DO NOTHING;
---        Sửa giá trị cũ (đã lỡ set = SP-PE-TC) sang SP00017 nếu có — KHÔNG đụng nếu người dùng đã chọn mã khác.
-UPDATE public.app_settings a
-SET value = to_jsonb(p.id::text), updated_at = now()
-FROM public.products p
-WHERE a.key = 'roll_product_id' AND p.product_code = 'SP00017' AND p.is_deleted = FALSE
-  AND a.value = (SELECT to_jsonb(id::text) FROM public.products WHERE product_code = 'SP-PE-TC' AND is_deleted = FALSE LIMIT 1);
+--        (2026-11-23) Bỏ UPDATE đổi SP-PE-TC → SP00017: chạy lại mỗi lần deploy nên đè lựa chọn của người dùng.
+--        Đã chạy xong trên PRD từ trước. Sản phẩm cuộn mặc định chỉ đổi ở màn Cài đặt.
 
 --     b2) Sản phẩm đầu ra của từng dòng phân công (Thổi→cuộn vào BTP, Cắt→bao bì vào TP).
 --         NULL = dùng mặc định (Thổi: roll_product_id; Cắt: sản phẩm của lệnh).
@@ -2619,54 +2615,8 @@ CREATE INDEX IF NOT EXISTS idx_dri_source ON public.delivery_return_items (sourc
 --       lệnh SX gắn dòng đơn CÓ thông số → lấy thông số của dòng đơn; mọi dòng tồn / sổ cái / cuộn đã dùng /
 --       dòng phiếu xuất có LÔ = mã lệnh đó đổi theo (dòng tồn trùng khóa thì GỘP số lượng).
 --     Dòng đơn không có thông số → giữ nguyên thông số của lệnh. Chạy lại nhiều lần không đổi gì thêm.
-CREATE OR REPLACE TEMP VIEW _spec_fix_map AS
-  SELECT po.id AS po_id, po.order_code AS lot, it.specs, it.spec_key,
-         COALESCE(it.attr_size, '') AS attr_size, COALESCE(it.attr_thickness, '') AS attr_thickness, COALESCE(it.attr_color, '') AS attr_color
-    FROM public.production_orders po
-    JOIN public.sales_order_items it ON it.id = po.sales_order_item_id
-   WHERE po.is_deleted = FALSE AND po.order_code IS NOT NULL
-     AND COALESCE(NULLIF(it.spec_key, ''), '||||') <> '||||';
-
---  a) Tồn kho: tạo sẵn dòng đích (nếu chưa có) → cộng dồn → xóa dòng cũ
-INSERT INTO public.inventory_stock
-  (product_id, location_id, specs, spec_key, lot_code, prod_order_id, attr_size, attr_thickness, attr_color, quantity, unit, created_at)
-SELECT s.product_id, s.location_id, (array_agg(m.specs))[1], m.spec_key, s.lot_code, (array_agg(m.po_id))[1],
-       MAX(m.attr_size), MAX(m.attr_thickness), MAX(m.attr_color), 0, MAX(s.unit), MIN(s.created_at)
-  FROM public.inventory_stock s JOIN _spec_fix_map m ON m.lot = s.lot_code
- WHERE s.spec_key <> m.spec_key
- GROUP BY s.product_id, s.location_id, s.lot_code, m.spec_key
-ON CONFLICT (product_id, location_id, spec_key, lot_code) DO NOTHING;
-
-UPDATE public.inventory_stock t
-   SET quantity = t.quantity + agg.q, updated_at = now()
-  FROM (SELECT s.product_id, s.location_id, s.lot_code, m.spec_key, SUM(s.quantity) AS q
-          FROM public.inventory_stock s JOIN _spec_fix_map m ON m.lot = s.lot_code
-         WHERE s.spec_key <> m.spec_key
-         GROUP BY s.product_id, s.location_id, s.lot_code, m.spec_key) agg
- WHERE t.product_id = agg.product_id AND t.location_id IS NOT DISTINCT FROM agg.location_id
-   AND t.lot_code = agg.lot_code AND t.spec_key = agg.spec_key;
-
-DELETE FROM public.inventory_stock s USING _spec_fix_map m
- WHERE m.lot = s.lot_code AND s.spec_key <> m.spec_key;
-
---  b) Sổ cái + cuộn đã dùng + dòng phiếu xuất: đổi thông số theo lô (sổ cái khớp lại tồn)
-UPDATE public.inventory_transactions t
-   SET spec_key = m.spec_key, specs = m.specs, attr_size = m.attr_size, attr_thickness = m.attr_thickness, attr_color = m.attr_color
-  FROM _spec_fix_map m
- WHERE t.lot_code = m.lot AND t.spec_key <> m.spec_key;
-UPDATE public.production_roll_usage u SET spec_key = m.spec_key, specs = m.specs
-  FROM _spec_fix_map m WHERE u.lot_code = m.lot AND u.spec_key IS DISTINCT FROM m.spec_key;
-UPDATE public.outbound_slip_lines l SET spec_key = m.spec_key
-  FROM _spec_fix_map m WHERE l.lot_code = m.lot AND l.spec_key IS NOT NULL AND l.spec_key <> m.spec_key;
-
---  c) Chính lệnh SX
-UPDATE public.production_orders po
-   SET specs = m.specs, spec_key = m.spec_key, attr_size = m.attr_size, attr_thickness = m.attr_thickness,
-       attr_color = m.attr_color, group_key = po.product_id::text || '||' || m.spec_key
-  FROM _spec_fix_map m
- WHERE po.id = m.po_id AND po.spec_key IS DISTINCT FROM m.spec_key;
-
-DROP VIEW IF EXISTS _spec_fix_map;
+--     (2026-11-23) ĐÃ BỎ khối đồng bộ: chạy lại mỗi lần deploy sẽ âm thầm đổi thông số lệnh + chuyển tồn kho / sổ cái
+--     khi thông số lệnh khác dòng đơn. Đã chạy xong trên PRD (2026-10-21); code hiện tại đã kế thừa thông số đúng.
 -- ---------------------------------------------------------------------
 
 -- 24) CHUẨN HÓA TÊN THÔNG SỐ (2026-10-21): khóa cũ "Chiều ngang" → "Chiều ngang (Rộng)" trong cột specs.
@@ -2693,14 +2643,14 @@ END $$;
 INSERT INTO public.app_settings (key, value) VALUES
   ('vat_percent', '8'), ('urgent_days', '5'), ('priority_top', '5'), ('scrap_alert_percent', '5'),
   ('schedule_lock_days', '3'), ('near_min_percent', '120'),
-  ('company_name', to_jsonb('CÔNG TY TNHH THƯƠNG MẠI SẢN XUẤT BAO BÌ NGỌC AN THƯ'::text)),
+  ('company_name', to_jsonb('CÔNG TY TNHH THƯƠNG MẠI SẢN XUẤT XNK BAO BÌ NGỌC AN THƯ'::text)),
   ('company_tax', to_jsonb('0316748578'::text)),
   ('company_address', to_jsonb('Số 8F3, Đường DD6, Khu Phố 4, P. Tân Hưng Thuận, Quận 12, TP.HCM'::text)),
   ('company_phone', to_jsonb('0938 446 156'::text))
 ON CONFLICT (key) DO NOTHING;
 --  b) Kho: danh sách nhà máy thống nhất "Nhà máy thổi" / "Nhà máy cắt" (như Máy / Nhân viên).
 --     Kho đang ghi "Nhà máy 1/2/3" (giá trị cũ, không dùng cho phân quyền) → để trống (chủ dự án chốt).
-UPDATE public.warehouses SET factory = NULL WHERE factory IN ('Nhà máy 1', 'Nhà máy 2', 'Nhà máy 3');
+--     (2026-11-23) Đã bỏ UPDATE xóa nhà máy "Nhà máy 1/2/3" — đã chạy trên PRD, không chạy lại mỗi lần deploy.
 -- ---------------------------------------------------------------------
 
 -- 31) NỢ ĐẦU KỲ (2026-10-26): chốt sổ công nợ cũ — mỗi khách 1 dòng (ngày chốt, tổng nợ, đã trả).
@@ -2816,10 +2766,9 @@ ALTER TABLE public.delivery_note_items ADD COLUMN IF NOT EXISTS returned_qty num
 ALTER TABLE public.delivery_note_items ADD COLUMN IF NOT EXISTS note text;
 --   M3. Đổi tên/địa chỉ công ty CHỈ KHI đang đúng giá trị mặc định cũ (không ghi đè chỉnh tay; chạy lại an toàn).
 -- [M3-BEGIN]
-UPDATE public.app_settings SET value = to_jsonb('CÔNG TY TNHH THƯƠNG MẠI SẢN XUẤT BAO BÌ NGỌC AN THƯ'::text)
-  WHERE key = 'company_name' AND value = to_jsonb('CÔNG TY TNHH THƯƠNG MẠI SẢN XUẤT XNK BAO BÌ NGỌC AN THƯ'::text);
-UPDATE public.app_settings SET value = to_jsonb('Số 8F3, Đường DD6, Khu Phố 4, P. Tân Hưng Thuận, Quận 12, TP.HCM'::text)
-  WHERE key = 'company_address' AND value = to_jsonb('119/1 Đường Đỗ Mười, Tổ 4, Khu phố 1, Phường Thới An, Thành Phố Hồ Chí Minh'::text);
+-- (2026-11-23) BỎ hẳn các UPDATE tên / địa chỉ công ty: khối này chạy lại MỖI lần deploy nên đã ghi đè giá trị
+--   người dùng sửa trong Cài đặt (tên "XNK" bị đổi về tên cũ). Đã chạy xong trên PRD từ trước → không cần nữa.
+--   Thông tin công ty chỉ sửa ở màn Cài đặt hệ thống; migrate chỉ INSERT … ON CONFLICT DO NOTHING (mục 25).
 -- [M3-END]
 -- ---------------------------------------------------------------------
 
