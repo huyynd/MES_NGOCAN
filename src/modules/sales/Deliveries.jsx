@@ -675,6 +675,57 @@ function DeliveryForm({ lookups, editId, initialOrderId, onBack, onSaved, onPrin
   );
 }
 
+/* ---- Trang đính kèm phiếu in: chi tiết cuộn đã xuất, nhóm theo sản phẩm + thông số ---- */
+function RollAppendix({ d, td, th }) {
+  const groups = [];
+  for (const r of d.rolls) {
+    const key = `${r.product_code}|${specShort(r.specs) || ""}|${r.unit || ""}`;
+    let g = groups.find((x) => x.key === key);
+    if (!g) groups.push(g = { key, name: r.product_name, spec: specShort(r.specs), unit: r.unit || "", rows: [] });
+    g.rows.push(r);
+  }
+  return (
+    <div style={{ breakBefore: "page", pageBreakBefore: "always" }} className="mt-10 pt-6 border-t-2 border-dashed border-slate-300 print:mt-0 print:pt-0 print:border-0">
+      <div className="text-center">
+        <h2 className="text-xl font-extrabold text-blue-800 uppercase">Chi tiết cuộn hàng đã giao</h2>
+        <div className="text-sm">Đính kèm phiếu số <b className="text-rose-600">{d.note_code}</b> · Khách hàng: {d.customer_name || ""}</div>
+      </div>
+      {groups.map((g) => {
+        const total = g.rows.reduce((s, r) => s + Number(r.qty || 0), 0);
+        return (
+          <div key={g.key} className="mt-4">
+            <div className="text-sm font-semibold">{g.name}{g.spec ? <span className="text-slate-900"> · {g.spec}</span> : null} — {g.rows.length} cuộn</div>
+            <table className="w-full text-sm border-collapse mt-1">
+              <thead className="bg-blue-50">
+                <tr>
+                  <th className={th + " w-10"}>STT</th>
+                  <th className={th}>MÃ CUỘN</th>
+                  <th className={th + " w-32"}>LÔ</th>
+                  <th className={th + " w-36"}>KHỐI LƯỢNG GIAO ({g.unit})</th>
+                </tr>
+              </thead>
+              <tbody>
+                {g.rows.map((r, i) => (
+                  <tr key={i}>
+                    <td className={td + " text-center"}>{i + 1}</td>
+                    <td className={td + " font-mono"}>{r.roll_code}</td>
+                    <td className={td + " text-center"}>{r.lot_code}</td>
+                    <td className={td + " text-right"}>{fmt(r.qty)}</td>
+                  </tr>
+                ))}
+                <tr className="font-bold bg-blue-50">
+                  <td className={td + " text-center"} colSpan={3}>TỔNG CỘNG</td>
+                  <td className={td + " text-right"}>{fmt(total)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 /* ---- Phiếu in (template chung giao hàng + thanh toán) ---- */
 function DeliveryVoucher({ id, onBack }) {
   const S = useAppSettings();
@@ -772,6 +823,9 @@ function DeliveryVoucher({ id, onBack }) {
         <div className="text-center font-bold text-sm mt-4 border-t border-slate-300 pt-2 uppercase">
           K.H vui lòng kiểm tra hàng hóa trước khi ký nhận
         </div>
+
+        {/* Trang đính kèm: danh sách cuộn đã xuất (khách đối chiếu mã cuộn + khối lượng) */}
+        {(d.rolls || []).length > 0 && <RollAppendix d={d} td={td} th={th} />}
       </div>
 
       <style>{`@media print {

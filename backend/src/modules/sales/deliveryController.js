@@ -119,6 +119,19 @@ exports.getById = async (req, res) => {
     // Kèm LSX + tiến độ Thổi/Cắt của từng dòng (hiển thị ở chi tiết phiếu)
     const lsxByItem = await lsxProgressByItems(db, items.rows.map((it) => it.sales_order_item_id));
     for (const it of items.rows) it.production_orders = lsxByItem.get(it.sales_order_item_id) || [];
+    // Danh sách cuộn đã xuất (trang đính kèm phiếu in): mỗi lần giao trừ lô có cuộn → inventory_roll_moves (qty < 0);
+    // trừ đi phần khách đã trả về đúng cuộn đó (qty > 0, source_move_id).
+    const rolls = (await db.query(`
+      SELECT p.product_code, p.product_name, t.specs, m.lot_code, m.roll_code,
+             -m.qty - COALESCE((SELECT SUM(r.qty) FROM inventory_roll_moves r WHERE r.source_move_id = m.id), 0) AS qty,
+             (SELECT sl.unit FROM outbound_slip_lines sl WHERE sl.slip_id = s.id AND sl.product_id = m.product_id LIMIT 1) AS unit
+      FROM outbound_slips s
+      JOIN inventory_transactions t ON t.ref_code = s.slip_code AND t.trx_type = 'Xuất'
+      JOIN inventory_roll_moves m ON m.trx_id = t.id AND m.qty < 0
+      JOIN products p ON p.id = m.product_id
+      WHERE s.delivery_note_id = $1
+      ORDER BY p.product_code, m.lot_code, m.roll_code`, [req.params.id])).rows.filter((r) => Number(r.qty) > 0);
+    d.rolls = rolls;
     if (!canViewAmounts(req)) {
       delete d.total_amount; delete d.paid_amount;
       return res.json({ ...d, items: items.rows.map(stripMoneyItem) });
