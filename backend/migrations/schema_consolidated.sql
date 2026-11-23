@@ -2314,12 +2314,8 @@ WHERE product_code IN ('SP00017', 'SP-PE-TC') AND is_deleted = FALSE
 ORDER BY (product_code = 'SP00017') DESC
 LIMIT 1
 ON CONFLICT (key) DO NOTHING;
---        Sửa giá trị cũ (đã lỡ set = SP-PE-TC) sang SP00017 nếu có — KHÔNG đụng nếu người dùng đã chọn mã khác.
-UPDATE public.app_settings a
-SET value = to_jsonb(p.id::text), updated_at = now()
-FROM public.products p
-WHERE a.key = 'roll_product_id' AND p.product_code = 'SP00017' AND p.is_deleted = FALSE
-  AND a.value = (SELECT to_jsonb(id::text) FROM public.products WHERE product_code = 'SP-PE-TC' AND is_deleted = FALSE LIMIT 1);
+--        (2026-11-23) Bỏ UPDATE đổi SP-PE-TC → SP00017: chạy lại mỗi lần deploy nên đè lựa chọn của người dùng.
+--        Đã chạy xong trên PRD từ trước. Sản phẩm cuộn mặc định chỉ đổi ở màn Cài đặt.
 
 --     b2) Sản phẩm đầu ra của từng dòng phân công (Thổi→cuộn vào BTP, Cắt→bao bì vào TP).
 --         NULL = dùng mặc định (Thổi: roll_product_id; Cắt: sản phẩm của lệnh).
