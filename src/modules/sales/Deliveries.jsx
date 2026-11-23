@@ -687,8 +687,9 @@ function RollAppendix({ d, td, th }) {
   return (
     <div style={{ breakBefore: "page", pageBreakBefore: "always" }} className="mt-10 pt-6 border-t-2 border-dashed border-slate-300 print:mt-0 print:pt-0 print:border-0">
       <div className="text-center">
-        <h2 className="text-xl font-extrabold text-blue-800 uppercase">Chi tiết cuộn hàng đã giao</h2>
+        <h2 className="text-xl font-extrabold text-blue-800 uppercase">{d.rolls_preview ? "Chi tiết cuộn dự kiến giao (bản nháp)" : "Chi tiết cuộn hàng đã giao"}</h2>
         <div className="text-sm">Đính kèm phiếu số <b className="text-rose-600">{d.note_code}</b> · Khách hàng: {d.customer_name || ""}</div>
+        {d.rolls_preview && <div className="text-xs italic text-amber-700 mt-1">Phiếu chưa giao — danh sách tính theo tồn kho hiện tại, có thể thay đổi nếu kho biến động trước khi bấm Giao hàng.</div>}
       </div>
       {groups.map((g) => {
         const total = g.rows.reduce((s, r) => s + Number(r.qty || 0), 0);

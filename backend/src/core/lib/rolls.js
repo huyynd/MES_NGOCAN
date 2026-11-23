@@ -289,7 +289,37 @@ async function listRolls(client, lot) {
   };
 }
 
+/**
+ * XEM TRƯỚC cuộn sẽ bị trừ (chỉ đọc, không khóa/ghi): mô phỏng đúng trimRolls cho danh sách phần trừ
+ * [{product_id, location_id, spec_key, lot_code, quantity}]. Nhiều phần cùng lô → trừ nối tiếp.
+ * Trả [{product_id, location_id, spec_key, lot_code, roll_code, qty}].
+ */
+async function previewRolls(q, takes) {
+  const byLot = new Map();
+  for (const t of takes) {
+    const k = [t.product_id, t.location_id || '', t.spec_key, t.lot_code || ''].join('|');
+    const g = byLot.get(k) || { lot: t, take: 0 }; g.take = round2(g.take + Number(t.quantity || 0)); byLot.set(k, g);
+  }
+  const out = [];
+  for (const { lot, take } of byLot.values()) {
+    const rows = (await q.query(
+      `SELECT roll_code, qty_remaining FROM inventory_rolls WHERE ${LOT_WHERE()} AND qty_remaining > 0 ORDER BY ${ROLL_ORDER}`, lotParams(lot))).rows;
+    if (!rows.length) continue;
+    const lotQty = Number((await q.query(`SELECT COALESCE((SELECT quantity FROM inventory_stock WHERE ${LOT_WHERE()}), 0) AS q`, lotParams(lot))).rows[0].q);
+    let excess = round2(rows.reduce((s, r) => s + Number(r.qty_remaining), 0) - Math.max(lotQty - take, 0));
+    let left = Math.max(take, 0);
+    for (const r of rows) {
+      if (excess <= EPS) break;
+      const t = round2(Math.min(Number(r.qty_remaining), excess));
+      const counted = round2(Math.min(t, left));
+      if (counted > EPS) out.push({ product_id: lot.product_id, location_id: lot.location_id, spec_key: lot.spec_key, lot_code: lot.lot_code || '', roll_code: r.roll_code, qty: counted });
+      left = round2(left - counted); excess = round2(excess - t);
+    }
+  }
+  return out;
+}
+
 module.exports = {
   STAGE_NO, allocRollCode, addRoll, trimRolls, splitUsage, restoreRolls, moveRolls, removeRoll, getRoll, listRolls, rollStatus,
-  lockLotRoll, rollIntact, recordRollMoves, returnRolls,
+  lockLotRoll, rollIntact, recordRollMoves, returnRolls, previewRolls,
 };

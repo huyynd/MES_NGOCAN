@@ -8,6 +8,7 @@ const { nextSlipCode, nextCode } = require('../../core/lib/codes');
 const { currentUser } = require('../../core/requestContext');
 const { buildSpecKey, specKeyValues } = require('../../core/lib/specs');
 const { lsxProgressByItems } = require('../../core/lib/lsxProgress');
+const { previewRolls } = require('../../core/lib/rolls');
 
 const num = (v) => (v === '' || v == null ? 0 : Number(v) || 0);
 const EMPTY_SPEC = buildSpecKey({});
@@ -132,6 +133,29 @@ exports.getById = async (req, res) => {
       WHERE s.delivery_note_id = $1
       ORDER BY p.product_code, m.lot_code, m.roll_code`, [req.params.id])).rows.filter((r) => Number(r.qty) > 0);
     d.rolls = rolls;
+    // Phiếu nháp chưa xuất kho → XEM TRƯỚC cuộn dự kiến (mô phỏng đúng thứ tự trừ khi bấm Giao hàng; chỉ đọc).
+    // Kho có thể đổi trước lúc giao → danh sách thật lấy theo lần xuất. rolls_preview = true để giao diện ghi "Dự kiến".
+    d.rolls_preview = false;
+    if (d.status === 'Bản nháp' && !rolls.length) {
+      try {
+        const plan = await planShipment(db, req.params.id);
+        if (!plan.error && plan.allocations.length) {
+          const sim = await previewRolls(db, plan.allocations);
+          if (sim.length) {
+            const lk = (r) => [r.product_id, r.location_id || '', r.spec_key, r.lot_code || ''].join('|');
+            const meta = new Map(plan.allocations.map((a) => [lk(a), a]));
+            const prods = new Map((await db.query('SELECT id, product_code, product_name FROM products WHERE id = ANY($1)',
+              [[...new Set(sim.map((r) => r.product_id))]])).rows.map((p) => [p.id, p]));
+            d.rolls = sim.map((r) => {
+              const a = meta.get(lk(r)) || {}; const p = prods.get(r.product_id) || {};
+              return { product_code: p.product_code, product_name: p.product_name, specs: a.specs || {}, lot_code: r.lot_code, roll_code: r.roll_code, qty: r.qty, unit: a.unit };
+            }).sort((x, y) => String(x.product_code).localeCompare(String(y.product_code))
+              || String(x.lot_code).localeCompare(String(y.lot_code)) || String(x.roll_code).localeCompare(String(y.roll_code)));
+            d.rolls_preview = true;
+          }
+        }
+      } catch (e) { console.error('Xem trước cuộn lỗi:', e.message); }
+    }
     if (!canViewAmounts(req)) {
       delete d.total_amount; delete d.paid_amount;
       return res.json({ ...d, items: items.rows.map(stripMoneyItem) });
@@ -469,6 +493,79 @@ exports.updateItemNotes = async (req, res) => {
   finally { client.release(); }
 };
 
+// Phân bổ lô cho phiếu giao (dùng chung: nút Giao hàng + xem trước cuộn của phiếu nháp). Chỉ ĐỌC, không ghi.
+async function planShipment(client, noteId) {
+  // Kèm mã các LSX của dòng đơn → "lô của chính đơn" (lô TP/BTP mang mã LSX đã nhập ra nó)
+  const items = (await client.query(
+    `SELECT di.product_id, di.product_name, di.specs, di.unit, di.sales_order_item_id,
+            COALESCE(di.actual_quantity, di.quantity) AS qty,
+            COALESCE((SELECT array_agg(po.order_code) FROM production_orders po
+                      WHERE po.sales_order_item_id = di.sales_order_item_id AND po.is_deleted = FALSE), '{}') AS own_lots
+     FROM delivery_note_items di WHERE di.delivery_note_id = $1`, [noteId])).rows;
+  // Gộp theo (sản phẩm + thông số + dòng đơn) để trừ ĐÚNG biến thể và ưu tiên đúng lô của từng đơn;
+  // số lượng = COALESCE(SL thực, SL giao). Dòng bán tồn kho (không theo đơn) gộp theo SP + thông số.
+  const byKey = new Map();
+  for (const it of items) {
+    if (!it.product_id) return { error: `Dòng "${it.product_name || ''}" chưa gắn sản phẩm trong kho — không thể xuất kho.` };
+    const q = Number(it.qty) || 0;
+    if (q <= 0) continue;
+    const sk = buildSpecKey(it.specs || {});
+    const key = `${it.product_id}|${sk}|${it.sales_order_item_id || ''}`;
+    const cur = byKey.get(key) || { product_id: it.product_id, product_name: it.product_name, unit: it.unit, spec_key: sk, own_lots: it.own_lots || [], qty: 0 };
+    cur.qty += q; byKey.set(key, cur);
+  }
+  const lines = [...byKey.values()];
+  if (!lines.length) return { error: 'Phiếu chưa có dòng hàng có số lượng giao > 0.' };
+
+  // Phân bổ FIFO + kiểm tra đủ tồn trước khi trừ (chỉ lấy ở NVL/BTP/TP, ưu tiên kho Thành phẩm).
+  // M10: dòng CÓ thông số (giao theo đơn) → chỉ lấy đúng spec_key, thiếu thì báo thiếu
+  //      (trước đây chỉ ưu tiên rồi lấy bù biến thể khác → giao nhầm màu/kích thước).
+  //      Dòng KHÔNG thông số (bán hàng tồn kho không theo đơn) → lấy mọi biến thể như cũ.
+  // M11: theo dõi lượng còn lại của từng dòng tồn (`left`) để các dòng phiếu không dùng trùng
+  //      một dòng tồn; xử lý dòng có thông số trước để dòng "bất kỳ" không lấy mất hàng của chúng.
+  // Thứ tự xử lý: dòng có thông số trước; trong đó dòng CÓ lô riêng (theo đơn) trước, để lô của đơn nào
+  // được chính đơn đó lấy trước, không bị dòng khác lấy mất.
+  lines.sort((a, b) => (Number(a.spec_key === EMPTY_SPEC) - Number(b.spec_key === EMPTY_SPEC))
+    || (Number(!a.own_lots.length) - Number(!b.own_lots.length)));
+  const left = new Map(); // `${location_id}|${lot_code}|${spec_key}` → lượng còn lại sau các dòng trước
+  const rowKey = (r) => `${r.location_id}|${r.lot_code || ''}|${r.spec_key}`;
+  const shortages = [], allocations = [];
+  // Chỉ lấy phần KHẢ DỤNG của từng dòng tồn — không lấn phần phiếu chờ đang giữ
+  const freeRows = await stockAvailabilityRows(client, lines.map((l) => l.product_id));
+  const freeOf = new Map(freeRows.map((f) => [`${f.product_id}|${rowKey(f)}`, f.available]));
+  for (const l of lines) {
+    const need = Number(l.qty);
+    const strict = l.spec_key !== EMPTY_SPEC;
+    const { rows: stockRows } = await client.query(
+      `SELECT s.location_id, s.lot_code, s.quantity, s.unit, s.spec_key, s.specs
+       FROM inventory_stock s
+       JOIN locations lo ON lo.id = s.location_id
+       JOIN warehouses w ON w.id = lo.warehouse_id
+       WHERE s.product_id = $1 AND s.quantity > 0 AND w.warehouse_type IN ('NVL','BTP','TP')
+         AND ${whOutboundOkSql('w', 'lo')}
+         AND (NOT $3::boolean OR s.spec_key = $2)
+       ORDER BY (s.lot_code = ANY($4::text[])) DESC, (s.spec_key = $2) DESC, (w.warehouse_type = 'TP') DESC, s.created_at ASC, s.id ASC`, // FIFO: lô vào kho sớm nhất trước (id là mã ngẫu nhiên, chỉ để thứ tự cố định)
+      [l.product_id, l.spec_key, strict, l.own_lots]);
+    const avail = (r) => (left.has(rowKey(r)) ? left.get(rowKey(r)) : (freeOf.get(`${l.product_id}|${rowKey(r)}`) || 0));
+    const onHand = stockRows.reduce((s, r) => s + avail(r), 0);
+    if (need > onHand + 1e-6) {
+      shortages.push({ name: l.product_name + (strict ? ` (đúng thông số ${specKeyValues(l.spec_key).join(', ')})` : ''), unit: l.unit || '', on_hand: onHand, need, lack: need - onHand });
+    } else {
+      let remain = need;
+      for (const sr of stockRows) {
+        if (remain <= 1e-9) break;
+        const a = avail(sr);
+        if (a <= 1e-9) continue;
+        const take = Math.min(remain, a);
+        left.set(rowKey(sr), a - take);
+        allocations.push({ product_id: l.product_id, location_id: sr.location_id, lot_code: sr.lot_code || '', spec_key: sr.spec_key, specs: sr.specs || {}, quantity: take, unit: l.unit || sr.unit });
+        remain -= take;
+      }
+    }
+  }
+  return { lines, allocations, shortages };
+}
+
 // POST /api/deliveries/:id/ship — XÁC NHẬN GIAO HÀNG
 // Tự tạo 1 phiếu xuất kho (mục đích "Giao hàng cho khách") từ Kho Thành phẩm, trừ tồn (FIFO),
 // chặn nếu tồn TP không đủ, rồi chuyển phiếu giao sang trạng thái "Giao hàng".
@@ -485,74 +582,9 @@ exports.ship = async (req, res) => {
     if (dn.status === 'Đã hủy') return res.status(400).json({ message: 'Phiếu đã hủy, không thể giao hàng.' });
     if (dn.status !== 'Bản nháp') return res.status(400).json({ message: `Phiếu đã ở trạng thái "${dn.status}" — chỉ giao hàng được từ "Bản nháp".` });
 
-    // Kèm mã các LSX của dòng đơn → "lô của chính đơn" (lô TP/BTP mang mã LSX đã nhập ra nó)
-    const items = (await client.query(
-      `SELECT di.product_id, di.product_name, di.specs, di.unit, di.sales_order_item_id,
-              COALESCE(di.actual_quantity, di.quantity) AS qty,
-              COALESCE((SELECT array_agg(po.order_code) FROM production_orders po
-                        WHERE po.sales_order_item_id = di.sales_order_item_id AND po.is_deleted = FALSE), '{}') AS own_lots
-       FROM delivery_note_items di WHERE di.delivery_note_id = $1`, [req.params.id])).rows;
-    // Gộp theo (sản phẩm + thông số + dòng đơn) để trừ ĐÚNG biến thể và ưu tiên đúng lô của từng đơn;
-    // số lượng = COALESCE(SL thực, SL giao). Dòng bán tồn kho (không theo đơn) gộp theo SP + thông số.
-    const byKey = new Map();
-    for (const it of items) {
-      if (!it.product_id) return res.status(400).json({ message: `Dòng "${it.product_name || ''}" chưa gắn sản phẩm trong kho — không thể xuất kho.` });
-      const q = Number(it.qty) || 0;
-      if (q <= 0) continue;
-      const sk = buildSpecKey(it.specs || {});
-      const key = `${it.product_id}|${sk}|${it.sales_order_item_id || ''}`;
-      const cur = byKey.get(key) || { product_id: it.product_id, product_name: it.product_name, unit: it.unit, spec_key: sk, own_lots: it.own_lots || [], qty: 0 };
-      cur.qty += q; byKey.set(key, cur);
-    }
-    const lines = [...byKey.values()];
-    if (!lines.length) return res.status(400).json({ message: 'Phiếu chưa có dòng hàng có số lượng giao > 0.' });
-
-    // Phân bổ FIFO + kiểm tra đủ tồn trước khi trừ (chỉ lấy ở NVL/BTP/TP, ưu tiên kho Thành phẩm).
-    // M10: dòng CÓ thông số (giao theo đơn) → chỉ lấy đúng spec_key, thiếu thì báo thiếu
-    //      (trước đây chỉ ưu tiên rồi lấy bù biến thể khác → giao nhầm màu/kích thước).
-    //      Dòng KHÔNG thông số (bán hàng tồn kho không theo đơn) → lấy mọi biến thể như cũ.
-    // M11: theo dõi lượng còn lại của từng dòng tồn (`left`) để các dòng phiếu không dùng trùng
-    //      một dòng tồn; xử lý dòng có thông số trước để dòng "bất kỳ" không lấy mất hàng của chúng.
-    // Thứ tự xử lý: dòng có thông số trước; trong đó dòng CÓ lô riêng (theo đơn) trước, để lô của đơn nào
-    // được chính đơn đó lấy trước, không bị dòng khác lấy mất.
-    lines.sort((a, b) => (Number(a.spec_key === EMPTY_SPEC) - Number(b.spec_key === EMPTY_SPEC))
-      || (Number(!a.own_lots.length) - Number(!b.own_lots.length)));
-    const left = new Map(); // `${location_id}|${lot_code}|${spec_key}` → lượng còn lại sau các dòng trước
-    const rowKey = (r) => `${r.location_id}|${r.lot_code || ''}|${r.spec_key}`;
-    const shortages = [], allocations = [];
-    // Chỉ lấy phần KHẢ DỤNG của từng dòng tồn — không lấn phần phiếu chờ đang giữ
-    const freeRows = await stockAvailabilityRows(client, lines.map((l) => l.product_id));
-    const freeOf = new Map(freeRows.map((f) => [`${f.product_id}|${rowKey(f)}`, f.available]));
-    for (const l of lines) {
-      const need = Number(l.qty);
-      const strict = l.spec_key !== EMPTY_SPEC;
-      const { rows: stockRows } = await client.query(
-        `SELECT s.location_id, s.lot_code, s.quantity, s.unit, s.spec_key, s.specs
-         FROM inventory_stock s
-         JOIN locations lo ON lo.id = s.location_id
-         JOIN warehouses w ON w.id = lo.warehouse_id
-         WHERE s.product_id = $1 AND s.quantity > 0 AND w.warehouse_type IN ('NVL','BTP','TP')
-           AND ${whOutboundOkSql('w', 'lo')}
-           AND (NOT $3::boolean OR s.spec_key = $2)
-         ORDER BY (s.lot_code = ANY($4::text[])) DESC, (s.spec_key = $2) DESC, (w.warehouse_type = 'TP') DESC, s.created_at ASC, s.id ASC`, // FIFO: lô vào kho sớm nhất trước (id là mã ngẫu nhiên, chỉ để thứ tự cố định)
-        [l.product_id, l.spec_key, strict, l.own_lots]);
-      const avail = (r) => (left.has(rowKey(r)) ? left.get(rowKey(r)) : (freeOf.get(`${l.product_id}|${rowKey(r)}`) || 0));
-      const onHand = stockRows.reduce((s, r) => s + avail(r), 0);
-      if (need > onHand + 1e-6) {
-        shortages.push({ name: l.product_name + (strict ? ` (đúng thông số ${specKeyValues(l.spec_key).join(', ')})` : ''), unit: l.unit || '', on_hand: onHand, need, lack: need - onHand });
-      } else {
-        let remain = need;
-        for (const sr of stockRows) {
-          if (remain <= 1e-9) break;
-          const a = avail(sr);
-          if (a <= 1e-9) continue;
-          const take = Math.min(remain, a);
-          left.set(rowKey(sr), a - take);
-          allocations.push({ product_id: l.product_id, location_id: sr.location_id, lot_code: sr.lot_code || '', spec_key: sr.spec_key, specs: sr.specs || {}, quantity: take, unit: l.unit || sr.unit });
-          remain -= take;
-        }
-      }
-    }
+    const plan = await planShipment(client, req.params.id);
+    if (plan.error) return res.status(400).json({ message: plan.error });
+    const { lines, allocations, shortages } = plan;
     if (shortages.length) {
       const msg = 'Không đủ số lượng khả dụng để giao (đã trừ phần phiếu chờ đang giữ):\n' +
         shortages.map((x) => `• ${x.name}: khả dụng ${x.on_hand} ${x.unit}, cần giao ${x.need} ${x.unit} → thiếu ${x.lack} ${x.unit}`).join('\n');
