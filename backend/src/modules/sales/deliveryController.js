@@ -516,8 +516,8 @@ async function rollListOfNote(d, noteItems) {
         AND (t.note LIKE 'Nhập cuộn — Thổi%' OR t.note LIKE 'Nhập kho Thổi%')`,
       [[...new Set(unknown.map((r) => r.lot_code).filter(Boolean))]])).rows;
     for (const r of rows) blowLots.add(k(r));
-    out.rolls = out.rolls.filter((r) => (r.roll_code ? /_1_d+$/.test(r.roll_code) : blowLots.has(k(r))));
-  } else out.rolls = out.rolls.filter((r) => /_1_d+$/.test(r.roll_code));
+    out.rolls = out.rolls.filter((r) => (r.roll_code ? /_1_\d+$/.test(r.roll_code) : blowLots.has(k(r))));
+  } else out.rolls = out.rolls.filter((r) => /_1_\d+$/.test(r.roll_code));
   // Cuộn có mã trước, "Chưa xác định" cuối mỗi lô
   out.rolls.sort((x, y) => String(x.product_code).localeCompare(String(y.product_code)) || String(x.lot_code).localeCompare(String(y.lot_code))
     || (x.roll_code == null) - (y.roll_code == null) || String(x.roll_code).length - String(y.roll_code).length || String(x.roll_code).localeCompare(String(y.roll_code)));
