@@ -504,6 +504,10 @@ async function rollListOfNote(d, noteItems) {
       if (u > 0.005) out.rolls.push(row(null, u));
     }
   }
+  // Chỉ sản phẩm dạng cuộn: lô do sản xuất tạo (mã lô = mã LSX). Hàng mua ngoài (hạt nhựa…) không lên danh sách.
+  const prodLots = new Set((await db.query('SELECT order_code FROM production_orders WHERE order_code = ANY($1)',
+    [[...new Set(out.rolls.map((r) => r.lot_code).filter(Boolean))]])).rows.map((r) => r.order_code));
+  out.rolls = out.rolls.filter((r) => r.roll_code || prodLots.has(r.lot_code));
   // Cuộn có mã trước, "Chưa xác định" cuối mỗi lô
   out.rolls.sort((x, y) => String(x.product_code).localeCompare(String(y.product_code)) || String(x.lot_code).localeCompare(String(y.lot_code))
     || (x.roll_code == null) - (y.roll_code == null) || String(x.roll_code).length - String(y.roll_code).length || String(x.roll_code).localeCompare(String(y.roll_code)));
@@ -512,7 +516,8 @@ async function rollListOfNote(d, noteItems) {
   for (const it of noteItems) if (it.product_id) onNote.set(it.product_id, r2((onNote.get(it.product_id) || 0) + Number(it.actual_quantity ?? it.quantity ?? 0)));
   const inList = new Map();
   for (const r of out.rolls) inList.set(r.product_id, r2((inList.get(r.product_id) || 0) + r.qty));
-  if (out.rolls.length) for (const [pid, q] of onNote) {
+  for (const [pid, q] of onNote) {
+    if (!inList.has(pid)) continue; // SP không phải dạng cuộn → không đối chiếu
     const l = inList.get(pid) || 0;
     if (Math.abs(l - q) > 0.005) {
       const it = noteItems.find((x) => x.product_id === pid) || {};
