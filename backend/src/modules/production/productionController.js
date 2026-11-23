@@ -203,6 +203,11 @@ async function postTaskStock(client, po, task, finishLots = []) {
   if (!(q > 0)) throw new Error(`Lần ${task.task_code} (${task.stage}): chưa có SL thực để nhập kho.`);
   const specs = po.specs || {};
   const btpLoc = await locOf(client, 'BTP');
+  // Dòng cũ (tạo trước khi có tồn theo cuộn) chưa có mã cuộn → cấp ngay trước khi ghi kho, để cuộn luôn có mã
+  if (!task.roll_code && rollsLib.STAGE_NO[task.stage]) {
+    task.roll_code = await allocRollCode(client, po.id, task.stage);
+    await client.query(`UPDATE production_tasks SET roll_code = $2 WHERE id = $1`, [task.id, task.roll_code]);
+  }
 
   if (task.stage === 'Thổi') {
     if (!btpLoc) throw new Error('Chưa có kho Bán thành phẩm (BTP) để nhập cuộn — vui lòng tạo kho trước.');

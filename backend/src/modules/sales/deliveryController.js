@@ -120,42 +120,9 @@ exports.getById = async (req, res) => {
     // Kèm LSX + tiến độ Thổi/Cắt của từng dòng (hiển thị ở chi tiết phiếu)
     const lsxByItem = await lsxProgressByItems(db, items.rows.map((it) => it.sales_order_item_id));
     for (const it of items.rows) it.production_orders = lsxByItem.get(it.sales_order_item_id) || [];
-    // Danh sách cuộn đã xuất (trang đính kèm phiếu in): mỗi lần giao trừ lô có cuộn → inventory_roll_moves (qty < 0);
-    // trừ đi phần khách đã trả về đúng cuộn đó (qty > 0, source_move_id).
-    const rolls = (await db.query(`
-      SELECT p.product_code, p.product_name, t.specs, m.lot_code, m.roll_code,
-             -m.qty - COALESCE((SELECT SUM(r.qty) FROM inventory_roll_moves r WHERE r.source_move_id = m.id), 0) AS qty,
-             (SELECT sl.unit FROM outbound_slip_lines sl WHERE sl.slip_id = s.id AND sl.product_id = m.product_id LIMIT 1) AS unit
-      FROM outbound_slips s
-      JOIN inventory_transactions t ON t.ref_code = s.slip_code AND t.trx_type = 'Xuất'
-      JOIN inventory_roll_moves m ON m.trx_id = t.id AND m.qty < 0
-      JOIN products p ON p.id = m.product_id
-      WHERE s.delivery_note_id = $1
-      ORDER BY p.product_code, m.lot_code, m.roll_code`, [req.params.id])).rows.filter((r) => Number(r.qty) > 0);
-    d.rolls = rolls;
-    // Phiếu nháp chưa xuất kho → XEM TRƯỚC cuộn dự kiến (mô phỏng đúng thứ tự trừ khi bấm Giao hàng; chỉ đọc).
-    // Kho có thể đổi trước lúc giao → danh sách thật lấy theo lần xuất. rolls_preview = true để giao diện ghi "Dự kiến".
-    d.rolls_preview = false;
-    if (d.status === 'Bản nháp' && !rolls.length) {
-      try {
-        const plan = await planShipment(db, req.params.id);
-        if (!plan.error && plan.allocations.length) {
-          const sim = await previewRolls(db, plan.allocations);
-          if (sim.length) {
-            const lk = (r) => [r.product_id, r.location_id || '', r.spec_key, r.lot_code || ''].join('|');
-            const meta = new Map(plan.allocations.map((a) => [lk(a), a]));
-            const prods = new Map((await db.query('SELECT id, product_code, product_name FROM products WHERE id = ANY($1)',
-              [[...new Set(sim.map((r) => r.product_id))]])).rows.map((p) => [p.id, p]));
-            d.rolls = sim.map((r) => {
-              const a = meta.get(lk(r)) || {}; const p = prods.get(r.product_id) || {};
-              return { product_code: p.product_code, product_name: p.product_name, specs: a.specs || {}, lot_code: r.lot_code, roll_code: r.roll_code, qty: r.qty, unit: a.unit };
-            }).sort((x, y) => String(x.product_code).localeCompare(String(y.product_code))
-              || String(x.lot_code).localeCompare(String(y.lot_code)) || String(x.roll_code).localeCompare(String(y.roll_code)));
-            d.rolls_preview = true;
-          }
-        }
-      } catch (e) { console.error('Xem trước cuộn lỗi:', e.message); }
-    }
+    // Danh sách cuộn (trang đính kèm phiếu in) — xem rollListOfNote. Phần không có mã cuộn (dữ liệu cũ) hiện
+    // "Chưa xác định mã cuộn" kèm khối lượng; lệch tổng so với SL trên phiếu → rolls_mismatch để giao diện cảnh báo.
+    Object.assign(d, await rollListOfNote(d, items.rows));
     if (!canViewAmounts(req)) {
       delete d.total_amount; delete d.paid_amount;
       return res.json({ ...d, items: items.rows.map(stripMoneyItem) });
@@ -492,6 +459,68 @@ exports.updateItemNotes = async (req, res) => {
   } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: 'Lỗi khi lưu ghi chú dòng' }); }
   finally { client.release(); }
 };
+
+// Danh sách cuộn của phiếu giao.
+//  - Đã giao: lấy từ lần xuất kho THẬT (inventory_roll_moves) trừ phần khách trả về đúng cuộn; phần còn lại của
+//    mỗi lần xuất (đã giao − đã trả − Σ cuộn có mã) = "Chưa xác định mã cuộn". Không dựng lại từ tồn hiện tại.
+//  - Bản nháp: XEM TRƯỚC theo đúng phân bổ của nút Giao hàng (planShipment + previewRolls), chỉ đọc.
+// rolls_mismatch: [{product_code, product_name, on_note, in_list}] khi tổng danh sách ≠ SL trên phiếu (theo SP).
+async function rollListOfNote(d, noteItems) {
+  const out = { rolls: [], rolls_preview: false, rolls_mismatch: [] };
+  const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  if (d.status === 'Bản nháp') {
+    try {
+      const plan = await planShipment(db, d.id);
+      if (plan.error || !plan.allocations.length) return out;
+      const sim = await previewRolls(db, plan.allocations);
+      const lk = (r) => [r.product_id, r.location_id || '', r.spec_key, r.lot_code || ''].join('|');
+      const known = new Map();
+      for (const r of sim) known.set(lk(r), r2((known.get(lk(r)) || 0) + r.qty));
+      const prods = new Map((await db.query('SELECT id, product_code, product_name FROM products WHERE id = ANY($1)',
+        [[...new Set(plan.allocations.map((a) => a.product_id))]])).rows.map((p) => [p.id, p]));
+      const meta = new Map(plan.allocations.map((a) => [lk(a), a]));
+      const row = (a, roll_code, qty) => {
+        const p = prods.get(a.product_id) || {};
+        return { product_id: a.product_id, product_code: p.product_code, product_name: p.product_name, specs: a.specs || {}, lot_code: a.lot_code || '', roll_code, qty, unit: a.unit };
+      };
+      for (const r of sim) out.rolls.push(row(meta.get(lk(r)) || r, r.roll_code, r.qty));
+      // Phần của lô không rơi vào cuộn nào (lô cũ chưa có mã cuộn) — gộp theo lô
+      const lots = new Map();
+      for (const a of plan.allocations) { const g = lots.get(lk(a)) || { a, q: 0 }; g.q = r2(g.q + a.quantity); lots.set(lk(a), g); }
+      for (const [k, g] of lots) { const u = r2(g.q - (known.get(k) || 0)); if (u > 0.005) out.rolls.push(row(g.a, null, u)); }
+      out.rolls_preview = true;
+    } catch (e) { console.error('Xem trước cuộn lỗi:', e.message); return out; }
+  } else {
+    const trx = (await db.query(RETURNABLE_SQL, [d.id])).rows;
+    const known = (await db.query(`
+      SELECT m.trx_id, m.roll_code,
+             -m.qty - COALESCE((SELECT SUM(r.qty) FROM inventory_roll_moves r WHERE r.source_move_id = m.id), 0) AS qty
+      FROM inventory_roll_moves m WHERE m.trx_id = ANY($1) AND m.qty < 0`, [trx.map((t) => t.trx_id)])).rows;
+    for (const t of trx) {
+      const row = (roll_code, qty) => ({ product_id: t.product_id, product_code: t.product_code, product_name: t.product_name, specs: t.specs || {}, lot_code: t.lot_code || '', roll_code, qty, unit: t.unit });
+      let sum = 0;
+      for (const k of known.filter((k) => k.trx_id === t.trx_id && Number(k.qty) > 0)) { out.rolls.push(row(k.roll_code, r2(k.qty))); sum = r2(sum + Number(k.qty)); }
+      const u = r2(Number(t.shipped_qty) - Number(t.returned_qty) - sum);
+      if (u > 0.005) out.rolls.push(row(null, u));
+    }
+  }
+  // Cuộn có mã trước, "Chưa xác định" cuối mỗi lô
+  out.rolls.sort((x, y) => String(x.product_code).localeCompare(String(y.product_code)) || String(x.lot_code).localeCompare(String(y.lot_code))
+    || (x.roll_code == null) - (y.roll_code == null) || String(x.roll_code).length - String(y.roll_code).length || String(x.roll_code).localeCompare(String(y.roll_code)));
+  // Đối chiếu tổng theo sản phẩm với SL trên phiếu (SL thực nếu đã nhập)
+  const onNote = new Map();
+  for (const it of noteItems) if (it.product_id) onNote.set(it.product_id, r2((onNote.get(it.product_id) || 0) + Number(it.actual_quantity ?? it.quantity ?? 0)));
+  const inList = new Map();
+  for (const r of out.rolls) inList.set(r.product_id, r2((inList.get(r.product_id) || 0) + r.qty));
+  if (out.rolls.length) for (const [pid, q] of onNote) {
+    const l = inList.get(pid) || 0;
+    if (Math.abs(l - q) > 0.005) {
+      const it = noteItems.find((x) => x.product_id === pid) || {};
+      out.rolls_mismatch.push({ product_code: it.product_code || '', product_name: it.product_name || '', on_note: q, in_list: l });
+    }
+  }
+  return out;
+}
 
 // Phân bổ lô cho phiếu giao (dùng chung: nút Giao hàng + xem trước cuộn của phiếu nháp). Chỉ ĐỌC, không ghi.
 async function planShipment(client, noteId) {
