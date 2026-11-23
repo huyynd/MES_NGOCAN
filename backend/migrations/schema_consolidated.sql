@@ -2694,7 +2694,7 @@ END $$;
 INSERT INTO public.app_settings (key, value) VALUES
   ('vat_percent', '8'), ('urgent_days', '5'), ('priority_top', '5'), ('scrap_alert_percent', '5'),
   ('schedule_lock_days', '3'), ('near_min_percent', '120'),
-  ('company_name', to_jsonb('CÔNG TY TNHH THƯƠNG MẠI SẢN XUẤT BAO BÌ NGỌC AN THƯ'::text)),
+  ('company_name', to_jsonb('CÔNG TY TNHH THƯƠNG MẠI SẢN XUẤT XNK BAO BÌ NGỌC AN THƯ'::text)),
   ('company_tax', to_jsonb('0316748578'::text)),
   ('company_address', to_jsonb('Số 8F3, Đường DD6, Khu Phố 4, P. Tân Hưng Thuận, Quận 12, TP.HCM'::text)),
   ('company_phone', to_jsonb('0938 446 156'::text))
@@ -2817,10 +2817,9 @@ ALTER TABLE public.delivery_note_items ADD COLUMN IF NOT EXISTS returned_qty num
 ALTER TABLE public.delivery_note_items ADD COLUMN IF NOT EXISTS note text;
 --   M3. Đổi tên/địa chỉ công ty CHỈ KHI đang đúng giá trị mặc định cũ (không ghi đè chỉnh tay; chạy lại an toàn).
 -- [M3-BEGIN]
-UPDATE public.app_settings SET value = to_jsonb('CÔNG TY TNHH THƯƠNG MẠI SẢN XUẤT BAO BÌ NGỌC AN THƯ'::text)
-  WHERE key = 'company_name' AND value = to_jsonb('CÔNG TY TNHH THƯƠNG MẠI SẢN XUẤT XNK BAO BÌ NGỌC AN THƯ'::text);
-UPDATE public.app_settings SET value = to_jsonb('Số 8F3, Đường DD6, Khu Phố 4, P. Tân Hưng Thuận, Quận 12, TP.HCM'::text)
-  WHERE key = 'company_address' AND value = to_jsonb('119/1 Đường Đỗ Mười, Tổ 4, Khu phố 1, Phường Thới An, Thành Phố Hồ Chí Minh'::text);
+-- (2026-11-23) BỎ hẳn các UPDATE tên / địa chỉ công ty: khối này chạy lại MỖI lần deploy nên đã ghi đè giá trị
+--   người dùng sửa trong Cài đặt (tên "XNK" bị đổi về tên cũ). Đã chạy xong trên PRD từ trước → không cần nữa.
+--   Thông tin công ty chỉ sửa ở màn Cài đặt hệ thống; migrate chỉ INSERT … ON CONFLICT DO NOTHING (mục 25).
 -- [M3-END]
 -- ---------------------------------------------------------------------
 
