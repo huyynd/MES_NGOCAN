@@ -481,7 +481,7 @@ async function rollListOfNote(d, noteItems) {
       const meta = new Map(plan.allocations.map((a) => [lk(a), a]));
       const row = (a, roll_code, qty) => {
         const p = prods.get(a.product_id) || {};
-        return { product_id: a.product_id, product_code: p.product_code, product_name: p.product_name, specs: a.specs || {}, lot_code: a.lot_code || '', roll_code, qty, unit: a.unit };
+        return { product_id: a.product_id, location_id: a.location_id, spec_key: a.spec_key, product_code: p.product_code, product_name: p.product_name, specs: a.specs || {}, lot_code: a.lot_code || '', roll_code, qty, unit: a.unit };
       };
       for (const r of sim) out.rolls.push(row(meta.get(lk(r)) || r, r.roll_code, r.qty));
       // Phần của lô không rơi vào cuộn nào (lô cũ chưa có mã cuộn) — gộp theo lô
@@ -497,17 +497,27 @@ async function rollListOfNote(d, noteItems) {
              -m.qty - COALESCE((SELECT SUM(r.qty) FROM inventory_roll_moves r WHERE r.source_move_id = m.id), 0) AS qty
       FROM inventory_roll_moves m WHERE m.trx_id = ANY($1) AND m.qty < 0`, [trx.map((t) => t.trx_id)])).rows;
     for (const t of trx) {
-      const row = (roll_code, qty) => ({ product_id: t.product_id, product_code: t.product_code, product_name: t.product_name, specs: t.specs || {}, lot_code: t.lot_code || '', roll_code, qty, unit: t.unit });
+      const row = (roll_code, qty) => ({ product_id: t.product_id, location_id: t.location_id, spec_key: t.spec_key, product_code: t.product_code, product_name: t.product_name, specs: t.specs || {}, lot_code: t.lot_code || '', roll_code, qty, unit: t.unit });
       let sum = 0;
       for (const k of known.filter((k) => k.trx_id === t.trx_id && Number(k.qty) > 0)) { out.rolls.push(row(k.roll_code, r2(k.qty))); sum = r2(sum + Number(k.qty)); }
       const u = r2(Number(t.shipped_qty) - Number(t.returned_qty) - sum);
       if (u > 0.005) out.rolls.push(row(null, u));
     }
   }
-  // Chỉ sản phẩm dạng cuộn: lô do sản xuất tạo (mã lô = mã LSX). Hàng mua ngoài (hạt nhựa…) không lên danh sách.
-  const prodLots = new Set((await db.query('SELECT order_code FROM production_orders WHERE order_code = ANY($1)',
-    [[...new Set(out.rolls.map((r) => r.lot_code).filter(Boolean))]])).rows.map((r) => r.order_code));
-  out.rolls = out.rolls.filter((r) => r.roll_code || prodLots.has(r.lot_code));
+  // Chỉ cuộn của công đoạn THỔI (Cắt = bao bì, không liệt kê cuộn; hàng mua ngoài cũng không):
+  //  - cuộn có mã: mã dạng {LSX}_1_xxx;  - phần chưa có mã: lô (SP + vị trí + thông số + lô) được tạo bởi lần nhập Thổi.
+  const unknown = out.rolls.filter((r) => !r.roll_code);
+  const blowLots = new Set();
+  if (unknown.length) {
+    const k = (r) => [r.product_id, r.location_id || '', r.spec_key, r.lot_code || ''].join('|');
+    const rows = (await db.query(`
+      SELECT DISTINCT t.product_id, t.location_id, t.spec_key, t.lot_code FROM inventory_transactions t
+      WHERE t.trx_type = 'Nhập' AND t.lot_code = ANY($1) AND t.ref_code = t.lot_code
+        AND (t.note LIKE 'Nhập cuộn — Thổi%' OR t.note LIKE 'Nhập kho Thổi%')`,
+      [[...new Set(unknown.map((r) => r.lot_code).filter(Boolean))]])).rows;
+    for (const r of rows) blowLots.add(k(r));
+    out.rolls = out.rolls.filter((r) => (r.roll_code ? /_1_d+$/.test(r.roll_code) : blowLots.has(k(r))));
+  } else out.rolls = out.rolls.filter((r) => /_1_d+$/.test(r.roll_code));
   // Cuộn có mã trước, "Chưa xác định" cuối mỗi lô
   out.rolls.sort((x, y) => String(x.product_code).localeCompare(String(y.product_code)) || String(x.lot_code).localeCompare(String(y.lot_code))
     || (x.roll_code == null) - (y.roll_code == null) || String(x.roll_code).length - String(y.roll_code).length || String(x.roll_code).localeCompare(String(y.roll_code)));
