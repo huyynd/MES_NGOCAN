@@ -4,7 +4,7 @@
 // Mọi hàm PHẢI gọi trong transaction (đã BEGIN).
 const { applyStock, whInboundOkSql } = require('./stock');
 const { nextCode } = require('./codes');
-const { assertAvailable } = require('./availability');
+const { assertAvailable, lockProducts } = require('./availability');
 const { currentUser } = require('../requestContext');
 
 // cond dùng alias s = outbound_slips
@@ -34,7 +34,12 @@ function netByProduct(sources) {
 }
 
 // picks: [{ source, quantity }]. Trả về vị trí cũ; vị trí đó không còn nhận hàng → vị trí đầu tiên cùng loại kho đang cho nhập.
-async function postReturn(client, { prefix = 'TNVL', orderId = null, reason, note = null, picks }) {
+async function postReturn(client, { prefix = 'TNVL', orderId = null, reason, note = null, picks: rawPicks }) {
+  // R6: cùng thứ tự khóa với xuất (issueSlipFIFO): khóa theo sản phẩm (lockProducts, sắp theo id) rồi mới chạm inventory_stock;
+  // ghi theo thứ tự product_id → tránh deadlock giữa trả NVL và xuất ngay.
+  const cmp = (x, y) => (String(x) < String(y) ? -1 : String(x) > String(y) ? 1 : 0); // cùng cách sắp với lockProducts
+  const picks = [...rawPicks].sort((a, b) => cmp(a.source.product_id, b.source.product_id) || cmp(a.source.trx_id, b.source.trx_id));
+  await lockProducts(client, picks.map((p) => p.source.product_id));
   const code = await nextCode(client, { table: 'inventory_transactions', col: 'ref_code', prefix, width: 5 });
   const who = currentUser();
   const ret = (await client.query(

@@ -3,6 +3,7 @@ const db = require('../../core/db');
 const { guardDelete } = require('../../core/lib/deleteGuard');
 const { upUnit } = require('../../core/lib/units');
 const { syncLinkedBom } = require('../../core/lib/bomSync');
+const { clientMessage } = require('../../core/lib/validate');
 
 const numOrNull = (v) => (v === '' || v == null ? null : Number(v));
 
@@ -88,7 +89,7 @@ exports.create = async (req, res) => {
     await syncLinkedBom(client, rows[0].id);
     await client.query('COMMIT');
     res.status(201).json(rows[0]);
-  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi tạo quy trình' }); }
+  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: clientMessage(err, 'Lỗi khi tạo quy trình') }); }
   finally { client.release(); }
 };
 
@@ -109,7 +110,7 @@ exports.update = async (req, res) => {
     await syncLinkedBom(client, req.params.id);
     await client.query('COMMIT');
     res.json({ message: 'Đã cập nhật quy trình' });
-  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi cập nhật' }); }
+  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: clientMessage(err, 'Lỗi khi cập nhật') }); }
   finally { client.release(); }
 };
 

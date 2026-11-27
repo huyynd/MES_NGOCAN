@@ -2,7 +2,7 @@
 const db = require('../../core/db');
 const { upUnit } = require('../../core/lib/units');
 const { guardDelete, PRODUCT_DEPENDENTS } = require('../../core/lib/deleteGuard');
-const { duplicateNameMessage } = require('../../core/lib/validate');
+const { duplicateNameMessage, clientMessage, dbInputMessage } = require('../../core/lib/validate');
 // F4: không cho 2 sản phẩm (chưa xóa) trùng tên
 const PRODUCT_NAME = { table: 'products', nameCol: 'product_name', codeCol: 'product_code', label: 'Sản phẩm' };
 
@@ -260,7 +260,7 @@ exports.bulkImport = async (req, res) => {
         inserted++;
         if (code) { seenCode.add(codeKey); existCodes.add(codeKey); }
         seenName.add(nameKey); existNames.add(nameKey);
-      } catch (e) { errors.push({ row: idx + 2, message: e.detail || e.message }); }
+      } catch (e) { errors.push({ row: idx + 2, message: dbInputMessage(e, 'Dữ liệu trùng hoặc tham chiếu không hợp lệ') }); }
     }
     res.json({ inserted, failed: errors.length, errors: errors.slice(0, 50) });
   } catch (err) { console.error(err); res.status(500).json({ message: 'Lỗi khi nhập sản phẩm' }); }
@@ -317,7 +317,7 @@ exports.addAttachment = async (req, res) => {
        VALUES ($1,$2,$3,$4,$5) RETURNING id, name, content_type, is_image, created_at`,
       [req.params.id, name || 'tài liệu', content_type || null, isImage, data]);
     res.status(201).json(rows[0]);
-  } catch (err) { console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi tải tài liệu lên' }); }
+  } catch (err) { console.error(err); res.status(500).json({ message: clientMessage(err, 'Lỗi khi tải tài liệu lên') }); }
 };
 
 // GET /api/products/:id/attachments/:attId/file — lấy nội dung 1 file (để xem/tải)

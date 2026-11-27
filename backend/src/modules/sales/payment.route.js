@@ -1,6 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const receipts = require('./paymentReceiptController');
+const { uuidParam } = require('../../core/lib/validate');
+// :id không phải UUID → 404 trước khi chạm CSDL
+router.param('id', uuidParam('Không tìm thấy phiếu thanh toán'));
+router.param('customerId', uuidParam('Không tìm thấy khách hàng'));
 
 // Phiếu thanh toán + Báo cáo công nợ — quyền tiền (xem / ghi) kiểm trong controller (money.js)
 router.get('/payment-receipts', receipts.list);

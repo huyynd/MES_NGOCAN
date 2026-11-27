@@ -4,6 +4,7 @@
 // phiếu giao đủ tiền tự chuyển "Đã thanh toán". Trả dư = tiền trả trước, tự trừ khi có phiếu giao mới.
 // Quyền: xem = canViewAmounts, ghi/hủy = canEditAmounts (quyền tiền của Phiếu giao hàng).
 const db = require('../../core/db');
+const { clientMessage } = require('../../core/lib/validate');
 const { canViewAmounts, canEditAmounts } = require('../../core/lib/money');
 const { OPENING_SQL, PAYABLE_STATUSES, debtAgeSql, allocateCustomer, rebuildCustomer, customerDebts } = require('../../core/lib/receivables');
 
@@ -143,7 +144,7 @@ exports.create = async (req, res) => {
     if (paidOff.length) msg += `, ${paidOff.length} phiếu đã thanh toán đủ`;
     if (num(full.unallocated) > 0) msg += `. Dư ${Math.round(num(full.unallocated)).toLocaleString('vi-VN')} đ giữ làm tiền trả trước`;
     res.status(201).json({ message: msg, ...full, allocations });
-  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi lưu phiếu thanh toán' }); }
+  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: clientMessage(err, 'Lỗi khi lưu phiếu thanh toán') }); }
   finally { client.release(); }
 };
 
@@ -172,7 +173,7 @@ exports.update = async (req, res) => {
     if (String(b.pay_date).slice(0, 10) !== cur.pay_date) await rebuildCustomer(client, cur.customer_id);
     await client.query('COMMIT');
     res.json({ message: 'Đã cập nhật phiếu thanh toán' });
-  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi cập nhật phiếu thanh toán' }); }
+  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: clientMessage(err, 'Lỗi khi cập nhật phiếu thanh toán') }); }
   finally { client.release(); }
 };
 
@@ -193,7 +194,7 @@ exports.cancel = async (req, res) => {
     await rebuildCustomer(client, r.customer_id);
     await client.query('COMMIT');
     res.json({ message: `Đã hủy phiếu ${r.receipt_code}` });
-  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi hủy phiếu thanh toán' }); }
+  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: clientMessage(err, 'Lỗi khi hủy phiếu thanh toán') }); }
   finally { client.release(); }
 };
 
@@ -283,7 +284,7 @@ exports.saveOpening = async (req, res) => {
     await rebuildCustomer(client, cid);
     await client.query('COMMIT');
     res.json({ message: 'Đã lưu nợ đầu kỳ' });
-  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi lưu nợ đầu kỳ' }); }
+  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: clientMessage(err, 'Lỗi khi lưu nợ đầu kỳ') }); }
   finally { client.release(); }
 };
 
@@ -299,6 +300,6 @@ exports.deleteOpening = async (req, res) => {
     await rebuildCustomer(client, cid); // gỡ phần đầu kỳ dư đã trừ vào phiếu giao + phân bổ lại
     await client.query('COMMIT');
     res.json({ message: 'Đã xóa nợ đầu kỳ' });
-  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi xóa nợ đầu kỳ' }); }
+  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: clientMessage(err, 'Lỗi khi xóa nợ đầu kỳ') }); }
   finally { client.release(); }
 };

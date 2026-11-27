@@ -2,6 +2,9 @@ const express = require('express');
 const router = express.Router();
 const { requirePerm } = require('../../core/requireAuth');
 const recycling = require('./recyclingController');
+const { uuidParam } = require('../../core/lib/validate');
+// :id không phải UUID → 404 trước khi chạm CSDL
+router.param('id', uuidParam('Không tìm thấy phiếu tái chế'));
 
 // Using production:edit permission for recycling operations
 router.get('/recycling', recycling.list);

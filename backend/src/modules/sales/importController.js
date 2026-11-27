@@ -159,8 +159,8 @@ async function importRow(client, row, idx, productId) {
   const poRes = await client.query(
     `INSERT INTO production_orders
        (sales_order_id, customer_id, product_id, quantity, unit,
-        attr_size, attr_thickness, attr_color, status, planned_date, due_date)
-     VALUES ($1,$2,$3,$4,'KG',$5,$6,'','Hoàn thành',$7,$8) RETURNING id, order_code`,
+        attr_size, attr_thickness, attr_color, status, planned_date, due_date, nvl_strict)
+     VALUES ($1,$2,$3,$4,'KG',$5,$6,'','Hoàn thành',$7,$8, FALSE) RETURNING id, order_code`, // đơn cũ: luôn luồng NVL cũ
     [salesOrderId, customerId, productId, qtyPO, legacy.size, legacy.thickness, orderDate, dueDate]
   );
   const { id: poId, order_code: poCode } = poRes.rows[0];

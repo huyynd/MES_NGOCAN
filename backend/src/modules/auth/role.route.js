@@ -3,6 +3,9 @@ const router = express.Router();
 const { requirePerm, requireAnyPerm } = require('../../core/requireAuth');
 const role = require('./roleController');
 const { makeCrud } = require('../../core/genericCrud');
+const { uuidParam } = require('../../core/lib/validate');
+// :id không phải UUID → 404 trước khi chạm CSDL
+router.param('id', uuidParam('Không tìm thấy vai trò'));
 
 // Vai trò: trước đây ai cũng thêm/sửa/xóa được — kể cả đổi parent_id để vai trò của mình KẾ THỪA quyền
 // vai trò khác (tự nâng quyền). Giờ ghi cần quyền md_roles tương ứng (menu "Vai trò");

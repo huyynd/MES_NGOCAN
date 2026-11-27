@@ -2,6 +2,9 @@ const express = require('express');
 const router = express.Router();
 const { requirePerm } = require('../../core/requireAuth');
 const inventory = require('./inventoryController');
+const { uuidParam } = require('../../core/lib/validate');
+
+router.param('id', uuidParam('Không tìm thấy dữ liệu'));
 
 router.get('/inventory', inventory.list);
 router.get('/inventory/tree', inventory.tree);

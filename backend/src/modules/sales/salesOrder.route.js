@@ -3,6 +3,9 @@ const router = express.Router();
 const { requirePerm, requireAnyPerm } = require('../../core/requireAuth');
 const { hideCustomerContact } = require('../../core/lib/visibility');
 const salesOrders = require('./salesOrderController');
+const { uuidParam } = require('../../core/lib/validate');
+// :id không phải UUID → 404 trước khi chạm CSDL
+router.param('id', uuidParam('Không tìm thấy bản ghi'));
 
 const importCtrl = require('./importController');
 const multer = require('multer');

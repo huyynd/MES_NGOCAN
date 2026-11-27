@@ -1040,6 +1040,7 @@ export default function OrdersModule({ lookups, focusId, onFocusConsumed, onCrea
   const [editId, setEditId] = useState(null);
   const [copyId, setCopyId] = useState(null);
   const [voucherId, setVoucherId] = useState(null);
+  const [voucherFrom, setVoucherFrom] = useState("list"); // màn mở phiếu in → Quay lại về đúng màn đó
   const [rows, setRows] = useState([]);
   const [showImport, setShowImport] = useState(false);
   const openForm = ({ edit = null, copy = null } = {}) => { setEditId(edit); setCopyId(copy); setView("form"); };
@@ -1078,7 +1079,7 @@ export default function OrdersModule({ lookups, focusId, onFocusConsumed, onCrea
       } },
     { key: "status", label: "Trạng thái", filter: "select", minWidth: "160px", render: (r) => <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${statusClass(r.status)}`}>{r.status}</span> },
     { key: "_act", label: "", align: "right", render: (r) => (<>
-        <button onClick={() => { setVoucherId(r.id); setView("voucher"); }} title="Xem phiếu" className="text-slate-400 hover:text-emerald-600 p-1"><FileText size={15} /></button>
+        <button onClick={() => { setVoucherId(r.id); setVoucherFrom("list"); setView("voucher"); }} title="Xem phiếu" className="text-slate-400 hover:text-emerald-600 p-1"><FileText size={15} /></button>
         {can("orders", "create") && <button onClick={() => openForm({ copy: r.id })} title="Sao chép thành đơn mới" className="text-slate-400 hover:text-blue-600 p-1"><Copy size={15} /></button>}
         {can("orders", "edit") && <button onClick={() => openForm({ edit: r.id })} title="Sửa" className="text-slate-400 hover:text-blue-600 p-1"><Pencil size={15} /></button>}
         {can("orders", "delete") && ["Mới", "Đã hủy"].includes(r.status) && <button onClick={() => del(r.id)} title="Xóa" className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={15} /></button>}
@@ -1105,13 +1106,13 @@ export default function OrdersModule({ lookups, focusId, onFocusConsumed, onCrea
         <OrderForm key={editId || "new"} lookups={lookups} editId={editId} copyId={copyId}
           onBack={() => { setView("list"); setEditId(null); setCopyId(null); load(); }} 
           onSaved={(newId) => { if (newId) { setEditId(newId); setCopyId(null); } else { setView("list"); setEditId(null); setCopyId(null); } load(); }}
-          onPrint={(id) => { setVoucherId(id); setView("voucher"); }} 
+          onPrint={(id) => { setVoucherId(id); setVoucherFrom("form"); setView("voucher"); }}
           onCreateDelivery={onCreateDelivery} 
           onOpenProductionOrder={onOpenProductionOrder} 
         />
       )}
       
-      {view === "voucher" && <OrderVoucher id={voucherId} onBack={() => setView("list")} />}
+      {view === "voucher" && <OrderVoucher id={voucherId} onBack={() => setView(voucherFrom)} />}
     </>
   );
 }

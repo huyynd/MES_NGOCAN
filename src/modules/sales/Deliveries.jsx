@@ -853,6 +853,7 @@ export default function DeliveriesModule({ lookups, focusOrderId, onFocusConsume
   const [editId, setEditId] = useState(null);
   const [newOrderId, setNewOrderId] = useState(null);
   const [voucherId, setVoucherId] = useState(null);
+  const [voucherFrom, setVoucherFrom] = useState("list"); // màn mở phiếu in → Quay lại về đúng màn đó
   const [rows, setRows] = useState([]);
 
   const [listLoading, setListLoading] = useState(true);
@@ -871,8 +872,8 @@ export default function DeliveriesModule({ lookups, focusOrderId, onFocusConsume
   const resetToList = () => { setView("list"); setEditId(null); setNewOrderId(null); };
   if (view === "form") return <DeliveryForm key={editId || "new"} lookups={lookups} editId={editId} initialOrderId={newOrderId}
     onBack={() => { resetToList(); load(); }} onSaved={(newId) => { if (newId) { setEditId(newId); setNewOrderId(null); } else resetToList(); load(); }}
-    onPrint={(id) => { setVoucherId(id); setView("voucher"); }} onOpenOrder={onOpenOrder} onOpenProductionOrder={onOpenProductionOrder} />;
-  if (view === "voucher") return <DeliveryVoucher id={voucherId} onBack={() => setView("list")} />;
+    onPrint={(id) => { setVoucherId(id); setVoucherFrom("form"); setView("voucher"); }} onOpenOrder={onOpenOrder} onOpenProductionOrder={onOpenProductionOrder} />;
+  if (view === "voucher") return <DeliveryVoucher id={voucherId} onBack={() => setView(voucherFrom)} />;
 
   const columns = [
     { key: "note_code", label: "Số phiếu", filter: "text", minWidth: "120px", render: (r) => <button onClick={() => { setEditId(r.id); setView("form"); }} className="font-medium text-blue-600 hover:underline">{r.note_code}</button> },
@@ -886,7 +887,7 @@ export default function DeliveriesModule({ lookups, focusOrderId, onFocusConsume
     ] : []),
     { key: "status", label: "Trạng thái", filter: "select", minWidth: "160px", render: (r) => <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${statusClass(r.status)}`}>{r.status}</span> },
     { key: "_act", label: "", align: "right", render: (r) => (<>
-        <button onClick={() => { setVoucherId(r.id); setView("voucher"); }} title="In phiếu" className="text-slate-400 hover:text-emerald-600 p-1"><FileText size={15} /></button>
+        <button onClick={() => { setVoucherId(r.id); setVoucherFrom("list"); setView("voucher"); }} title="In phiếu" className="text-slate-400 hover:text-emerald-600 p-1"><FileText size={15} /></button>
         <button onClick={() => { setEditId(r.id); setView("form"); }} title="Sửa" className="text-slate-400 hover:text-blue-600 p-1"><Pencil size={15} /></button>
         {can("deliveries", "delete") && ["Bản nháp", "Đã hủy"].includes(r.status) &&<button onClick={() => del(r.id)} title="Xóa" className="text-slate-400 hover:text-rose-600 p-1"><Trash2 size={15} /></button>}
       </>) },

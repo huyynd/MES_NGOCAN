@@ -3,6 +3,10 @@ const express = require('express');
 const router = express.Router();
 const { requirePerm } = require('../../core/requireAuth');
 const ctrl = require('./productController');
+const { uuidParam } = require('../../core/lib/validate');
+// :id không phải UUID → 404 trước khi chạm CSDL
+router.param('id', uuidParam('Không tìm thấy sản phẩm'));
+router.param('attId', uuidParam('Không tìm thấy tài liệu'));
 
 router.get('/', ctrl.getProducts);
 router.post('/', requirePerm('products:create'), ctrl.createProduct);

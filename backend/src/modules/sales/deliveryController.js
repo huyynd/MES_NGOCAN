@@ -9,6 +9,7 @@ const { currentUser } = require('../../core/requestContext');
 const { buildSpecKey, specKeyValues } = require('../../core/lib/specs');
 const { lsxProgressByItems } = require('../../core/lib/lsxProgress');
 const { previewRolls } = require('../../core/lib/rolls');
+const { clientMessage, isUuid } = require('../../core/lib/validate');
 
 const num = (v) => (v === '' || v == null ? 0 : Number(v) || 0);
 const EMPTY_SPEC = buildSpecKey({});
@@ -345,7 +346,7 @@ exports.create = async (req, res) => {
   } catch (err) {
     await client.query('ROLLBACK');
     if (err instanceof BadRequestError) return res.status(400).json({ message: err.message });
-    console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi tạo phiếu' });
+    console.error(err); res.status(500).json({ message: clientMessage(err, 'Lỗi khi tạo phiếu') });
   }
   finally { client.release(); }
 };
@@ -422,22 +423,21 @@ exports.update = async (req, res) => {
   } catch (err) {
     await client.query('ROLLBACK');
     if (err instanceof BadRequestError) return res.status(400).json({ message: err.message });
-    console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi cập nhật phiếu' });
+    console.error(err); res.status(500).json({ message: clientMessage(err, 'Lỗi khi cập nhật phiếu') });
   }
   finally { client.release(); }
 };
 
 // PUT /api/deliveries/:id/item-notes  body { notes: [{ id, note }] }
 // Sửa RIÊNG ghi chú dòng (mọi trạng thái trừ "Đã hủy", kể cả đã giao/đã thanh toán). Không chạm SL/giá/tiền/trạng thái.
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 exports.updateItemNotes = async (req, res) => {
   const list = req.body && req.body.notes;
-  if (!UUID_RE.test(req.params.id)) return res.status(400).json({ message: 'Mã phiếu không hợp lệ.' });
+  if (!isUuid(req.params.id)) return res.status(400).json({ message: 'Mã phiếu không hợp lệ.' });
   if (!Array.isArray(list)) return res.status(400).json({ message: 'Thiếu danh sách ghi chú (notes).' });
   const clean = [];
   for (let k = 0; k < list.length; k++) {
     const x = list[k];
-    if (!x || typeof x.id !== 'string' || !UUID_RE.test(x.id)) return res.status(400).json({ message: `Dòng ${k + 1}: mã dòng không hợp lệ.` });
+    if (!x || typeof x.id !== 'string' || !isUuid(x.id)) return res.status(400).json({ message: `Dòng ${k + 1}: mã dòng không hợp lệ.` });
     const c = cleanItemNote(x.note, k + 1);
     if (c.error) return res.status(400).json({ message: c.error });
     clean.push({ id: x.id, note: c.value });
@@ -680,7 +680,7 @@ exports.ship = async (req, res) => {
     await allocateCustomer(client, dn.customer_id);
     await client.query('COMMIT');
     res.json({ message: `Đã giao hàng — tạo phiếu xuất kho ${slip.slip_code} (${lines.length} dòng) và trừ tồn kho.`, slip_code: slip.slip_code, slip_id: slip.id });
-  } catch (err) { await client.query('ROLLBACK'); console.error(err); if (stockErrorResponse(res, err)) return; res.status(500).json({ message: err.detail || 'Lỗi khi giao hàng' }); }
+  } catch (err) { await client.query('ROLLBACK'); console.error(err); if (stockErrorResponse(res, err)) return; res.status(500).json({ message: clientMessage(err, 'Lỗi khi giao hàng') }); }
   finally { client.release(); }
 };
 
@@ -832,6 +832,6 @@ exports.createReturn = async (req, res) => {
   } catch (err) {
     await client.query('ROLLBACK'); console.error(err);
     if (stockErrorResponse(res, err)) return;
-    res.status(500).json({ message: err.detail || 'Lỗi khi lập phiếu trả hàng' });
+    res.status(500).json({ message: clientMessage(err, 'Lỗi khi lập phiếu trả hàng') });
   } finally { client.release(); }
 };

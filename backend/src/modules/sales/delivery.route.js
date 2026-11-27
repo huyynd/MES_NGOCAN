@@ -2,6 +2,10 @@ const express = require('express');
 const router = express.Router();
 const { requirePerm } = require('../../core/requireAuth');
 const deliveries = require('./deliveryController');
+const { uuidParam } = require('../../core/lib/validate');
+// :id không phải UUID → 404 trước khi chạm CSDL
+router.param('id', uuidParam('Không tìm thấy phiếu giao'));
+router.param('orderId', uuidParam('Không tìm thấy đơn hàng'));
 
 router.get('/deliveries', deliveries.list);
 router.post('/deliveries', requirePerm('deliveries:create'), deliveries.create);

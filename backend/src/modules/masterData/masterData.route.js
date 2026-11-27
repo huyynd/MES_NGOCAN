@@ -5,7 +5,9 @@ const { hideCustomerContact } = require('../../core/lib/visibility');
 const { makeCrud } = require('../../core/genericCrud');
 const production = require('../production/productionController');
 const { WAREHOUSE_DEPENDENTS, LOCATION_DEPENDENTS, EMPLOYEE_DEPENDENTS } = require('../../core/lib/deleteGuard');
-const { duplicateNameMessage, isEmail, isTime } = require('../../core/lib/validate');
+const { duplicateNameMessage, isEmail, isTime, uuidParam } = require('../../core/lib/validate');
+// :id không phải UUID → 404 trước khi chạm CSDL
+router.param('id', uuidParam('Không tìm thấy bản ghi'));
 
 // F4: kiểm dữ liệu danh mục → 400 tiếng Việt (trước đây thiếu tên / giờ sai → 500).
 // Tạo (id = null): tên bắt buộc. Sửa: chỉ kiểm trường có gửi lên.

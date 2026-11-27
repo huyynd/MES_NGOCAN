@@ -6,13 +6,14 @@ import { DEFAULT_STAGES, stageFactory, machinesForStage } from "../../production
 import { usePerm } from "../../perm.jsx";
 import { inputCls, fmt, fmtDate, statusClass, toast } from "../../ui.js";
 import { PageHeader, Section, ListHeader, DataTable, UnitSelect, SearchSelect, DialogBehavior, confirmClose, useRemembered, DateInput } from "../../components.jsx";
-import { PackageCheck, CheckCircle2, Lock, RotateCcw } from "lucide-react";
+import { PackageCheck, CheckCircle2, Lock, RotateCcw, AlertTriangle, Flag } from "lucide-react";
 import Qr from "../../Qr.jsx";
 import { SpecFields } from "../../SpecFields.jsx";
 import ProductionGantt from "./ProductionGantt.jsx";
 
 // Trả NVL thừa về kho: liệt kê từng phần đã xuất (NVL · lô · vị trí), không trả vượt phần còn lại
-function MaterialReturnDialog({ orderId, onClose, onSaved }) {
+// progress: materials_progress của lệnh mới (spec 10.13: tổng trả mỗi NVL ≤ Còn lại); lệnh cũ = null.
+function MaterialReturnDialog({ orderId, progress, onClose, onSaved }) {
   const [data, setData] = useState(null);
   const [qty, setQty] = useState({});
   const [note, setNote] = useState("");
@@ -21,6 +22,7 @@ function MaterialReturnDialog({ orderId, onClose, onSaved }) {
   const left = (l) => Number(l.issued_qty) - Number(l.returned_qty);
   const lines = (data?.lines || []).filter((l) => left(l) > 1e-6);
   const dirty = Object.values(qty).some(Boolean);
+  const canOf = (pid) => { const p = Array.isArray(progress) ? progress.find((x) => x.product_id === pid) : null; return p && p.remaining != null ? Number(p.remaining) : null; };
   const submit = async () => {
     const items = lines.filter((l) => Number(qty[l.trx_id]) > 0).map((l) => ({ trx_id: l.trx_id, quantity: Number(qty[l.trx_id]) }));
     if (!items.length) return toast.error("Nhập số lượng trả cho ít nhất 1 dòng.");
@@ -46,8 +48,8 @@ function MaterialReturnDialog({ orderId, onClose, onSaved }) {
                   <td className="py-2 pr-3">{l.product_name}</td>
                   <td className="py-2 pr-3 text-slate-500">{l.slip_code}{l.lot_code ? ` · ${l.lot_code}` : ""}</td>
                   <td className="py-2 pr-3 text-slate-500">{l.location_name || "—"}</td>
-                  <td className="py-2 pr-3 text-right">{fmt(left(l))} {l.unit || ""}</td>
-                  <td className="py-2"><input type="number" min="0" max={left(l)} step="any" aria-label={`Số lượng trả ${l.product_name}`} className={inputCls} value={qty[l.trx_id] ?? ""} onChange={(e) => setQty((q) => ({ ...q, [l.trx_id]: e.target.value }))} /></td>
+                  <td className="py-2 pr-3 text-right">{fmt(left(l))} {l.unit || ""}{canOf(l.product_id) != null && <div className="text-xs text-amber-600">Còn lại theo tiêu hao: {fmt(canOf(l.product_id))}</div>}</td>
+                  <td className="py-2"><input type="number" min="0" max={canOf(l.product_id) != null ? Math.min(left(l), canOf(l.product_id)) : left(l)} step="any" aria-label={`Số lượng trả ${l.product_name}`} className={inputCls} value={qty[l.trx_id] ?? ""} onChange={(e) => setQty((q) => ({ ...q, [l.trx_id]: e.target.value }))} /></td>
                 </tr>))}</tbody>
             </table>)}
           {lines.length > 0 && <input className={inputCls} placeholder="Ghi chú" aria-label="Ghi chú" value={note} onChange={(e) => setNote(e.target.value)} />}
@@ -57,6 +59,37 @@ function MaterialReturnDialog({ orderId, onClose, onSaved }) {
           <button type="button" onClick={(e) => confirmClose(e, onClose)} disabled={busy} className="btn-ghost">Đóng</button>
           {lines.length > 0 && <button type="button" onClick={submit} disabled={busy} className="btn-primary disabled:opacity-60"><RotateCcw size={16} /> {busy ? "Đang lưu…" : "Trả về kho"}</button>}
         </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+// Hộp thoại danh sách NVL dùng chung: thiếu tồn khi Yêu cầu NVL, NVL còn lại khi Kết thúc lệnh.
+// cols: [{ label, render(row), num }]; rows rỗng → không vẽ bảng. children: nút ở chân hộp thoại.
+function MaterialListDialog({ title, message, note, cols, rows, onClose, locked, children }) {
+  return createPortal(
+    <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center p-4 z-50">
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+        <DialogBehavior onClose={onClose} locked={locked} />
+        <div className="px-5 py-4 border-b border-slate-100"><h3 className="font-semibold text-slate-800">{title}</h3></div>
+        <div className="p-5 overflow-auto space-y-3 text-sm text-slate-700">
+          {message && <p className="whitespace-pre-line">{message}</p>}
+          {rows?.length > 0 && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead><tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+                  {cols.map((c) => <th key={c.label} className={`py-2 pr-3${c.num ? " text-right" : ""}`}>{c.label}</th>)}
+                </tr></thead>
+                <tbody>{rows.map((r, i) => (
+                  <tr key={i} className="border-b border-slate-100 last:border-0">
+                    {cols.map((c) => <td key={c.label} className={`py-2 pr-3${c.num ? " text-right tabular-nums" : ""}`}>{c.render(r)}</td>)}
+                  </tr>))}</tbody>
+              </table>
+            </div>)}
+          {note && <p className="text-slate-500">{note}</p>}
+        </div>
+        <div className="px-5 py-4 border-t border-slate-100 flex justify-end gap-2 flex-wrap">{children}</div>
       </div>
     </div>,
     document.body
@@ -293,25 +326,55 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved, onOpenSalesO
   const requestMats = async () => {
     const lines = plannedMats.filter((m) => m.material_id && Number(m.qty) > 0);
     if (!lines.length) return toast.error('Chưa có NVL cần cung cấp (số kg > 0) để yêu cầu.');
-    if (!confirm(`Tạo phiếu xuất kho (Chờ xuất) cho phần NVL còn thiếu?\nPhiếu sẽ gửi sang app Xuất kho để xác nhận trừ kho.`)) return;
+    if (!confirm(isNewFlow
+      ? `Xuất kho ngay phần NVL còn thiếu?\nTồn kho sẽ bị trừ ngay, không cần Kho xác nhận.`
+      : `Tạo phiếu xuất kho (Chờ xuất) cho phần NVL còn thiếu?\nPhiếu sẽ gửi sang app Xuất kho để xác nhận trừ kho.`)) return;
     setPmBusy(true);
     try {
       const r = await production.requestMaterials(editId, lines);
-      toast.success(r.message || 'Đã tạo phiếu xuất kho.');
+      toast.success(isNewFlow ? `${r.message || 'Đã xuất NVL.'} Tồn kho đã được trừ.` : (r.message || 'Đã tạo phiếu xuất kho.'));
       setMatsIssued(true);
       loadData();
-    } catch (e) { toast.error(e.message); }
+    } catch (e) {
+      // Thiếu tồn (lệnh mới): hiện bảng khả dụng / cần / thiếu thay cho toast dài
+      if (e.data?.shortages?.length) setShortDlg(e.data.shortages);
+      else toast.error(e.message);
+    }
     finally { setPmBusy(false); }
+  };
+  // Kết thúc lệnh (lệnh mới): xác nhận + liệt kê NVL còn lại; lỗi 400 hiện message + danh sách backend trả
+  const [finishDlg, setFinishDlg] = useState(null); // { error?, materials? }
+  const [finishing2, setFinishing2] = useState(false);
+  const doFinish = async () => {
+    setFinishing2(true);
+    try {
+      const r = await production.finish(editId);
+      toast.success(r.message || 'Đã kết thúc lệnh.');
+      setFinishDlg(null);
+      loadData();
+    } catch (e) {
+      setFinishDlg({ error: e.message, materials: e.data?.materials || null, running: e.data?.code === 'RUNNING_TASKS' });
+    } finally { setFinishing2(false); }
   };
 
   const [editing, setEditing] = useState(!editId); // tạo mới = sửa ngay; mở sẵn = xem
   const [meta, setMeta] = useState(null); // dữ liệu lệnh đã nạp (mã lệnh, SP, đơn...) cho tem QR
   // LSX tạo từ dòng đơn hàng → SP / KH / SL cần SX / Đơn vị kế thừa, chỉ hiển thị (không sửa ở LSX)
   const fromOrder = !!meta?.sales_order_item_id;
+  // Lệnh mới (xuất NVL ngay): backend trả materials_progress là mảng; lệnh cũ = null → giữ giao diện cũ
+  const isNewFlow = Array.isArray(meta?.materials_progress);
+  const progressOf = (id) => (isNewFlow ? meta.materials_progress.find((p) => p.product_id === id) : null);
+  // Spec 10.10: lệnh mới đã xuất NVL (còn NVL đã xuất ròng) → khóa ô Số lượng (backend cũng chặn)
+  const qtyLockedByNvl = isNewFlow && meta.materials_progress.some((p) => Number(p.issued) - Number(p.returned) > 1e-6);
+  const gateMsg = meta?.gate_message || null; // khác null → khóa ghi SL thực / hoàn thành dòng
+  const [shortDlg, setShortDlg] = useState(null); // danh sách thiếu tồn khi Yêu cầu NVL
   // M40: khoá nút Lưu trong lúc đang gửi (chống bấm 2 lần). Ref chặn ngay lập tức — state chỉ cập nhật
   // sau lần render, 2 cú bấm sát nhau vẫn lọt nếu chỉ dựa vào state.
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
+  // Danh sách NVL lúc nạp (khóa so sánh) — chỉ kiểm trần NVL khi SL / đơn vị / danh sách thật sự đổi
+  const matsKey = (ls) => JSON.stringify((ls || []).filter((m) => m.material_id).map((m) => [m.material_id, Number(m.qty) || 0, String(m.unit || '').toUpperCase()]).sort());
+  const loadedMatsKeyRef = useRef(null);
   // Chỉ lệnh Đã hủy mới khóa toàn bộ form. Dòng ĐÃ Hoàn thành khóa riêng từng dòng (bất biến).
   const locked = meta?.status === 'Đã hủy';
   const [rollAvail, setRollAvail] = useState(null);       // tồn cuộn khả dụng ở BTP cho công đoạn Cắt
@@ -363,6 +426,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved, onOpenSalesO
         setSlip(pm.slip || null);
         setCanReturn(!!pm.can_return);
         const lines = pm.lines || [];
+        loadedMatsKeyRef.current = matsKey(lines);
         const mix = (d.mix_ratio || []).filter((r) => r.material_id);
         if (lines.length) {
           // Đã có NVL cấp → ghép tỷ lệ (%) từ mix_ratio theo material_id
@@ -476,16 +540,34 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved, onOpenSalesO
     if (savingRef.current) return;
     savingRef.current = true;
     setSaving(true);
+    // Lưu NVL sau lệnh → nếu danh sách NVL bị từ chối thì lệnh đã lưu mà NVL chưa: báo rõ, giữ danh sách trên form
+    const saveMats = async (id) => {
+      try { await production.savePlannedMaterials(id, matLines); return true; }
+      catch (e) { toast.error(`Lệnh đã lưu nhưng danh sách NVL chưa lưu: ${e.message}`, { duration: 8000 }); return false; }
+    };
     try {
+      // Kiểm trần NVL đầu vào TRƯỚC khi lưu gì (lệnh mới / lệnh xuất NVL ngay) — vượt thì không lưu, giữ nguyên form
+      const qtyChanged = !!editId && (Number(f.quantity) !== Number(meta?.quantity) || String(f.unit || '').toUpperCase() !== String(meta?.unit || '').toUpperCase());
+      const matsChanged = !editId || matsKey(matLines) !== loadedMatsKeyRef.current;
+      if (matLines.length && f.status !== 'Đã hủy' && (!editId || isNewFlow) && (qtyChanged || matsChanged)) {
+        const chk = await production.checkMaterialCap({ id: editId || null, quantity: f.quantity, unit: f.unit, lines: matLines.map((m) => ({ material_id: m.material_id, qty: m.qty, unit: m.unit })) });
+        if (chk?.message) { toast.error(chk.message); return; }
+      }
       if (editId) {
         // Status: chỉ áp khi người dùng CHỦ ĐỘNG đổi (khác trạng thái đã nạp).
         const statusChanged = f.status && f.status !== meta?.status;
         const { status, ...rest } = f;
+        // Giảm SL kèm giảm NVL: lưu danh sách NVL TRƯỚC (trần còn theo SL cũ) rồi mới đổi SL — tránh bị chặn oan theo NVL cũ
+        const matsFirst = status !== 'Đã hủy' && matLines.length > 0 && Number(f.quantity) < Number(meta?.quantity);
+        if (matsFirst) {
+          try { await production.savePlannedMaterials(editId, matLines); }
+          catch (e) { toast.error(`Chưa lưu gì — danh sách NVL bị từ chối: ${e.message}`, { duration: 8000 }); return; }
+        }
         await production.update(editId, { ...rest, mix_ratio: mixRatio, finishing }); // các trường (kể cả SL mới), chưa đụng status
         await production.saveTasks(editId, tasks.filter((t) => t.stage)); // recompute status theo tiến độ + SL mới
         const updated = statusChanged ? await production.update(editId, { status }) : null; // áp status thủ công cuối cùng → thắng recompute
         // Lệnh vừa hủy: danh sách NVL do hệ thống xử lý (phiếu chờ hủy / phiếu trả), không ghi đè
-        if (status !== 'Đã hủy') await production.savePlannedMaterials(editId, matLines);
+        if (status !== 'Đã hủy' && !matsFirst && !(await saveMats(editId))) { setEditing(true); return; } // giữ form + danh sách NVL để sửa
         if (matsIssued && status !== 'Đã hủy' && Number(f.quantity) !== Number(meta?.quantity)) await suggestAfterQtyChange(matLines);
         toast.success(updated?.material_return_code
           ? `Đã hủy lệnh và trả NVL về kho (phiếu ${updated.material_return_code})`
@@ -495,7 +577,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved, onOpenSalesO
       } else {
         // Tạo mới: lưu NVL (mix_ratio + material_type) cùng lệnh, rồi lưu số kg NVL cấp
         const created = await production.create({ ...f, mix_ratio: mixRatio, finishing });
-        if (created?.id && matLines.length) await production.savePlannedMaterials(created.id, matLines);
+        if (created?.id && matLines.length && !(await saveMats(created.id))) { onSaved(created?.id); return; } // lệnh đã tạo → mở chi tiết để nhập lại NVL
         toast.success("Tạo lệnh sản xuất mới thành công");
         onSaved(created?.id); // tạo mới → ở lại màn chi tiết của bản ghi vừa tạo
       }
@@ -585,6 +667,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved, onOpenSalesO
           {meta?.status === 'Hoàn thành' && !locked && <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200">⚠ Hoàn thành · cần bổ sung phân công</span>}
           {can("production", "edit") && matsNeeded && !locked && meta?.status !== 'Hoàn thành' && <button onClick={requestMats} disabled={pmBusy} className="btn-ghost text-amber-700 border-amber-300 hover:bg-amber-50"><PackageCheck size={16} /> Yêu cầu NVL</button>}
           {can("production", "edit") && canReturn && !locked && <button onClick={() => setReturning(true)} className="btn-ghost"><RotateCcw size={16} /> Trả NVL</button>}
+          {can("production", "edit") && isNewFlow && !locked && meta?.status === 'Đang sản xuất' && <button type="button" onClick={() => setFinishDlg({})} className="btn-ghost"><Flag size={16} /> Kết thúc lệnh</button>}
           {can("production", "edit") && !locked && <button onClick={() => setEditing(true)} className="btn-ghost"><Pencil size={16} /> Sửa</button>}
           {can("production", "delete") && ["Chờ duyệt", "Đã hủy"].includes(f.status) && <button onClick={del} className="btn-ghost" style={{ color: "#e11d48" }}><Trash2 size={16} /> Xóa</button>}
         </>) : (<>
@@ -624,7 +707,10 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved, onOpenSalesO
             {fromOrder ? (
               <ReadOnly>{fmt(f.quantity)}</ReadOnly>
             ) : (
-              <input type="number" min="0" className={inputCls} disabled={fdis("quantity")} value={f.quantity} onChange={(e) => onQuantity(e.target.value)} />
+              <>
+                <input type="number" min="0" className={inputCls} disabled={fdis("quantity") || qtyLockedByNvl} value={f.quantity} onChange={(e) => onQuantity(e.target.value)} />
+                {qtyLockedByNvl && <p className="mt-1 text-xs text-slate-500">Lệnh đã xuất NVL nên không sửa số lượng được. Muốn làm thêm, hãy tạo lệnh sản xuất mới.</p>}
+              </>
             )}
           </Field>}
           <Field label="Đơn vị">
@@ -772,7 +858,9 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved, onOpenSalesO
                 <th className="px-3 py-2.5 w-24 uppercase tracking-wider">Tỷ lệ (%)</th>
                 <th className="px-3 py-2.5 w-28 uppercase tracking-wider">Số kg</th>
                 <th className="px-3 py-2.5 w-24 uppercase tracking-wider">ĐVT</th>
-                <th className="px-3 py-2.5 w-24 uppercase tracking-wider">Đã xuất</th>
+                <th className="px-3 py-2.5 w-24 uppercase tracking-wider text-right">Đã xuất</th>
+                {isNewFlow && <th className="px-3 py-2.5 w-24 uppercase tracking-wider text-right" title="Tính theo sản lượng công đoạn cuối và định mức">Tiêu hao</th>}
+                {isNewFlow && <th className="px-3 py-2.5 w-24 uppercase tracking-wider text-right" title="Đã xuất − đã trả − tiêu hao">Còn lại</th>}
                 <th className="px-3 py-2.5 w-24 uppercase tracking-wider">Tồn kho</th>
                 <th className="px-3 py-2.5 w-32 uppercase tracking-wider">Đang giữ</th>
                 <th className="px-3 py-2.5 w-28 uppercase tracking-wider">Khả dụng</th>
@@ -782,12 +870,13 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved, onOpenSalesO
             </thead>
             <tbody>
               {plannedMats.length === 0 && (
-                <tr><td colSpan={editing ? 11 : 10} className="px-3 py-4 text-center text-slate-400 bg-white">Chưa có NVL. {editing ? 'Bấm “Lấy gợi ý từ BOM” hoặc “Thêm NVL”.' : ''}</td></tr>
+                <tr><td colSpan={(editing ? 11 : 10) + (isNewFlow ? 2 : 0)} className="px-3 py-4 text-center text-slate-400 bg-white">Chưa có NVL. {editing ? 'Bấm “Lấy gợi ý từ BOM” hoặc “Thêm NVL”.' : ''}</td></tr>
               )}
               {plannedMats.map((r, i) => {
                 // Thiếu = phần chưa xuất, chưa lên phiếu của lệnh này vượt khả dụng
                 const lack = Number(r.qty) - Number(r.issued_qty || 0) - Number(r.own_pending || 0) - Number(r.available || 0);
                 const short = r.on_hand != null && lack > 1e-6;
+                const pg = progressOf(r.material_id); // lệnh mới: đã xuất / tiêu hao / còn lại theo backend
                 return (
                 <tr key={r._k} className="border-b border-slate-100 last:border-0 bg-white align-top">
                   <td className="px-3 py-2.5 text-center text-slate-500 font-medium">{i + 1}</td>
@@ -811,10 +900,18 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved, onOpenSalesO
                       ? <input className={inputCls} value={r.unit} onChange={(e) => upMat(r._k, 'unit', e.target.value)} placeholder="ĐVT" style={{ minWidth: 72 }} />
                       : <span className="text-slate-600">{r.unit || 'KG'}</span>}
                   </td>
-                  <td className="px-3 py-2.5">
+                  <td className="px-3 py-2.5 text-right tabular-nums">
+                    {pg ? <span className="text-slate-600">{fmt(pg.issued || 0)}{Number(pg.returned) > 0 && <span className="block text-[11px] text-slate-400">đã trả {fmt(pg.returned)}</span>}</span> : <>
                     <span className={Number(r.issued_qty) > Number(r.qty) + 1e-6 ? 'text-amber-700 font-semibold' : 'text-slate-600'}>{fmt(r.issued_qty || 0)}</span>
                     {Number(r.issued_qty) > Number(r.qty) + 1e-6 && <span className="block text-[11px] text-amber-700">thừa {fmt(Number(r.issued_qty) - Number(r.qty))}</span>}
+                    </>}
                   </td>
+                  {isNewFlow && <td className="px-3 py-2.5 text-right tabular-nums text-slate-600">{pg?.consumed != null ? fmt(pg.consumed) : '—'}</td>}
+                  {isNewFlow && <td className="px-3 py-2.5 text-right tabular-nums">
+                    {pg?.remaining == null ? <span className="text-slate-400">—</span>
+                      : pg.over ? <span className="inline-flex items-center gap-1 text-amber-700 font-semibold" title="Tiêu hao vượt số NVL đang ở xưởng (đã xuất − đã trả)"><AlertTriangle size={14} aria-hidden="true" />{fmt(0)} (vượt {fmt(Math.max(0, Number(pg.consumed || 0) - Number(pg.issued || 0) + Number(pg.returned || 0)))} {r.unit || "kg"})</span>
+                      : <span className="text-slate-700">{fmt(pg.remaining)}</span>}
+                  </td>}
                   <td className="px-3 py-2.5">
                     {r.on_hand == null
                       ? <span className="text-slate-400 text-xs">— lưu để xem</span>
@@ -846,7 +943,53 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved, onOpenSalesO
         </div>
       </Section>
 
-      {returning && <MaterialReturnDialog orderId={editId} onClose={() => setReturning(false)} onSaved={() => { setReturning(false); loadData(); }} />}
+      {shortDlg && <MaterialListDialog title="Không đủ tồn kho để xuất NVL" onClose={() => setShortDlg(null)}
+        message="Chưa xuất được — kho không đủ số lượng khả dụng cho các NVL dưới đây. Nhập thêm hàng vào kho hoặc giảm số kg cần cung cấp rồi bấm Yêu cầu NVL lại."
+        cols={[
+          { label: "NVL", render: (x) => `${x.code || ""} ${x.name || ""}${x.lot_code ? ` (lô ${x.lot_code})` : ""}`.trim() || "—" },
+          { label: "Khả dụng", num: true, render: (x) => `${fmt(x.on_hand)} ${x.unit || ""}` },
+          { label: "Cần", num: true, render: (x) => `${fmt(x.need)} ${x.unit || ""}` },
+          { label: "Thiếu", num: true, render: (x) => <span className="text-rose-600 font-semibold">{fmt(x.buy)} {x.unit || ""}</span> },
+        ]} rows={shortDlg}>
+        <button type="button" onClick={() => setShortDlg(null)} className="btn-ghost">Đóng</button>
+      </MaterialListDialog>}
+
+      {finishDlg && (() => {
+        // Lỗi từ backend có danh sách materials → dùng; chưa gửi → liệt kê NVL còn lại theo materials_progress
+        const left = finishDlg.materials
+          ? finishDlg.materials.map((m) => ({ name: `${m.product_code || ""} ${m.product_name || ""}`.trim(), unit: m.unit, remaining: Number(m.remaining) }))
+          : (meta?.materials_progress || []).filter((p) => Number(p.remaining) > 1e-6).map((p) => {
+              const pr = productById(p.product_id);
+              return { name: pr ? `${pr.product_code || ""} ${pr.product_name}`.trim() : "—", unit: pr?.unit, remaining: Number(p.remaining) };
+            });
+        // R8: còn NVL → bước tiếp theo là Trả NVL (nút chính); không có quyền trả → hướng dẫn liên hệ, không bảo bấm nút
+        const mayReturn = can("production", "edit") && canReturn;
+        const hasLeft = left.length > 0;
+        // R11: còn dòng phân công đang chạy → chỉ hiện câu lỗi + nút Đóng (không bảng NVL, không Trả NVL)
+        if (finishDlg.running) return (
+          <MaterialListDialog title={`Kết thúc lệnh ${meta?.order_code || ""}`.trim()} onClose={() => setFinishDlg(null)} message={finishDlg.error} rows={[]}>
+            <button type="button" onClick={() => setFinishDlg(null)} className="btn-primary">Đóng</button>
+          </MaterialListDialog>
+        );
+        return (
+          <MaterialListDialog title={`Kết thúc lệnh ${meta?.order_code || ""}`.trim()} onClose={() => setFinishDlg(null)} locked={finishing2}
+            message={finishDlg.error || (hasLeft
+              ? (mayReturn
+                ? "Lệnh còn NVL đã xuất chưa dùng hết. Lập phiếu trả NVL cho phần còn lại (nút Trả NVL) rồi kết thúc lệnh."
+                : "Lệnh còn NVL đã xuất chưa dùng hết. Liên hệ người có quyền trả NVL để lập phiếu trả phần còn lại, rồi kết thúc lệnh.")
+              : "Không còn NVL đã xuất chưa dùng. Xác nhận kết thúc lệnh — lệnh chuyển sang Hoàn thành.")}
+            cols={[
+              { label: "NVL", render: (x) => x.name || "—" },
+              { label: "Còn lại", num: true, render: (x) => `${fmt(x.remaining)} ${x.unit || ""}` },
+            ]} rows={left}>
+            <button type="button" onClick={() => setFinishDlg(null)} disabled={finishing2} className="btn-ghost">Đóng</button>
+            <button type="button" onClick={doFinish} disabled={finishing2} className={`${hasLeft ? "btn-ghost" : "btn-primary"} disabled:opacity-60`}><Flag size={16} /> {finishing2 ? "Đang kết thúc…" : "Kết thúc lệnh"}</button>
+            {hasLeft && mayReturn && <button type="button" onClick={() => { setFinishDlg(null); setReturning(true); }} disabled={finishing2} className="btn-primary"><RotateCcw size={16} /> Trả NVL</button>}
+          </MaterialListDialog>
+        );
+      })()}
+
+      {returning && <MaterialReturnDialog orderId={editId} progress={meta?.materials_progress} onClose={() => setReturning(false)} onSaved={() => { setReturning(false); loadData(); }} />}
 
       {false /* !fhid("finishing") */ && (
       <Section title="Yêu cầu gia công hoàn thiện">
@@ -870,12 +1013,15 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved, onOpenSalesO
       {editId && !fhid("tasks") && (
         <Section title="Phân công sản xuất — chia lệnh nhỏ (công đoạn + sản lượng)"
           action={!fdis("tasks") && !locked && (
-            <button type="button" disabled={completing || !selCodes.size}
+            <span className="inline-flex" title={gateMsg || (!selCodes.size ? "Chọn dòng cần hoàn thành" : undefined)}>{/* nút disabled không nhận hover → title đặt ở span bọc ngoài */}
+            <button type="button" disabled={completing || !selCodes.size || !!gateMsg}
               onClick={() => startComplete([...selCodes])}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-700 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed">
               <CheckCircle2 size={15} /> Hoàn thành các dòng đã chọn{selCodes.size ? ` (${selCodes.size})` : ''}
             </button>
+            </span>
           )}>
+          {gateMsg && <p role="status" className="mb-3 flex items-start gap-1.5 text-sm text-amber-800"><AlertTriangle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />{gateMsg}</p>}
           <fieldset disabled={fdis("tasks")}>
           <div className="overflow-x-auto">
             {/* Bảng gọn trên 1 màn hình: độ rộng CỐ ĐỊNH từng cột (table-fixed, tổng ~980px, vừa cả laptop 1366px; màn hẹp hơn
@@ -995,7 +1141,7 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved, onOpenSalesO
                                   ))}
                               </select>
                             </td>
-                            <td className="py-1.5 pr-2"><input disabled={dis} type="number" min="0" className={cellCls + " no-spin"} value={t.actual_qty} onChange={(e) => upTask(t._k, "actual_qty", e.target.value)} placeholder="SL thực" /></td>
+                            <td className="py-1.5 pr-2"><input disabled={dis || !!gateMsg} type="number" min="0" className={cellCls + " no-spin"} value={t.actual_qty} onChange={(e) => upTask(t._k, "actual_qty", e.target.value)} placeholder="SL thực" aria-label={`SL thực ${stg}`} title={gateMsg || undefined} /></td>
                             <td className="py-1.5 pr-2">
                               {rowLocked
                                 ? <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">Hoàn thành</span>
@@ -1008,10 +1154,12 @@ function ProductionForm({ lookups, editId, copyId, onBack, onSaved, onOpenSalesO
                                   <div className="inline-flex items-center gap-2">
                                     <input type="checkbox" title="Chọn để hoàn thành nhiều dòng" disabled={!t.task_code}
                                       checked={selCodes.has(t.task_code)} onChange={() => t.task_code && toggleSel(t.task_code)} />
+                                    <span className="inline-flex" title={t.task_code ? "Hoàn thành dòng này" : "Lưu phân công trước"}>
                                     <button type="button" disabled={completing || !t.task_code} onClick={() => startComplete([t.task_code])}
-                                      className="inline-flex items-center gap-1 text-xs text-emerald-600 hover:text-emerald-800 disabled:opacity-40" title={t.task_code ? "Hoàn thành dòng này" : "Lưu phân công trước"}>
+                                      className="inline-flex items-center gap-1 text-xs text-emerald-600 hover:text-emerald-800 disabled:opacity-40">
                                       <CheckCircle2 size={14} /> HT
                                     </button>
+                                    </span>
                                   </div>
                                 ))}
                             </td>

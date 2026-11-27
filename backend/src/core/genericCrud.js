@@ -2,6 +2,7 @@
 // Factory tạo bộ CRUD chuẩn cho các bảng master-data.
 const db = require('./db');
 const { findDependent } = require('./lib/deleteGuard');
+const { dbInputMessage } = require('./lib/validate');
 
 // Lỗi dữ liệu đầu vào từ CSDL (sai kiểu, thiếu cột bắt buộc, vi phạm CHECK / trùng khóa) → 400 thay vì 500
 const dbStatus = (err) => (err && /^(22|23)/.test(String(err.code || '')) ? 400 : 500);
@@ -89,7 +90,7 @@ function makeCrud(cfg) {
       const { rows } = await db.query(
         `INSERT INTO ${table} (${cols.join(',')}) VALUES (${ph}) RETURNING *`, vals);
       res.status(201).json(rows[0]);
-    } catch (err) { console.error(err); res.status(dbStatus(err)).json({ message: err.detail || `Lỗi khi tạo ${table}` }); }
+    } catch (err) { console.error(err); res.status(dbStatus(err)).json({ message: dbInputMessage(err, `Lỗi khi tạo ${table}`) }); }
   };
 
   const update = async (req, res) => {
@@ -104,7 +105,7 @@ function makeCrud(cfg) {
         [...vals, req.params.id]);
       if (!rows.length) return res.status(404).json({ message: 'Không tìm thấy bản ghi' });
       res.json(rows[0]);
-    } catch (err) { console.error(err); res.status(dbStatus(err)).json({ message: err.detail || 'Lỗi khi cập nhật' }); }
+    } catch (err) { console.error(err); res.status(dbStatus(err)).json({ message: dbInputMessage(err, 'Lỗi khi cập nhật') }); }
   };
 
   const remove = async (req, res) => {
@@ -193,7 +194,7 @@ function makeCrud(cfg) {
           if (rawCode) { seen.add(codeKey); existing.add(codeKey); }
         } catch (e) {
           await client.query('ROLLBACK TO SAVEPOINT sp_row');
-          errors.push({ row: idx + 2, message: e.detail || e.message });
+          errors.push({ row: idx + 2, message: dbInputMessage(e, 'Dữ liệu trùng hoặc tham chiếu không hợp lệ') });
         }
       }
       await client.query('COMMIT');

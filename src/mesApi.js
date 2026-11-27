@@ -14,9 +14,10 @@ async function http(path, opts = {}) {
     headers: { "Content-Type": "application/json", ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}), ...(opts.headers || {}) },
   });
   if (!res.ok) {
-    let msg = `HTTP ${res.status}`;
-    try { const j = await res.json(); if (j?.message) msg = j.message; } catch { /* ignore */ }
-    const err = new Error(msg); err.status = res.status; throw err;
+    let msg = `HTTP ${res.status}`; let data = null;
+    try { data = await res.json(); if (data?.message) msg = data.message; } catch { /* ignore */ }
+    // err.data: thân lỗi đầy đủ (vd shortages / materials) để màn hình hiện danh sách dễ đọc
+    const err = new Error(msg); err.status = res.status; err.data = data; throw err;
   }
   return res.status === 204 ? null : res.json();
 }
@@ -125,8 +126,11 @@ export const production = {
   saveMaterials: (id, lines) => http(`/production-orders/${id}/materials`, body("POST", { lines })),
   // NVL cần cung cấp (kế hoạch) + Yêu cầu NVL (xuất kho)
   plannedMaterials: (id) => http(`/production-orders/${id}/planned-materials`).then((r) => r.data),
+  // Kiểm trần NVL trước khi lưu lệnh (không ghi) → { message: câu lỗi | null }
+  checkMaterialCap: (payload) => http(`/production-orders/check-material-cap`, body("POST", payload)),
   savePlannedMaterials: (id, lines) => http(`/production-orders/${id}/planned-materials`, body("POST", { lines })),
   requestMaterials: (id, lines) => http(`/production-orders/${id}/request-materials`, body("POST", { lines })),
+  finish: (id) => http(`/production-orders/${id}/finish`, body("POST", {})),
   // Trả NVL thừa về kho (phiếu TNVL…)
   materialReturns: (id) => http(`/production-orders/${id}/material-returns`).then((r) => r.data),
   createMaterialReturn: (id, data) => http(`/production-orders/${id}/material-returns`, body("POST", data)),

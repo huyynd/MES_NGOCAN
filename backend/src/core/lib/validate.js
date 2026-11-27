@@ -28,4 +28,25 @@ const isEmail = (s) => EMAIL_RE.test(String(s).trim());
 // Giờ dạng HH:MM hoặc HH:MM:SS, 00:00 → 23:59
 const isTime = (s) => /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/.test(String(s).trim());
 
-module.exports = { duplicateNameMessage, normName, isEmail, isTime };
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isUuid = (s) => UUID_RE.test(String(s || ''));
+// router.param(name, uuidParam('Không tìm thấy …')): tham số đường dẫn không phải UUID → 404 (không để Postgres ném lỗi 500)
+const uuidParam = (message) => (req, res, next, value) => (isUuid(value) ? next() : res.status(404).json({ message }));
+
+/** Lỗi 500: ghi chi tiết ở server, trả câu chung (không lộ err.detail / câu lỗi CSDL). Lỗi tự ném (không phải CSDL) giữ câu. */
+const isDbError = (err) => !!(err && typeof err.code === 'string' && /^[0-9A-Z]{5}$/.test(err.code) && err.severity);
+// Giữ câu do code nghiệp vụ tự ném (new Error / lớp lỗi riêng); lỗi CSDL và lỗi lập trình (TypeError…) → câu chung.
+const JS_BUG_ERRORS = [TypeError, RangeError, ReferenceError, SyntaxError, EvalError, URIError];
+const clientMessage = (err, fallback) => (err instanceof Error && err.message && !isDbError(err)
+  && !JS_BUG_ERRORS.some((C) => err instanceof C) ? err.message : fallback);
+
+// Như clientMessage, nhưng lỗi dữ liệu đầu vào từ CSDL (lớp 22/23) đổi thành câu chung dễ hiểu — không lộ tên cột / giá trị.
+const dbInputMessage = (err, fallback) => {
+  const code = isDbError(err) ? err.code : '';
+  if (code === '23505') return 'Dữ liệu bị trùng với bản ghi đã có.';
+  if (code === '23503') return 'Dữ liệu tham chiếu không hợp lệ (bản ghi liên quan không tồn tại hoặc đang được dùng).';
+  if (/^(22|23)/.test(code)) return 'Dữ liệu không hợp lệ.';
+  return clientMessage(err, fallback);
+};
+
+module.exports = { duplicateNameMessage, normName, isEmail, isTime, isUuid, uuidParam, isDbError, clientMessage, dbInputMessage };

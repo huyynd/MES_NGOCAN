@@ -112,7 +112,8 @@ function TaskCard({ t, canEdit, onSaved, lookups }) {
   const doUpdate = async (patch) => {
     setSaving(true);
     try { await production.updateTask(t.id, patch); onSaved(); }
-    catch (e) { toast.error("Lỗi cập nhật: " + e.message); }
+    // 400 = cửa chặn nghiệp vụ (vd chưa xuất NVL): câu backend đã nói rõ cách xử lý → hiện nguyên văn
+    catch (e) { toast.error(e.status === 400 ? e.message : "Lỗi cập nhật: " + e.message, e.status === 400 ? { duration: 6000 } : undefined); }
     finally { setSaving(false); }
   };
   // 8c: màn Thực thi CHỈ đổi trạng thái vận hành; SL thực & Hoàn thành ghi ở màn chi tiết lệnh.

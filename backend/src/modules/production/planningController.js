@@ -191,8 +191,9 @@ exports.generate = async (req, res) => {
       const r = await client.query(`
         INSERT INTO production_orders
           (sales_order_id, sales_order_item_id, customer_id, product_id, quantity, unit,
-           specs, spec_key, attr_size, attr_thickness, attr_color, machine_id, planned_date, shift, assigned_team, group_key, due_date, status, assigned_worker, material_type, mix_ratio, priority, note)
-        VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21::jsonb,$22,$23) RETURNING id, order_code`,
+           specs, spec_key, attr_size, attr_thickness, attr_color, machine_id, planned_date, shift, assigned_team, group_key, due_date, status, assigned_worker, material_type, mix_ratio, priority, note, nvl_strict)
+        VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21::jsonb,$22,$23,
+          TRUE) RETURNING id, order_code`, // lệnh mới: xuất NVL ngay khi yêu cầu (materialGate.js)
         [it.so_id, it.id, it.customer_id, it.product_id, q, it.unit,
          JSON.stringify(it.specs || {}), it.spec_key || '',
          it.attr_size, it.attr_thickness, it.attr_color, headMachine, planned_date || null,
@@ -230,7 +231,7 @@ exports.generate = async (req, res) => {
     res.status(201).json({ created });
   } catch (err) {
     await client.query('ROLLBACK'); console.error(err);
-    res.status(500).json({ message: err.detail || 'Lỗi khi sinh lệnh sản xuất từ kế hoạch' });
+    res.status(500).json({ message: 'Lỗi khi sinh lệnh sản xuất từ kế hoạch' });
   } finally { client.release(); }
 };
 

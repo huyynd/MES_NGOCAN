@@ -3,6 +3,7 @@ const db = require('../../core/db');
 const { upUnit } = require('../../core/lib/units');
 const { guardDelete } = require('../../core/lib/deleteGuard');
 const { syncLinkedBom } = require('../../core/lib/bomSync');
+const { clientMessage } = require('../../core/lib/validate');
 
 exports.list = async (req, res) => {
   try {
@@ -67,7 +68,7 @@ exports.create = async (req, res) => {
     else await saveLines(client, rows[0].id, b.lines);
     await client.query('COMMIT');
     res.status(201).json(rows[0]);
-  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi tạo định mức' }); }
+  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: clientMessage(err, 'Lỗi khi tạo định mức') }); }
   finally { client.release(); }
 };
 
@@ -93,7 +94,7 @@ exports.update = async (req, res) => {
     else if (b.lines !== undefined) await saveLines(client, req.params.id, b.lines);
     await client.query('COMMIT');
     res.json({ message: 'Đã cập nhật định mức' });
-  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi cập nhật' }); }
+  } catch (err) { await client.query('ROLLBACK'); console.error(err); res.status(500).json({ message: clientMessage(err, 'Lỗi khi cập nhật') }); }
   finally { client.release(); }
 };
 

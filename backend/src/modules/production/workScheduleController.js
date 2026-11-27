@@ -1,5 +1,6 @@
 // backend/controllers/workScheduleController.js — Lịch làm việc (nhân viên × ngày → ca)
 const db = require('../../core/db');
+const { dbInputMessage } = require('../../core/lib/validate');
 
 // GET /api/work-schedules?from=&to=
 exports.list = async (req, res) => {
@@ -58,7 +59,7 @@ exports.upsert = async (req, res) => {
       DO UPDATE SET shift_id = EXCLUDED.shift_id, note = EXCLUDED.note, updated_at = now()
       RETURNING *`, [employee_id, work_date, shift_id, note || null]);
     res.json(rows[0]);
-  } catch (err) { console.error(err); res.status(500).json({ message: err.detail || 'Lỗi khi lưu lịch làm việc' }); }
+  } catch (err) { console.error(err); res.status(500).json({ message: 'Lỗi khi lưu lịch làm việc' }); }
 };
 
 // PUT /api/work-schedules/bulk — cập nhật nhiều ca làm việc cùng lúc
@@ -109,7 +110,7 @@ exports.bulkUpsert = async (req, res) => {
   } catch (err) { 
     await client.query('ROLLBACK');
     console.error(err); 
-    res.status(400).json({ message: err.message || 'Lỗi khi lưu lịch làm việc' }); 
+    res.status(400).json({ message: dbInputMessage(err, 'Lỗi khi lưu lịch làm việc') });
   } finally {
     client.release();
   }

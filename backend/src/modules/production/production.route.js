@@ -2,9 +2,18 @@ const express = require('express');
 const router = express.Router();
 const { requirePerm } = require('../../core/requireAuth');
 const production = require('./productionController');
+const { uuidParam } = require('../../core/lib/validate');
+
+// Mọi route :id / :taskId của router này: không phải UUID → 404 trước khi chạm CSDL (cùng câu notUuid trong controller)
+router.param('id', uuidParam('Không tìm thấy lệnh sản xuất'));
+router.param('taskId', uuidParam('Không tìm thấy dòng phân công'));
 
 router.get('/production-orders', production.list);
 router.post('/production-orders', requirePerm('production:create'), production.create);
+// Kiểm trần NVL trước khi lưu (chỉ đọc): lệnh mới cần quyền tạo, lệnh đang sửa cần quyền sửa — như route tạo / sửa lệnh
+router.post('/production-orders/check-material-cap',
+  (req, res, next) => requirePerm(req.body && req.body.id ? 'production:edit' : 'production:create')(req, res, next),
+  production.checkMaterialCap);
 router.get('/production-orders/:id', production.getById);
 router.put('/production-orders/:id', requirePerm('production:edit'), production.update);
 router.put('/production-orders/:id/schedule', requirePerm('production:edit'), production.schedule);
@@ -26,6 +35,7 @@ router.get('/production-orders/:id/planned-materials', production.getPlannedMate
 router.post('/production-orders/:id/planned-materials', requirePerm('production:edit'), production.savePlannedMaterials);
 router.get('/production-orders/:id/material-returns', production.materialReturns);
 router.post('/production-orders/:id/material-returns', requirePerm('production:edit'), production.createMaterialReturn);
+router.post('/production-orders/:id/finish', requirePerm('production:edit'), production.finish);
 router.post('/production-orders/:id/request-materials', requirePerm('production:request'), production.requestMaterials);
 router.delete('/production-orders/:id', requirePerm('production:delete'), production.remove);
 
